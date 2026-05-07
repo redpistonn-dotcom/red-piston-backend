@@ -1,0 +1,745 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  directUrl         = env("DIRECT_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTH & IDENTITY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Lookup table for user roles — single source of truth for role definitions.
+// slug maps 1:1 with the role string on User.
+// id is a plain auto-increment integer (1=Customer, 2=Staff, 3=Owner, 4=Admin).
+model UserType {
+  id          Int      @id @default(autoincrement())
+  name        String
+  slug        String   @unique
+  description String?
+  isSystem    Boolean  @default(true) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  users User[]
+
+  @@map("user_types")
+}
+
+// Single identity record for every person in the system.
+// Role controls which app surface they access (ERP vs Marketplace vs Admin).
+model User {
+  userId       Int       @id @default(autoincrement()) @map("user_id")
+  name         String?
+  email        String?   @unique
+  phone        String?   @unique
+  avatarUrl    String?   @map("avatar_url")
+  passwordHash String?   @map("password_hash")
+  // CUSTOMER | SHOP_STAFF | SHOP_OWNER | PLATFORM_ADMIN
+  role         String    @default("CUSTOMER")
+  userTypeId   Int?      @map("user_type_id")
+  userType     UserType? @relation(fields: [userTypeId], references: [id])
+  emailVerified Boolean  @default(false) @map("email_verified")
+  phoneVerified Boolean  @default(false) @map("phone_verified")
+  failedLogins  Int      @default(0) @map("failed_logins")
+  lockedUntil   DateTime? @map("locked_until")
+  loginCount    Int      @default(0) @map("login_count")
+  lastLoginAt   DateTime? @map("last_login_at")
+  isActive      Boolean  @default(true) @map("is_active")
+  // Computed convenience: true once any auth method is verified
+  isVerified    Boolean  @default(false) @map("is_verified")
+  // Primary shop association for SHOP_OWNER / SHOP_STAFF
+  shopId        String?  @map("shop_id")
+  shop          Shop?    @relation(fields: [shopId], references: [shopId])
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  // Shop owner verification
+  // NOT_REQUIRED | PENDING | APPROVED | REJECTED
+  verificationStatus  String    @default("NOT_REQUIRED") @map("verification_status")
+  verificationNote    String?   @map("verification_note")
+  verifiedAt          DateTime? @map("verified_at")
+  verifiedBy          String?   @map("verified_by")
+
+  authProviders      AuthProvider[]
+  refreshTokens      RefreshToken[]
+  passwordResets     PasswordResetToken[]
+  profile            UserProfile?
+  settings           UserSettings?
+  customerProfile    CustomerProfile?
+  addresses          CustomerAddress[]
+  garage             CustomerVehicle[]
+  shopUsers          ShopUser[]
+  adminProfile       AdminProfile?
+  createdInvoices    Invoice[]            @relation("InvoiceCreatedBy")
+  createdMovements   Movement[]           @relation("MovementCreatedBy")
+  createdJobCards    JobCard[]            @relation("JobCardCreatedBy")
+  createdPurchaseOrders PurchaseOrder[]   @relation("PurchaseOrderCreatedBy")
+  marketplaceOrders  MarketplaceOrder[]   @relation("OrderCustomer")
+  reviews            MarketplaceReview[]
+
+  @@map("users")
+}
+
+// One row per login method per user (Google sub, Firebase UID, phone, email).
+model AuthProvider {
+  id         String   @id @default(uuid())
+  userId     Int      @map("user_id")
+  // EMAIL | PHONE | GOOGLE | FIREBASE
+  provider   String
+  providerId String   @map("provider_id")
+  linkedAt   DateTime @default(now()) @map("linked_at")
+  user       User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([provider, providerId])
+  @@index([userId])
+  @@map("auth_providers")
+}
+
+// Hashed OTPs for phone login and email verification.
+model OtpCode {
+  id         String    @id @default(uuid())
+  phone      String?
+  email      String?
+  code       String
+  // PHONE_OTP | EMAIL_VERIFY | EMAIL_LOGIN
+  type       String    @default("PHONE_OTP")
+  attempts   Int       @default(0)
+  ipAddress  String?   @map("ip_address")
+  expiresAt  DateTime  @map("expires_at")
+  verifiedAt DateTime? @map("verified_at")
+  used       Boolean   @default(false)
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([phone, expiresAt(sort: Desc)])
+  @@index([email, expiresAt(sort: Desc)])
+  @@map("otp_codes")
+}
+
+// Active sessions — one row per device per user.
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     Int       @map("user_id")
+  shopId     String?   @map("shop_id")
+  tokenHash  String    @unique @map("token_hash")
+  deviceInfo Json      @default("{}") @map("device_info")
+  ipAddress  String?   @map("ip_address")
+  expiresAt  DateTime  @map("expires_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  user       User      @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// Short-lived email password reset tokens — stored as SHA-256 hash.
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    Int      @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// USER PROFILES & SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model UserProfile {
+  id          String    @id @default(uuid())
+  userId      Int       @unique @map("user_id")
+  gender      String?
+  dateOfBirth DateTime? @map("date_of_birth") @db.Date
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  user        User      @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model UserSettings {
+  id                   String  @id @default(uuid())
+  userId               Int     @unique @map("user_id")
+  notificationsEnabled Boolean @default(true) @map("notifications_enabled")
+  emailNotifications   Boolean @default(true) @map("email_notifications")
+  smsNotifications     Boolean @default(true) @map("sms_notifications")
+  darkMode             Boolean @default(true) @map("dark_mode")
+  language             String  @default("en")
+  user                 User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+model CustomerProfile {
+  id            String   @id @default(uuid())
+  userId        Int      @unique @map("user_id")
+  walletBalance Decimal  @default(0) @map("wallet_balance") @db.Decimal(10, 2)
+  loyaltyPoints Int      @default(0) @map("loyalty_points")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  user          User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@map("customer_profiles")
+}
+
+model CustomerAddress {
+  addressId  String   @id @default(uuid()) @map("address_id")
+  userId     Int      @map("user_id")
+  label      String   @default("Home")
+  fullName   String   @map("full_name")
+  phone      String
+  line1      String
+  line2      String?
+  landmark   String?
+  city       String
+  state      String
+  pincode    String
+  latitude   Decimal? @db.Decimal(9, 6)
+  longitude  Decimal? @db.Decimal(9, 6)
+  isDefault  Boolean  @default(false) @map("is_default")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  user       User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  orders     MarketplaceOrder[]
+
+  @@index([userId])
+  @@map("customer_addresses")
+}
+
+model CustomerVehicle {
+  id             String   @id @default(uuid())
+  userId         Int      @map("user_id")
+  vehicleId      String?  @map("vehicle_id")
+  nickname       String?
+  make           String
+  model          String
+  variant        String?
+  year           Int
+  fuelType       String?  @map("fuel_type")
+  registrationNo String?  @map("registration_no")
+  isDefault      Boolean  @default(false) @map("is_default")
+  createdAt      DateTime @default(now()) @map("created_at")
+  user           User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  vehicle        Vehicle? @relation(fields: [vehicleId], references: [vehicleId])
+  orders         MarketplaceOrder[]
+
+  @@index([userId])
+  @@map("customer_vehicles")
+}
+
+model AdminProfile {
+  id          String   @id @default(uuid())
+  userId      Int      @unique @map("user_id")
+  // SUPER_ADMIN | OPS | SUPPORT | FINANCE
+  adminRole   String   @default("SUPPORT") @map("admin_role")
+  department  String?
+  permissions Json     @default("[]")
+  ipWhitelist String[] @default([]) @map("ip_whitelist")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  user        User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@map("admin_profiles")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHOP & STAFF
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Shop {
+  shopId           String    @id @default(uuid()) @map("shop_id")
+  name             String
+  ownerName        String?   @map("owner_name")
+  phone            String    @unique
+  email            String?
+  gstin            String?
+  address          String?
+  city             String?
+  state            String?
+  pincode          String?
+  latitude         Decimal?  @db.Decimal(9, 6)
+  longitude        Decimal?  @db.Decimal(9, 6)
+  shopDescription  String?   @map("shop_description")
+  logoUrl          String?   @map("logo_url")
+  isVerified       Boolean   @default(false) @map("is_verified")
+  isActive         Boolean   @default(true) @map("is_active")
+  // FREE | STARTER | PRO | ENTERPRISE
+  plan             String    @default("FREE")
+  planExpiresAt    DateTime? @map("plan_expires_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  users             User[]
+  shopUsers         ShopUser[]
+  inventory         ShopInventory[]
+  movements         Movement[]
+  invoices          Invoice[]
+  purchaseOrders    PurchaseOrder[]
+  parties           Party[]
+  jobCards          JobCard[]
+  marketplaceOrders MarketplaceOrder[]
+
+  @@map("shops")
+}
+
+model ShopUser {
+  id           String    @id @default(uuid())
+  shopId       String    @map("shop_id")
+  userId       Int       @map("user_id")
+  // OWNER | MANAGER | CASHIER | MECHANIC | DELIVERY
+  role         String    @default("CASHIER")
+  permissions  Json      @default("{}")
+  invitedBy    String?   @map("invited_by")
+  isActive     Boolean   @default(true) @map("is_active")
+  joinedAt     DateTime  @default(now()) @map("joined_at")
+  lastActiveAt DateTime? @map("last_active_at")
+  shop         Shop      @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([shopId, userId])
+  @@index([shopId])
+  @@map("shop_users")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VEHICLE & PARTS CATALOG
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Vehicle {
+  vehicleId    String   @id @default(uuid()) @map("vehicle_id")
+  make         String
+  model        String
+  variant      String?
+  yearFrom     Int      @map("year_from")
+  yearTo       Int?     @map("year_to")
+  fuelType     String?  @map("fuel_type")
+  engineCc     Int?     @map("engine_cc")
+  engineCode   String?  @map("engine_code")
+  transmission String?
+  bodyType     String?  @map("body_type")
+  vehicleType  String   @default("Car") @map("vehicle_type")
+  absEquipped  Boolean  @default(false) @map("abs_equipped")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  fitments         PartFitment[]
+  customerVehicles CustomerVehicle[]
+
+  @@index([make, model])
+  @@map("vehicles")
+}
+
+model MasterPart {
+  masterPartId    String   @id @default(uuid()) @map("master_part_id")
+  partName        String   @map("part_name")
+  brand           String?
+  categoryL1      String?  @map("category_l1")
+  categoryL2      String?  @map("category_l2")
+  oemNumbers      String[] @default([]) @map("oem_numbers")
+  barcodes        String[] @default([]) @map("barcodes")
+  hsnCode         String?  @map("hsn_code")
+  gstRate         Decimal  @default(18.00) @map("gst_rate") @db.Decimal(5, 2)
+  unitOfSale      String   @default("Piece") @map("unit_of_sale")
+  description     String?
+  specifications  Json?
+  imageUrl        String?  @map("image_url")
+  images          String[] @default([])
+  isUniversal     Boolean  @default(false) @map("is_universal")
+  requiresFitment Boolean  @default(true) @map("requires_fitment")
+  status          String   @default("PENDING")
+  source          String   @default("MANUAL")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  fitments  PartFitment[]
+  inventory ShopInventory[]
+  reviews   MarketplaceReview[]
+
+  @@index([partName])
+  @@index([brand])
+  @@map("master_parts")
+}
+
+model PartFitment {
+  fitmentId    String     @id @default(uuid()) @map("fitment_id")
+  masterPartId String     @map("master_part_id")
+  vehicleId    String     @map("vehicle_id")
+  fitType      String     @map("fit_type")
+  position     String?
+  source       String     @default("SHOP_CONFIRMED")
+  notes        String?
+  masterPart   MasterPart @relation(fields: [masterPartId], references: [masterPartId], onDelete: Cascade)
+  vehicle      Vehicle    @relation(fields: [vehicleId], references: [vehicleId], onDelete: Cascade)
+
+  @@unique([masterPartId, vehicleId])
+  @@map("part_fitments")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHOP INVENTORY & STOCK LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model ShopInventory {
+  inventoryId           String    @id @default(uuid()) @map("inventory_id")
+  shopId                String    @map("shop_id")
+  masterPartId          String    @map("master_part_id")
+  sellingPrice          Decimal   @map("selling_price") @db.Decimal(10, 2)
+  buyingPrice           Decimal?  @map("buying_price") @db.Decimal(10, 2)
+  stockQty              Int       @default(0) @map("stock_qty")
+  reservedQty           Int       @default(0) @map("reserved_qty")
+  minStockAlert         Int       @default(5) @map("min_stock_alert")
+  rackLocation          String?   @map("rack_location")
+  shopSpecificNotes     String?   @map("shop_specific_notes")
+  isMarketplaceListed   Boolean   @default(false) @map("is_marketplace_listed")
+  lastPurchasedAt       DateTime? @map("last_purchased_at")
+  lastSoldAt            DateTime? @map("last_sold_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+  shop                  Shop      @relation(fields: [shopId], references: [shopId])
+  masterPart            MasterPart @relation(fields: [masterPartId], references: [masterPartId])
+
+  movements             Movement[]
+  invoiceItems          InvoiceItem[]
+  purchaseOrderItems    PurchaseOrderItem[]
+  jobCardItems          JobCardItem[]
+  marketplaceOrderItems MarketplaceOrderItem[]
+  reviews               MarketplaceReview[]
+
+  @@unique([shopId, masterPartId])
+  @@index([shopId])
+  @@map("shop_inventory")
+}
+
+// Immutable stock ledger — INSERT ONLY, never UPDATE or DELETE rows.
+model Movement {
+  movementId  String   @id @default(uuid()) @map("movement_id")
+  shopId      String   @map("shop_id")
+  inventoryId String   @map("inventory_id")
+  createdBy   Int?     @map("created_by")
+  type        String
+  qty         Int
+  unitPrice   Decimal? @map("unit_price") @db.Decimal(10, 2)
+  totalAmount Decimal? @map("total_amount") @db.Decimal(10, 2)
+  gstAmount   Decimal? @map("gst_amount") @db.Decimal(10, 2)
+  profit      Decimal? @db.Decimal(10, 2)
+  invoiceId   String?  @map("invoice_id")
+  partyId     String?  @map("party_id")
+  notes       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  shop      Shop          @relation(fields: [shopId], references: [shopId])
+  inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
+  creator   User?         @relation("MovementCreatedBy", fields: [createdBy], references: [userId])
+  invoice   Invoice?      @relation(fields: [invoiceId], references: [invoiceId])
+  party     Party?        @relation(fields: [partyId], references: [partyId])
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@index([inventoryId])
+  @@map("movements")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PARTIES (CUSTOMERS & SUPPLIERS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Party {
+  partyId     String   @id @default(uuid()) @map("party_id")
+  shopId      String   @map("shop_id")
+  name        String
+  phone       String?
+  email       String?
+  gstin       String?
+  address     String?
+  type        String   @default("CUSTOMER")
+  creditLimit Decimal  @default(0) @map("credit_limit") @db.Decimal(10, 2)
+  outstanding Decimal  @default(0) @db.Decimal(10, 2)
+  notes       String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  shop        Shop     @relation(fields: [shopId], references: [shopId])
+
+  invoices       Invoice[]
+  movements      Movement[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([shopId])
+  @@map("parties")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INVOICES (SALES BILLING)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Invoice {
+  invoiceId      String   @id @default(uuid()) @map("invoice_id")
+  invoiceNumber  String   @unique @map("invoice_number")
+  shopId         String   @map("shop_id")
+  partyId        String?  @map("party_id")
+  createdBy      Int?     @map("created_by")
+  partyName      String?  @map("party_name")
+  partyPhone     String?  @map("party_phone")
+  partyGstin     String?  @map("party_gstin")
+  subtotal       Decimal  @db.Decimal(10, 2)
+  discountAmount Decimal  @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  taxableAmount  Decimal  @map("taxable_amount") @db.Decimal(10, 2)
+  cgst           Decimal  @db.Decimal(10, 2)
+  sgst           Decimal  @db.Decimal(10, 2)
+  igst           Decimal  @default(0) @db.Decimal(10, 2)
+  totalAmount    Decimal  @map("total_amount") @db.Decimal(10, 2)
+  paymentMode    String   @map("payment_mode")
+  cashAmount     Decimal? @map("cash_amount") @db.Decimal(10, 2)
+  upiAmount      Decimal? @map("upi_amount") @db.Decimal(10, 2)
+  creditAmount   Decimal? @map("credit_amount") @db.Decimal(10, 2)
+  paidAmount     Decimal  @default(0) @map("paid_amount") @db.Decimal(10, 2)
+  pdfUrl         String?  @map("pdf_url")
+  status         String   @default("PAID")
+  notes          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  shop     Shop             @relation(fields: [shopId], references: [shopId])
+  party    Party?           @relation(fields: [partyId], references: [partyId])
+  creator  User?            @relation("InvoiceCreatedBy", fields: [createdBy], references: [userId])
+  items    InvoiceItem[]
+  movements Movement[]
+  payments InvoicePayment[]
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  itemId      String   @id @default(uuid()) @map("item_id")
+  invoiceId   String   @map("invoice_id")
+  inventoryId String   @map("inventory_id")
+  partName    String   @map("part_name")
+  brand       String?
+  hsnCode     String?  @map("hsn_code")
+  qty         Int
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(10, 2)
+  discount    Decimal  @default(0) @db.Decimal(10, 2)
+  taxableAmt  Decimal  @map("taxable_amt") @db.Decimal(10, 2)
+  gstRate     Decimal  @map("gst_rate") @db.Decimal(5, 2)
+  cgst        Decimal  @db.Decimal(10, 2)
+  sgst        Decimal  @db.Decimal(10, 2)
+  total       Decimal  @db.Decimal(10, 2)
+
+  invoice   Invoice       @relation(fields: [invoiceId], references: [invoiceId], onDelete: Cascade)
+  inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
+
+  @@map("invoice_items")
+}
+
+model InvoicePayment {
+  id         String   @id @default(uuid())
+  invoiceId  String   @map("invoice_id")
+  amount     Decimal  @db.Decimal(10, 2)
+  mode       String
+  reference  String?
+  note       String?
+  receivedAt DateTime @default(now()) @map("received_at")
+  invoice    Invoice  @relation(fields: [invoiceId], references: [invoiceId], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_payments")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PURCHASE ORDERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model PurchaseOrder {
+  poId          String    @id @default(uuid()) @map("po_id")
+  poNumber      String    @unique @map("po_number")
+  shopId        String    @map("shop_id")
+  partyId       String?   @map("party_id")
+  createdBy     Int?      @map("created_by")
+  supplierName  String?   @map("supplier_name")
+  supplierPhone String?   @map("supplier_phone")
+  supplierGstin String?   @map("supplier_gstin")
+  subtotal      Decimal   @db.Decimal(10, 2)
+  taxableAmount Decimal   @map("taxable_amount") @db.Decimal(10, 2)
+  cgst          Decimal   @db.Decimal(10, 2)
+  sgst          Decimal   @db.Decimal(10, 2)
+  igst          Decimal   @default(0) @db.Decimal(10, 2)
+  totalAmount   Decimal   @map("total_amount") @db.Decimal(10, 2)
+  paymentMode   String?   @map("payment_mode")
+  status        String    @default("PENDING")
+  expectedAt    DateTime? @map("expected_at")
+  receivedAt    DateTime? @map("received_at")
+  notes         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  shop    Shop               @relation(fields: [shopId], references: [shopId])
+  party   Party?             @relation(fields: [partyId], references: [partyId])
+  creator User?              @relation("PurchaseOrderCreatedBy", fields: [createdBy], references: [userId])
+  items   PurchaseOrderItem[]
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  itemId      String   @id @default(uuid()) @map("item_id")
+  poId        String   @map("po_id")
+  inventoryId String   @map("inventory_id")
+  partName    String   @map("part_name")
+  hsnCode     String?  @map("hsn_code")
+  orderedQty  Int      @map("ordered_qty")
+  receivedQty Int      @default(0) @map("received_qty")
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(10, 2)
+  taxableAmt  Decimal  @map("taxable_amt") @db.Decimal(10, 2)
+  gstRate     Decimal  @map("gst_rate") @db.Decimal(5, 2)
+  cgst        Decimal  @db.Decimal(10, 2)
+  sgst        Decimal  @db.Decimal(10, 2)
+  total       Decimal  @db.Decimal(10, 2)
+
+  purchaseOrder PurchaseOrder @relation(fields: [poId], references: [poId], onDelete: Cascade)
+  inventory     ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
+
+  @@map("purchase_order_items")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WORKSHOP / JOB CARDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model JobCard {
+  jobId         String    @id @default(uuid()) @map("job_id")
+  jobNumber     String    @unique @map("job_number")
+  shopId        String    @map("shop_id")
+  createdBy     Int?      @map("created_by")
+  assignedTo    String?   @map("assigned_to")
+  customerName  String    @map("customer_name")
+  customerPhone String?   @map("customer_phone")
+  vehicleMake   String    @map("vehicle_make")
+  vehicleModel  String    @map("vehicle_model")
+  vehicleYear   Int?      @map("vehicle_year")
+  vehicleReg    String?   @map("vehicle_reg")
+  vehicleFuel   String?   @map("vehicle_fuel")
+  odometerIn    Int?      @map("odometer_in")
+  odometerOut   Int?      @map("odometer_out")
+  complaint     String?
+  diagnosis     String?
+  status        String    @default("RECEIVED")
+  priority      String    @default("NORMAL")
+  estimatedAt   DateTime? @map("estimated_at")
+  completedAt   DateTime? @map("completed_at")
+  deliveredAt   DateTime? @map("delivered_at")
+  labourCharge  Decimal   @default(0) @map("labour_charge") @db.Decimal(10, 2)
+  partsTotal    Decimal   @default(0) @map("parts_total") @db.Decimal(10, 2)
+  totalAmount   Decimal   @default(0) @map("total_amount") @db.Decimal(10, 2)
+  paymentMode   String?   @map("payment_mode")
+  paymentStatus String    @default("PENDING") @map("payment_status")
+  notes         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  shop    Shop         @relation(fields: [shopId], references: [shopId])
+  creator User?        @relation("JobCardCreatedBy", fields: [createdBy], references: [userId])
+  items   JobCardItem[]
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@map("job_cards")
+}
+
+model JobCardItem {
+  id          String   @id @default(uuid())
+  jobId       String   @map("job_id")
+  inventoryId String?  @map("inventory_id")
+  description String
+  qty         Int      @default(1)
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(10, 2)
+  total       Decimal  @db.Decimal(10, 2)
+  type        String   @default("PART")
+
+  jobCard   JobCard        @relation(fields: [jobId], references: [jobId], onDelete: Cascade)
+  inventory ShopInventory? @relation(fields: [inventoryId], references: [inventoryId])
+
+  @@map("job_card_items")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKETPLACE (B2C)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model MarketplaceOrder {
+  orderId             String   @id @default(uuid()) @map("order_id")
+  orderNumber         String   @unique @map("order_number")
+  customerId          Int?     @map("customer_id")
+  customerVehicleId   String?  @map("customer_vehicle_id")
+  shopId              String   @map("shop_id")
+  customerName        String?  @map("customer_name")
+  customerPhone       String   @map("customer_phone")
+  deliveryAddressId   String?  @map("delivery_address_id")
+  deliveryAddress     String?  @map("delivery_address")
+  deliveryFee         Decimal  @default(0) @map("delivery_fee") @db.Decimal(10, 2)
+  subtotal            Decimal  @db.Decimal(10, 2)
+  total               Decimal  @db.Decimal(10, 2)
+  paymentMode         String?  @map("payment_mode")
+  razorpayOrderId     String?  @map("razorpay_order_id")
+  razorpayPaymentId   String?  @map("razorpay_payment_id")
+  status              String   @default("PENDING")
+  cancelReason        String?  @map("cancel_reason")
+  notes               String?
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  customer        User?            @relation("OrderCustomer", fields: [customerId], references: [userId])
+  customerVehicle CustomerVehicle? @relation(fields: [customerVehicleId], references: [id])
+  shop            Shop             @relation(fields: [shopId], references: [shopId])
+  deliveryAddr    CustomerAddress? @relation(fields: [deliveryAddressId], references: [addressId])
+  items           MarketplaceOrderItem[]
+
+  @@index([customerId, createdAt(sort: Desc)])
+  @@index([shopId, createdAt(sort: Desc)])
+  @@map("marketplace_orders")
+}
+
+model MarketplaceOrderItem {
+  itemId      String   @id @default(uuid()) @map("item_id")
+  orderId     String   @map("order_id")
+  inventoryId String   @map("inventory_id")
+  partName    String   @map("part_name")
+  brand       String?
+  qty         Int
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(10, 2)
+  total       Decimal  @db.Decimal(10, 2)
+
+  order     MarketplaceOrder @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+  inventory ShopInventory    @relation(fields: [inventoryId], references: [inventoryId])
+
+  @@map("marketplace_order_items")
+}
+
+model MarketplaceReview {
+  reviewId         String    @id @default(uuid()) @map("review_id")
+  masterPartId     String    @map("master_part_id")
+  inventoryId      String?   @map("inventory_id")
+  orderId          String?   @map("order_id")
+  userId           Int?      @map("user_id")
+  customerName     String    @map("customer_name")
+  rating           Int
+  title            String?
+  body             String?
+  verifiedPurchase Boolean   @default(false) @map("verified_purchase")
+  helpfulCount     Int       @default(0) @map("helpful_count")
+  isHidden         Boolean   @default(false) @map("is_hidden")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  masterPart MasterPart     @relation(fields: [masterPartId], references: [masterPartId])
+  inventory  ShopInventory? @relation(fields: [inventoryId], references: [inventoryId])
+  user       User?          @relation(fields: [userId], references: [userId])
+
+  @@index([masterPartId])
+  @@map("marketplace_reviews")
+}

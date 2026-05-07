@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: red-piston-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install && npx prisma generate
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      # Set the remaining secrets in the Render dashboard → Environment tab
+      # DATABASE_URL        — your Supabase PostgreSQL connection string
+      # JWT_SECRET          — strong random string (openssl rand -hex 32)
+      # JWT_REFRESH_SECRET  — different strong random string
+      # FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY
+      # RESEND_API_KEY / RESEND_SENDER_EMAIL
+      # FRONTEND_URL        — your Vercel URL (https://your-app.vercel.app)
+      # RESET_PASSWORD_URL  — https://your-app.vercel.app/reset-password
+      # FRONTEND_APP_URL    — https://your-app.vercel.app

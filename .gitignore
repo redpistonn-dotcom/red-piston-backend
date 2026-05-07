@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Environment secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+
+# Prisma generated query engine binaries
+prisma/generated/
+*.so.node
+query-engine-*
+libquery_engine-*
+schema-engine-*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS artefacts
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Misc
+*.tgz
+repomix-output.xml
+
