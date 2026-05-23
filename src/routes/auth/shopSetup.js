@@ -32,7 +32,7 @@ const STATE_CODE_MAP = {
  */
 router.post('/shop-setup', async (req, res, next) => {
   try {
-    const { ownerName, shopName, city, state, pincode, contactPhone, gstin, address } = req.body;
+    const { ownerName, shopName, address, city, state, pincode, contactPhone, email, gstin } = req.body;
     // userId from body may be a string (JSON) or number — normalise to Int
     const userId = req.body.userId != null ? parseInt(req.body.userId) : NaN;
 
@@ -53,6 +53,12 @@ router.post('/shop-setup', async (req, res, next) => {
       return res.status(400).json({
         success: false,
         error: { code: 'MISSING_SHOP_NAME', message: 'Shop name is required' },
+      });
+    }
+    if (!address?.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'MISSING_ADDRESS', message: 'Shop address is required' },
       });
     }
     if (!city?.trim()) {
@@ -111,12 +117,13 @@ router.post('/shop-setup', async (req, res, next) => {
           name: shopName.trim(),
           ownerName: ownerName.trim(),
           phone: cleanPhone,
+          email: email?.trim() || null,
+          address: address.trim(),
           city: city.trim(),
           state: resolvedState,
           stateCode: stateCode,
           pincode: pincode?.trim() || null,
           gstin: gstin?.trim() || null,
-          address: address?.trim() || null,
         },
       }),
       prisma.user.update({
