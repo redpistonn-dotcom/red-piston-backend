@@ -268,4 +268,164 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
   } catch (err) { next(err); }
 });
 
+// ─── CATALOG MANAGEMENT ──────────────────────────────────────────────────────
+
+// GET /api/admin/catalog/parts — paginated master_parts list for admin console
+router.get('/catalog/parts', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const { q, status, limit = 50, offset = 0 } = req.query;
+    const where = {};
+    if (status) where.status = status;
+    if (q) {
+      where.OR = [
+        { partName: { contains: q, mode: 'insensitive' } },
+        { primaryOemNumber: { contains: q, mode: 'insensitive' } },
+        { brand: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+    const [parts, total] = await Promise.all([
+      prisma.masterPart.findMany({
+        where,
+        select: {
+          masterPartId: true, partName: true, brand: true,
+          primaryOemNumber: true, categoryL1: true, categoryL2: true,
+          hsnCode: true, gstRate: true, unitOfSale: true,
+          status: true, source: true, createdAt: true,
+          _count: { select: { inventory: true, fitments: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+      }),
+      prisma.masterPart.count({ where }),
+    ]);
+    res.json({ success: true, data: parts, total });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/catalog/bulk-import — upsert master_parts from Excel import
+// Body: { parts: [{ partName, oemNumber, brand?, categoryL1?, mrp?, buyPrice?, supplier? }] }
+// Accepts up to 1000 records per request (batch in batches of 500 from frontend)
+router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const { parts } = req.body;
+    if (!Array.isArray(parts) || parts.length === 0) {
+      return res.status(400).json({ success: false, error: { code: 'EMPTY_BATCH', message: 'parts array is required and must not be empty' } });
+    }
+    if (parts.length > 1000) {
+      return res.status(400).json({ success: false, error: { code: 'BATCH_TOO_LARGE', message: 'Maximum 1000 parts per request. Use batching.' } });
+    }
+
+    let created = 0, updated = 0, skipped = 0;
+    const errors = [];
+
+    for (const p of parts) {
+      try {
+        if (!p.partName?.trim() && !p.oemNumber) { skipped++; continue; }
+
+        const oemNumber = p.oemNumber ? String(p.oemNumber).trim() : null;
+
+        // Build alternate OEM numbers array
+        const altOems = Array.isArray(p.alternateOemNumbers)
+          ? p.alternateOemNumbers.map(s => String(s).trim()).filter(Boolean)
+          : [];
+        const allOems = oemNumber
+          ? [oemNumber, ...altOems.filter(o => o !== oemNumber)]
+          : altOems;
+
+        // Build specifications JSON (price references from supplier)
+        const specs = {};
+        if (p.mrp != null)       specs.mrp      = parseFloat(p.mrp);
+        if (p.buyPrice != null)  specs.buyPrice = parseFloat(p.buyPrice);
+        const specsJson = Object.keys(specs).length > 0 ? specs : undefined;
+
+        // Upsert: match on primaryOemNumber if provided; otherwise always create
+        if (oemNumber) {
+          const existing = await prisma.masterPart.findFirst({
+            where: { primaryOemNumber: oemNumber },
+            select: { masterPartId: true, oemNumbers: true, specifications: true },
+          });
+
+          if (existing) {
+            // Update non-null incoming fields (preserve existing data)
+            const updateData = {};
+            if (p.partName?.trim()) updateData.partName = p.partName.trim();
+            if (p.brand)       updateData.brand       = p.brand;
+            if (p.categoryL1)  updateData.categoryL1  = p.categoryL1;
+            if (p.categoryL2)  updateData.categoryL2  = p.categoryL2;
+            if (p.categoryL3)  updateData.categoryL3  = p.categoryL3;
+            if (p.hsnCode)     updateData.hsnCode     = p.hsnCode;
+            if (p.gstRate != null) updateData.gstRate = parseFloat(p.gstRate);
+            if (p.unit)        updateData.unitOfSale  = p.unit;
+            if (p.description) updateData.description = p.description;
+            if (p.weightGrams != null) updateData.weightGrams = parseInt(p.weightGrams);
+            if (specsJson) {
+              // Merge with existing specifications
+              updateData.specifications = { ...(existing.specifications || {}), ...specsJson };
+            }
+            // Merge new OEM numbers into the existing array
+            if (altOems.length > 0) {
+              const merged = [...new Set([...(existing.oemNumbers || []), ...altOems])];
+              if (merged.length !== (existing.oemNumbers || []).length) {
+                updateData.oemNumbers = merged;
+              }
+            }
+            if (Object.keys(updateData).length > 0) {
+              await prisma.masterPart.update({ where: { masterPartId: existing.masterPartId }, data: updateData });
+              updated++;
+            } else {
+              skipped++;
+            }
+            continue;
+          }
+        }
+
+        // Create new master part
+        await prisma.masterPart.create({
+          data: {
+            partName: (p.partName || p.oemNumber).trim(),
+            primaryOemNumber: oemNumber,
+            oemNumbers: allOems,
+            brand: p.brand || null,
+            categoryL1: p.categoryL1 || null,
+            categoryL2: p.categoryL2 || null,
+            categoryL3: p.categoryL3 || null,
+            hsnCode: p.hsnCode || null,
+            gstRate: p.gstRate != null ? parseFloat(p.gstRate) : 18.00,
+            unitOfSale: p.unit || 'Piece',
+            description: p.description || null,
+            weightGrams: p.weightGrams != null ? parseInt(p.weightGrams) : null,
+            specifications: specsJson || null,
+            status: 'VERIFIED',
+            source: 'SUPPLIER_IMPORT',
+            verifiedAt: new Date(),
+          },
+        });
+        created++;
+      } catch (rowErr) {
+        errors.push({ oemNumber: p.oemNumber, error: rowErr.message });
+        skipped++;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: { created, updated, skipped, errors: errors.slice(0, 20), total: parts.length },
+    });
+  } catch (err) { next(err); }
+});
+
+// GET /api/admin/catalog/stats — quick catalog statistics
+router.get('/catalog/stats', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const [total, verified, pending, rejected] = await Promise.all([
+      prisma.masterPart.count(),
+      prisma.masterPart.count({ where: { status: 'VERIFIED' } }),
+      prisma.masterPart.count({ where: { status: 'PENDING' } }),
+      prisma.masterPart.count({ where: { status: 'REJECTED' } }),
+    ]);
+    res.json({ success: true, data: { total, verified, pending, rejected } });
+  } catch (err) { next(err); }
+});
+
 export default router;

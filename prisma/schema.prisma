@@ -70,14 +70,15 @@ model User {
   customerProfile    CustomerProfile?
   addresses          CustomerAddress[]
   garage             CustomerVehicle[]
-  shopUsers          ShopUser[]
-  adminProfile       AdminProfile?
-  createdInvoices    Invoice[]            @relation("InvoiceCreatedBy")
-  createdMovements   Movement[]           @relation("MovementCreatedBy")
-  createdJobCards    JobCard[]            @relation("JobCardCreatedBy")
-  createdPurchaseOrders PurchaseOrder[]   @relation("PurchaseOrderCreatedBy")
-  marketplaceOrders  MarketplaceOrder[]   @relation("OrderCustomer")
-  reviews            MarketplaceReview[]
+  shopUsers             ShopUser[]
+  adminProfile          AdminProfile?
+  createdInvoices       Invoice[]            @relation("InvoiceCreatedBy")
+  createdMovements      Movement[]           @relation("MovementCreatedBy")
+  createdJobCards       JobCard[]            @relation("JobCardCreatedBy")
+  createdPurchaseOrders PurchaseOrder[]      @relation("PurchaseOrderCreatedBy")
+  marketplaceOrders     MarketplaceOrder[]   @relation("OrderCustomer")
+  reviews               MarketplaceReview[]
+  confirmFitRequests    ConfirmFitRequest[]
 
   @@map("users")
 }
@@ -181,8 +182,12 @@ model UserSettings {
 model CustomerProfile {
   id            String   @id @default(uuid())
   userId        Int      @unique @map("user_id")
+  // INDIVIDUAL | MECHANIC | FLEET_MANAGER
+  profileType   String   @default("INDIVIDUAL") @map("profile_type")
   walletBalance Decimal  @default(0) @map("wallet_balance") @db.Decimal(10, 2)
   loyaltyPoints Int      @default(0) @map("loyalty_points")
+  totalOrders   Int      @default(0) @map("total_orders")
+  totalSpent    Decimal  @default(0) @map("total_spent") @db.Decimal(12, 2)
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
   user          User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
@@ -225,6 +230,7 @@ model CustomerVehicle {
   year           Int
   fuelType       String?  @map("fuel_type")
   registrationNo String?  @map("registration_no")
+  purchaseYear   Int?     @map("purchase_year")
   isDefault      Boolean  @default(false) @map("is_default")
   createdAt      DateTime @default(now()) @map("created_at")
   user           User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
@@ -255,37 +261,47 @@ model AdminProfile {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model Shop {
-  shopId           String    @id @default(uuid()) @map("shop_id")
-  name             String
-  ownerName        String?   @map("owner_name")
-  phone            String    @unique
-  email            String?
-  gstin            String?
-  address          String?
-  city             String?
-  state            String?
-  pincode          String?
-  latitude         Decimal?  @db.Decimal(9, 6)
-  longitude        Decimal?  @db.Decimal(9, 6)
-  shopDescription  String?   @map("shop_description")
-  logoUrl          String?   @map("logo_url")
-  isVerified       Boolean   @default(false) @map("is_verified")
-  isActive         Boolean   @default(true) @map("is_active")
+  shopId              String    @id @default(uuid()) @map("shop_id")
+  name                String
+  ownerName           String?   @map("owner_name")
+  phone               String    @unique
+  email               String?
+  gstin               String?
+  panNumber           String?   @map("pan_number")
+  // 2-digit GST state code (e.g. "36" for Telangana) — used to split CGST+SGST vs IGST
+  stateCode           String?   @map("state_code")
+  address             String?
+  city                String?
+  state               String?
+  pincode             String?
+  latitude            Decimal?  @db.Decimal(9, 6)
+  longitude           Decimal?  @db.Decimal(9, 6)
+  deliveryRadiusKm    Int?      @default(10) @map("delivery_radius_km")
+  shopDescription     String?   @map("shop_description")
+  logoUrl             String?   @map("logo_url")
+  // Bank details for marketplace payouts
+  bankAccountNumber   String?   @map("bank_account_number")
+  bankIfsc            String?   @map("bank_ifsc")
+  bankAccountName     String?   @map("bank_account_name")
+  isVerified          Boolean   @default(false) @map("is_verified")
+  isActive            Boolean   @default(true) @map("is_active")
   // FREE | STARTER | PRO | ENTERPRISE
-  plan             String    @default("FREE")
-  planExpiresAt    DateTime? @map("plan_expires_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  plan                String    @default("FREE")
+  planExpiresAt       DateTime? @map("plan_expires_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  users             User[]
-  shopUsers         ShopUser[]
-  inventory         ShopInventory[]
-  movements         Movement[]
-  invoices          Invoice[]
-  purchaseOrders    PurchaseOrder[]
-  parties           Party[]
-  jobCards          JobCard[]
-  marketplaceOrders MarketplaceOrder[]
+  users               User[]
+  shopUsers           ShopUser[]
+  inventory           ShopInventory[]
+  movements           Movement[]
+  invoices            Invoice[]
+  purchaseOrders      PurchaseOrder[]
+  parties             Party[]
+  partyLedger         PartyLedger[]
+  jobCards            JobCard[]
+  marketplaceOrders   MarketplaceOrder[]
+  confirmFitRequests  ConfirmFitRequest[]
 
   @@map("shops")
 }
@@ -329,38 +345,47 @@ model Vehicle {
   absEquipped  Boolean  @default(false) @map("abs_equipped")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  fitments         PartFitment[]
-  customerVehicles CustomerVehicle[]
+  fitments            PartFitment[]
+  customerVehicles    CustomerVehicle[]
+  confirmFitRequests  ConfirmFitRequest[]
 
   @@index([make, model])
   @@map("vehicles")
 }
 
 model MasterPart {
-  masterPartId    String   @id @default(uuid()) @map("master_part_id")
-  partName        String   @map("part_name")
-  brand           String?
-  categoryL1      String?  @map("category_l1")
-  categoryL2      String?  @map("category_l2")
-  oemNumbers      String[] @default([]) @map("oem_numbers")
-  barcodes        String[] @default([]) @map("barcodes")
-  hsnCode         String?  @map("hsn_code")
-  gstRate         Decimal  @default(18.00) @map("gst_rate") @db.Decimal(5, 2)
-  unitOfSale      String   @default("Piece") @map("unit_of_sale")
-  description     String?
-  specifications  Json?
-  imageUrl        String?  @map("image_url")
-  images          String[] @default([])
-  isUniversal     Boolean  @default(false) @map("is_universal")
-  requiresFitment Boolean  @default(true) @map("requires_fitment")
-  status          String   @default("PENDING")
-  source          String   @default("MANUAL")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  masterPartId       String    @id @default(uuid()) @map("master_part_id")
+  partName           String    @map("part_name")
+  brand              String?
+  categoryL1         String?   @map("category_l1")
+  categoryL2         String?   @map("category_l2")
+  categoryL3         String?   @map("category_l3")
+  // Primary OEM part number (first/canonical — rest go in oemNumbers array)
+  primaryOemNumber   String?   @map("primary_oem_number")
+  oemNumbers         String[]  @default([]) @map("oem_numbers")
+  barcodes           String[]  @default([]) @map("barcodes")
+  hsnCode            String?   @map("hsn_code")
+  gstRate            Decimal   @default(18.00) @map("gst_rate") @db.Decimal(5, 2)
+  unitOfSale         String    @default("Piece") @map("unit_of_sale")
+  weightGrams        Int?      @map("weight_grams")
+  description        String?
+  specifications     Json?
+  imageUrl           String?   @map("image_url")
+  images             String[]  @default([])
+  isUniversal        Boolean   @default(false) @map("is_universal")
+  requiresFitment    Boolean   @default(true) @map("requires_fitment")
+  status             String    @default("PENDING")
+  source             String    @default("MANUAL")
+  // Shop that first contributed this part to the catalog
+  contributedByShopId String?  @map("contributed_by_shop_id")
+  verifiedAt         DateTime? @map("verified_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
-  fitments  PartFitment[]
-  inventory ShopInventory[]
-  reviews   MarketplaceReview[]
+  fitments            PartFitment[]
+  inventory           ShopInventory[]
+  reviews             MarketplaceReview[]
+  confirmFitRequests  ConfirmFitRequest[]
 
   @@index([partName])
   @@index([brand])
@@ -371,15 +396,69 @@ model PartFitment {
   fitmentId    String     @id @default(uuid()) @map("fitment_id")
   masterPartId String     @map("master_part_id")
   vehicleId    String     @map("vehicle_id")
+  // EXACT | COMPATIBLE | UNIVERSAL
   fitType      String     @map("fit_type")
+  // verified | shop_confirmed | unverified
+  confidence   String     @default("unverified")
   position     String?
+  // SHOP_CONFIRMED | USER_REPORTED | OEM | SYSTEM
   source       String     @default("SHOP_CONFIRMED")
   notes        String?
-  masterPart   MasterPart @relation(fields: [masterPartId], references: [masterPartId], onDelete: Cascade)
-  vehicle      Vehicle    @relation(fields: [vehicleId], references: [vehicleId], onDelete: Cascade)
+  // userId of the staff member / admin who verified this fitment
+  verifiedBy   Int?       @map("verified_by")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  masterPart         MasterPart         @relation(fields: [masterPartId], references: [masterPartId], onDelete: Cascade)
+  vehicle            Vehicle            @relation(fields: [vehicleId], references: [vehicleId], onDelete: Cascade)
+  confirmFitRequests ConfirmFitRequest[]
 
   @@unique([masterPartId, vehicleId])
+  @@index([vehicleId])
+  @@index([masterPartId])
   @@map("part_fitments")
+}
+
+model ConfirmFitRequest {
+  id           String    @id @default(uuid())
+  userId       Int       @map("user_id")
+  masterPartId String    @map("master_part_id")
+  shopId       String    @map("shop_id")
+  vehicleId    String?   @map("vehicle_id")
+
+  // Vehicle info captured from user
+  make         String
+  model        String
+  variant      String?
+  year         Int
+  fuelType     String?   @map("fuel_type")
+  regNo        String?   @map("reg_no")
+  userNote     String?   @map("user_note")
+
+  // Shop resolution
+  // PENDING | CONFIRMED | REJECTED
+  status       String    @default("PENDING")
+  shopNote     String?   @map("shop_note")
+  resolvedAt   DateTime? @map("resolved_at")
+  resolvedBy   Int?      @map("resolved_by")
+
+  // Once shop confirms, auto-save to PartFitment
+  savedToFitments Boolean   @default(false) @map("saved_to_fitments")
+  fitmentId       String?   @map("fitment_id")
+
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user       User        @relation(fields: [userId], references: [userId])
+  masterPart MasterPart  @relation(fields: [masterPartId], references: [masterPartId])
+  shop       Shop        @relation(fields: [shopId], references: [shopId])
+  vehicle    Vehicle?    @relation(fields: [vehicleId], references: [vehicleId])
+  fitment    PartFitment? @relation(fields: [fitmentId], references: [fitmentId])
+
+  @@index([userId])
+  @@index([shopId])
+  @@index([masterPartId])
+  @@map("confirm_fit_requests")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -395,7 +474,12 @@ model ShopInventory {
   stockQty              Int       @default(0) @map("stock_qty")
   reservedQty           Int       @default(0) @map("reserved_qty")
   minStockAlert         Int       @default(5) @map("min_stock_alert")
+  maxStockLevel         Int?      @map("max_stock_level")
   rackLocation          String?   @map("rack_location")
+  // Shop's own name override for the part (if different from MasterPart.partName)
+  customPartName        String?   @map("custom_part_name")
+  // Shop-specific barcode (sticker/label printed in-store)
+  barcode               String?
   shopSpecificNotes     String?   @map("shop_specific_notes")
   isMarketplaceListed   Boolean   @default(false) @map("is_marketplace_listed")
   lastPurchasedAt       DateTime? @map("last_purchased_at")
@@ -419,20 +503,24 @@ model ShopInventory {
 
 // Immutable stock ledger — INSERT ONLY, never UPDATE or DELETE rows.
 model Movement {
-  movementId  String   @id @default(uuid()) @map("movement_id")
-  shopId      String   @map("shop_id")
-  inventoryId String   @map("inventory_id")
-  createdBy   Int?     @map("created_by")
-  type        String
-  qty         Int
-  unitPrice   Decimal? @map("unit_price") @db.Decimal(10, 2)
-  totalAmount Decimal? @map("total_amount") @db.Decimal(10, 2)
-  gstAmount   Decimal? @map("gst_amount") @db.Decimal(10, 2)
-  profit      Decimal? @db.Decimal(10, 2)
-  invoiceId   String?  @map("invoice_id")
-  partyId     String?  @map("party_id")
-  notes       String?
-  createdAt   DateTime @default(now()) @map("created_at")
+  movementId    String   @id @default(uuid()) @map("movement_id")
+  shopId        String   @map("shop_id")
+  inventoryId   String   @map("inventory_id")
+  createdBy     Int?     @map("created_by")
+  type          String
+  qty           Int
+  unitPrice     Decimal? @map("unit_price") @db.Decimal(10, 2)
+  gstRate       Decimal? @map("gst_rate") @db.Decimal(5, 2)
+  taxableAmount Decimal? @map("taxable_amount") @db.Decimal(10, 2)
+  totalAmount   Decimal? @map("total_amount") @db.Decimal(10, 2)
+  gstAmount     Decimal? @map("gst_amount") @db.Decimal(10, 2)
+  profit        Decimal? @db.Decimal(10, 2)
+  invoiceId     String?  @map("invoice_id")
+  partyId       String?  @map("party_id")
+  // External reference: bill number, PO number, challan number, etc.
+  referenceNumber String? @map("reference_number")
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
 
   shop      Shop          @relation(fields: [shopId], references: [shopId])
   inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
@@ -459,6 +547,8 @@ model Party {
   address     String?
   type        String   @default("CUSTOMER")
   creditLimit Decimal  @default(0) @map("credit_limit") @db.Decimal(10, 2)
+  // Number of days credit is allowed before it becomes overdue
+  creditDays  Int      @default(30) @map("credit_days")
   outstanding Decimal  @default(0) @db.Decimal(10, 2)
   notes       String?
   isActive    Boolean  @default(true) @map("is_active")
@@ -469,9 +559,39 @@ model Party {
   invoices       Invoice[]
   movements      Movement[]
   purchaseOrders PurchaseOrder[]
+  ledgerEntries  PartyLedger[]
 
   @@index([shopId])
   @@map("parties")
+}
+
+// Udhaar ledger — immutable credit/debit trail per party.
+// Every credit sale, payment received, and adjustment creates a row here.
+model PartyLedger {
+  ledgerId      String   @id @default(uuid()) @map("ledger_id")
+  shopId        String   @map("shop_id")
+  partyId       String   @map("party_id")
+  // SALE_CREDIT | PAYMENT_RECEIVED | RETURN_CREDIT | ADJUSTMENT | OPENING_BALANCE
+  entryType     String   @map("entry_type")
+  // Positive = amount party owes shop (debit); Negative = shop owes party (credit)
+  debitAmount   Decimal  @default(0) @map("debit_amount") @db.Decimal(10, 2)
+  creditAmount  Decimal  @default(0) @map("credit_amount") @db.Decimal(10, 2)
+  // Running balance after this entry (positive = party owes shop)
+  balanceAfter  Decimal  @map("balance_after") @db.Decimal(10, 2)
+  invoiceId     String?  @map("invoice_id")
+  referenceNo   String?  @map("reference_no")
+  notes         String?
+  // Staff member who recorded this entry
+  createdBy     Int?     @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  shop    Shop    @relation(fields: [shopId], references: [shopId])
+  party   Party   @relation(fields: [partyId], references: [partyId])
+  invoice Invoice? @relation(fields: [invoiceId], references: [invoiceId])
+
+  @@index([partyId, createdAt(sort: Desc)])
+  @@index([shopId, createdAt(sort: Desc)])
+  @@map("party_ledger")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -484,9 +604,13 @@ model Invoice {
   shopId         String   @map("shop_id")
   partyId        String?  @map("party_id")
   createdBy      Int?     @map("created_by")
+  // RETAIL | CREDIT | ESTIMATE | RETURN | WORKSHOP
+  invoiceType    String   @default("RETAIL") @map("invoice_type")
   partyName      String?  @map("party_name")
   partyPhone     String?  @map("party_phone")
   partyGstin     String?  @map("party_gstin")
+  // Separate billing address (if different from party address)
+  billingAddress String?  @map("billing_address")
   subtotal       Decimal  @db.Decimal(10, 2)
   discountAmount Decimal  @default(0) @map("discount_amount") @db.Decimal(10, 2)
   taxableAmount  Decimal  @map("taxable_amount") @db.Decimal(10, 2)
@@ -499,18 +623,27 @@ model Invoice {
   upiAmount      Decimal? @map("upi_amount") @db.Decimal(10, 2)
   creditAmount   Decimal? @map("credit_amount") @db.Decimal(10, 2)
   paidAmount     Decimal  @default(0) @map("paid_amount") @db.Decimal(10, 2)
+  // True when full or partial credit was extended (links to PartyLedger)
+  isCreditSale   Boolean  @default(false) @map("is_credit_sale")
+  // Set when this invoice was generated from a marketplace order
+  marketplaceOrderId String? @map("marketplace_order_id")
+  // UPI transaction reference ID captured at POS
+  upiReference   String?  @map("upi_reference")
   pdfUrl         String?  @map("pdf_url")
+  // Timestamp when the PDF/link was sent via WhatsApp
+  whatsappSentAt DateTime? @map("whatsapp_sent_at")
   status         String   @default("PAID")
   notes          String?
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  shop     Shop             @relation(fields: [shopId], references: [shopId])
-  party    Party?           @relation(fields: [partyId], references: [partyId])
-  creator  User?            @relation("InvoiceCreatedBy", fields: [createdBy], references: [userId])
-  items    InvoiceItem[]
-  movements Movement[]
-  payments InvoicePayment[]
+  shop          Shop             @relation(fields: [shopId], references: [shopId])
+  party         Party?           @relation(fields: [partyId], references: [partyId])
+  creator       User?            @relation("InvoiceCreatedBy", fields: [createdBy], references: [userId])
+  items         InvoiceItem[]
+  movements     Movement[]
+  payments      InvoicePayment[]
+  ledgerEntries PartyLedger[]
 
   @@index([shopId, createdAt(sort: Desc)])
   @@map("invoices")
@@ -673,26 +806,36 @@ model JobCardItem {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model MarketplaceOrder {
-  orderId             String   @id @default(uuid()) @map("order_id")
-  orderNumber         String   @unique @map("order_number")
-  customerId          Int?     @map("customer_id")
-  customerVehicleId   String?  @map("customer_vehicle_id")
-  shopId              String   @map("shop_id")
-  customerName        String?  @map("customer_name")
-  customerPhone       String   @map("customer_phone")
-  deliveryAddressId   String?  @map("delivery_address_id")
-  deliveryAddress     String?  @map("delivery_address")
-  deliveryFee         Decimal  @default(0) @map("delivery_fee") @db.Decimal(10, 2)
-  subtotal            Decimal  @db.Decimal(10, 2)
-  total               Decimal  @db.Decimal(10, 2)
-  paymentMode         String?  @map("payment_mode")
-  razorpayOrderId     String?  @map("razorpay_order_id")
-  razorpayPaymentId   String?  @map("razorpay_payment_id")
-  status              String   @default("PENDING")
-  cancelReason        String?  @map("cancel_reason")
-  notes               String?
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
+  orderId              String    @id @default(uuid()) @map("order_id")
+  orderNumber          String    @unique @map("order_number")
+  customerId           Int?      @map("customer_id")
+  customerVehicleId    String?   @map("customer_vehicle_id")
+  shopId               String    @map("shop_id")
+  customerName         String?   @map("customer_name")
+  customerPhone        String    @map("customer_phone")
+  deliveryAddressId    String?   @map("delivery_address_id")
+  deliveryAddress      String?   @map("delivery_address")
+  deliveryFee          Decimal   @default(0) @map("delivery_fee") @db.Decimal(10, 2)
+  subtotal             Decimal   @db.Decimal(10, 2)
+  total                Decimal   @db.Decimal(10, 2)
+  paymentMode          String?   @map("payment_mode")
+  razorpayOrderId      String?   @map("razorpay_order_id")
+  razorpayPaymentId    String?   @map("razorpay_payment_id")
+  // PENDING | PAID | FAILED | REFUNDED
+  paymentStatus        String    @default("PENDING") @map("payment_status")
+  // Order lifecycle: PENDING | CONFIRMED | PACKED | SHIPPED | DELIVERED | CANCELLED | RETURNED
+  status               String    @default("PENDING")
+  estimatedDeliveryAt  DateTime? @map("estimated_delivery_at")
+  deliveredAt          DateTime? @map("delivered_at")
+  cancelReason         String?   @map("cancel_reason")
+  // Marketplace payout fields
+  commissionRate       Decimal   @default(0) @map("commission_rate") @db.Decimal(5, 2)
+  payoutAmount         Decimal?  @map("payout_amount") @db.Decimal(10, 2)
+  // PENDING | PROCESSING | PAID | HELD
+  payoutStatus         String    @default("PENDING") @map("payout_status")
+  notes                String?
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   customer        User?            @relation("OrderCustomer", fields: [customerId], references: [userId])
   customerVehicle CustomerVehicle? @relation(fields: [customerVehicleId], references: [id])

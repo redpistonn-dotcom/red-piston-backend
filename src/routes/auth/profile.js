@@ -73,10 +73,12 @@ router.get('/me', authenticate, async (req, res, next) => {
   }
 });
 
+const VALID_PROFILE_TYPES = ['INDIVIDUAL', 'MECHANIC', 'FLEET_MANAGER'];
+
 // PATCH /api/auth/me — update basic user info
 router.patch('/me', authenticate, async (req, res, next) => {
   try {
-    const { name, email, avatarUrl } = req.body;
+    const { name, email, avatarUrl, profileType } = req.body;
     const updateData = {};
 
     if (name !== undefined) {
@@ -112,18 +114,31 @@ router.patch('/me', authenticate, async (req, res, next) => {
       updateData.avatarUrl = avatarUrl;
     }
 
-    if (Object.keys(updateData).length === 0) {
+    // profileType is stored in customer_profiles, not on the user record itself
+    const shouldUpsertProfile =
+      profileType &&
+      VALID_PROFILE_TYPES.includes(profileType) &&
+      req.user.role === 'CUSTOMER';
+
+    if (Object.keys(updateData).length === 0 && !shouldUpsertProfile) {
       return res.status(400).json({
         success: false,
         error: { code: 'NO_CHANGES', message: 'No fields to update' },
       });
     }
 
-    const updated = await prisma.user.update({
-      where: { userId: req.user.userId },
-      data: updateData,
-      include: { shop: true, userType: true },
-    });
+    const [updated] = await Promise.all([
+      Object.keys(updateData).length > 0
+        ? prisma.user.update({ where: { userId: req.user.userId }, data: updateData, include: { shop: true, userType: true } })
+        : prisma.user.findUnique({ where: { userId: req.user.userId }, include: { shop: true, userType: true } }),
+      shouldUpsertProfile
+        ? prisma.customerProfile.upsert({
+            where:  { userId: req.user.userId },
+            update: { profileType },
+            create: { userId: req.user.userId, profileType },
+          })
+        : Promise.resolve(),
+    ]);
 
     res.json({ success: true, data: formatUserResponse(updated) });
   } catch (err) {

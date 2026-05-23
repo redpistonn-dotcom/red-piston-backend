@@ -66,7 +66,7 @@ router.get('/browse', async (req, res, next) => {
       partWhere.OR = [
         { partName:  { contains: q.trim(), mode: 'insensitive' } },
         { brand:     { contains: q.trim(), mode: 'insensitive' } },
-        { oemNumber: { contains: q.trim(), mode: 'insensitive' } },
+        { primaryOemNumber: { contains: q.trim(), mode: 'insensitive' } },
         { categoryL1:{ contains: q.trim(), mode: 'insensitive' } },
       ];
     }
@@ -161,7 +161,7 @@ router.get('/browse', async (req, res, next) => {
         categoryL2:      part.categoryL2,
         imageUrl:        part.imageUrl,
         images:          part.images,
-        oemNumber:       part.oemNumber,
+        primaryOemNumber: part.primaryOemNumber,
         oemNumbers:      part.oemNumbers,
         hsnCode:         part.hsnCode,
         gstRate:         Number(part.gstRate),
@@ -314,7 +314,7 @@ router.get('/search', async (req, res, next) => {
       status: 'VERIFIED',
       OR: [
         { partName: { contains: q, mode: 'insensitive' } },
-        { oemNumber: { contains: q, mode: 'insensitive' } },
+        { primaryOemNumber: { contains: q, mode: 'insensitive' } },
       ],
     };
     if (vehicle_id) {
@@ -367,10 +367,93 @@ router.get('/search', async (req, res, next) => {
   }
 });
 
+// ─── GET /api/marketplace/orders — customer's order history ──────────────────
+router.get('/orders', authenticate, async (req, res, next) => {
+  try {
+    const { status, limit = 20, offset = 0 } = req.query;
+    const where = { customerId: req.user.userId };
+    if (status) where.status = status;
+
+    const [orders, total] = await Promise.all([
+      prisma.marketplaceOrder.findMany({
+        where,
+        include: {
+          items: { include: { inventory: { include: { masterPart: { select: { partName: true, imageUrl: true, brand: true } } } } } },
+          shop:  { select: { name: true, phone: true, address: true, city: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take:    parseInt(limit),
+        skip:    parseInt(offset),
+      }),
+      prisma.marketplaceOrder.count({ where }),
+    ]);
+
+    res.json({ success: true, data: { orders, total } });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/marketplace/orders/shop — shop's incoming marketplace orders ───
+router.get('/orders/shop', authenticate, async (req, res, next) => {
+  try {
+    if (!req.user.shopId) return res.status(403).json({ error: 'No shop associated' });
+    const { status, limit = 30, offset = 0 } = req.query;
+    const where = { shopId: req.user.shopId };
+    if (status) where.status = status;
+
+    const [orders, total] = await Promise.all([
+      prisma.marketplaceOrder.findMany({
+        where,
+        include: {
+          items: { include: { inventory: { include: { masterPart: { select: { partName: true, brand: true } } } } } },
+          customer: { select: { name: true, phone: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take:    parseInt(limit),
+        skip:    parseInt(offset),
+      }),
+      prisma.marketplaceOrder.count({ where }),
+    ]);
+
+    res.json({ success: true, data: { orders, total } });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/marketplace/orders/:id — order detail ──────────────────────────
+router.get('/orders/:id', authenticate, async (req, res, next) => {
+  try {
+    const order = await prisma.marketplaceOrder.findUnique({
+      where:   { orderId: req.params.id },
+      include: {
+        items:          { include: { inventory: { include: { masterPart: true } } } },
+        shop:           { select: { name: true, phone: true, address: true, city: true, logoUrl: true } },
+        customer:       { select: { name: true, phone: true } },
+        customerVehicle: true,
+        deliveryAddr:   true,
+      },
+    });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // Allow customer who owns it, or the shop, or admin
+    const userId  = req.user.userId;
+    const shopId  = req.user.shopId;
+    const isAdmin = req.user.role === 'PLATFORM_ADMIN';
+
+    if (!isAdmin && order.customerId !== userId && order.shopId !== shopId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    res.json({ success: true, order });
+  } catch (err) { next(err); }
+});
+
 // POST /api/marketplace/orders
 router.post('/orders', authenticate, async (req, res, next) => {
   try {
-    const { items, customerName, deliveryAddress } = req.body;
+    const {
+      items, customerName, deliveryAddress, deliveryAddressId,
+      paymentMode, customerVehicleId,
+    } = req.body;
+
     if (!items || items.length === 0) return res.status(400).json({ error: 'No items' });
 
     // Validate stock
@@ -381,7 +464,6 @@ router.post('/orders', authenticate, async (req, res, next) => {
       }
     }
 
-    const subtotal = items.reduce((sum, i) => sum + i.unitPrice * i.qty, 0);
     const orderNumber = `ORD${Date.now()}`;
 
     // Group items by shop
@@ -396,22 +478,28 @@ router.post('/orders', authenticate, async (req, res, next) => {
         const shopSubtotal = shopItems.reduce((sum, i) => sum + i.unitPrice * i.qty, 0);
         const order = await prisma.marketplaceOrder.create({
           data: {
-            orderNumber: `${orderNumber}-${shopId.slice(0, 6)}`,
-            customerId: req.user.userId,
-            customerPhone: req.user.phone,
-            customerName: customerName || req.user.name,
+            orderNumber:       `${orderNumber}-${shopId.slice(0, 6)}`,
+            customerId:        req.user.userId,
+            customerPhone:     req.user.phone || '',
+            customerName:      customerName || req.user.name || null,
             shopId,
-            subtotal: shopSubtotal,
-            total: shopSubtotal,
-            deliveryAddress,
-            status: 'PENDING',
+            subtotal:          shopSubtotal,
+            total:             shopSubtotal,
+            deliveryAddress:   deliveryAddress   || null,
+            deliveryAddressId: deliveryAddressId || null,
+            paymentMode:       paymentMode       || null,
+            customerVehicleId: customerVehicleId || null,
+            paymentStatus:     'PENDING',
+            status:            'PENDING',
+            commissionRate:    5.00, // default 5% — can be configured per shop plan
             items: {
               create: shopItems.map(i => ({
                 inventoryId: i.inventoryId,
-                partName: i.partName,
-                qty: i.qty,
-                unitPrice: i.unitPrice,
-                total: i.unitPrice * i.qty,
+                partName:    i.partName    || 'Part',
+                brand:       i.brand       || null,
+                qty:         i.qty,
+                unitPrice:   i.unitPrice,
+                total:       i.unitPrice * i.qty,
               })),
             },
           },
@@ -422,7 +510,7 @@ router.post('/orders', authenticate, async (req, res, next) => {
         for (const item of shopItems) {
           await prisma.shopInventory.update({
             where: { inventoryId: item.inventoryId },
-            data: { reservedQty: { increment: item.qty } },
+            data:  { reservedQty: { increment: item.qty } },
           });
         }
 
@@ -431,38 +519,106 @@ router.post('/orders', authenticate, async (req, res, next) => {
     );
 
     res.json({ success: true, orders, orderNumber });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
 // PUT /api/marketplace/orders/:id/status
 router.put('/orders/:id/status', authenticate, async (req, res, next) => {
   try {
-    const { status } = req.body;
-    const validStatuses = ['CONFIRMED', 'PACKED', 'DISPATCHED', 'DELIVERED', 'CANCELLED'];
-    if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    const { status, estimatedDeliveryAt, cancelReason } = req.body;
+    const validStatuses = ['CONFIRMED', 'PACKED', 'SHIPPED', 'DELIVERED', 'CANCELLED', 'RETURNED'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Must be: ${validStatuses.join(', ')}` });
+    }
 
     const order = await prisma.marketplaceOrder.findUnique({
-      where: { orderId: req.params.id },
+      where:   { orderId: req.params.id },
       include: { items: true },
     });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    // Only the shop owner can update the status (or admin)
     if (req.user.role !== 'PLATFORM_ADMIN' && order.shopId !== req.user.shopId) {
       return res.status(403).json({ error: 'Not authorized' });
     }
 
-    await prisma.marketplaceOrder.update({
-      where: { orderId: req.params.id },
-      data: { status },
-    });
+    const data = { status };
+    if (status === 'DELIVERED')         data.deliveredAt = new Date();
+    if (estimatedDeliveryAt)            data.estimatedDeliveryAt = new Date(estimatedDeliveryAt);
+    if (cancelReason && status === 'CANCELLED') data.cancelReason = cancelReason;
+
+    // When delivered: deduct reserved stock, update payoutAmount
+    if (status === 'DELIVERED') {
+      await prisma.$transaction(async (tx) => {
+        for (const item of order.items) {
+          await tx.shopInventory.update({
+            where: { inventoryId: item.inventoryId },
+            data:  {
+              stockQty:    { decrement: item.qty },
+              reservedQty: { decrement: item.qty },
+              lastSoldAt:  new Date(),
+            },
+          });
+        }
+
+        // Calculate payout
+        const commission   = Number(order.commissionRate);
+        const payoutAmount = Number(order.total) * (1 - commission / 100);
+
+        await tx.marketplaceOrder.update({
+          where: { orderId: req.params.id },
+          data:  {
+            ...data,
+            payoutAmount,
+            payoutStatus: 'PENDING',
+          },
+        });
+      });
+    } else if (status === 'CANCELLED') {
+      // Release reserved stock on cancel
+      await prisma.$transaction(async (tx) => {
+        for (const item of order.items) {
+          await tx.shopInventory.update({
+            where: { inventoryId: item.inventoryId },
+            data:  { reservedQty: { decrement: item.qty } },
+          });
+        }
+        await tx.marketplaceOrder.update({ where: { orderId: req.params.id }, data });
+      });
+    } else {
+      await prisma.marketplaceOrder.update({ where: { orderId: req.params.id }, data });
+    }
 
     res.json({ success: true, status });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
+});
+
+// PUT /api/marketplace/orders/:id/payment — update payment status (Razorpay webhook)
+router.put('/orders/:id/payment', authenticate, async (req, res, next) => {
+  try {
+    const { paymentStatus, razorpayOrderId, razorpayPaymentId } = req.body;
+    const VALID_PAY_STATUSES = ['PENDING', 'PAID', 'FAILED', 'REFUNDED'];
+
+    if (!paymentStatus || !VALID_PAY_STATUSES.includes(paymentStatus)) {
+      return res.status(400).json({ error: `paymentStatus must be one of: ${VALID_PAY_STATUSES.join(', ')}` });
+    }
+
+    const order = await prisma.marketplaceOrder.findUnique({ where: { orderId: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // Allow: the customer themselves, the shop, or admin
+    const isOwner = order.customerId === req.user.userId || order.shopId === req.user.shopId;
+    if (!isOwner && req.user.role !== 'PLATFORM_ADMIN') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const data = { paymentStatus };
+    if (razorpayOrderId)   data.razorpayOrderId   = razorpayOrderId;
+    if (razorpayPaymentId) data.razorpayPaymentId = razorpayPaymentId;
+    if (paymentStatus === 'PAID') data.status = 'CONFIRMED';
+
+    await prisma.marketplaceOrder.update({ where: { orderId: req.params.id }, data });
+    res.json({ success: true, paymentStatus });
+  } catch (err) { next(err); }
 });
 
 // ─── GET /api/marketplace/catalog/:masterPartId ───────────────────────────────

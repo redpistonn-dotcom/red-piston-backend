@@ -14,6 +14,8 @@ import marketplaceRoutes from './routes/marketplace.js';
 import customerRoutes from './routes/customer.js';
 import staffRoutes from './routes/staff.js';
 import adminRoutes from './routes/admin.js';
+import fitmentRoutes from './routes/fitments.js';
+import shopProfileRoutes from './routes/shop.js';
 import workshopRoutes from './routes/workshop.js';
 import purchaseOrderRoutes from './routes/purchaseOrders.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -58,9 +60,13 @@ app.use('/api/shop/dashboard', dashboardRoutes);
 app.use('/api/marketplace', marketplaceRoutes);
 app.use('/api/customer', customerRoutes);
 app.use('/api/shop/staff', staffRoutes);
+app.use('/api/shop/profile', shopProfileRoutes);
 app.use('/api/shop/workshop', workshopRoutes);
 app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
+// Bulk import needs a larger body — only applied to this path
+app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
 app.use('/api/admin', adminRoutes);
+app.use('/api/fitments', fitmentRoutes);
 
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));

@@ -74,7 +74,7 @@ async function barcodeArrayLookupIds(barcode) {
       FROM   master_parts
       WHERE  barcodes    @> ARRAY[${barcode}]::TEXT[]
          OR  oem_numbers @> ARRAY[${barcode}]::TEXT[]
-         OR  LOWER(oem_number) = LOWER(${barcode})
+         OR  LOWER(primary_oem_number) = LOWER(${barcode})
     `;
     return rows.map(r => r.master_part_id);
   } catch {
@@ -101,7 +101,7 @@ router.post('/lookup', async (req, res, next) => {
       prisma.masterPart.findMany({
         where: {
           OR: [
-            { oemNumber:  { equals: term, mode: 'insensitive' } },
+            { primaryOemNumber: { equals: term, mode: 'insensitive' } },
             { partName:   { contains: term, mode: 'insensitive' } },
             { brand:      { contains: term, mode: 'insensitive' } },
           ],
@@ -168,7 +168,7 @@ router.get('/lookup', async (req, res, next) => {
           OR: [
             { partName:  { contains: term, mode: 'insensitive' } },
             { brand:     { contains: term, mode: 'insensitive' } },
-            { oemNumber: { contains: term, mode: 'insensitive' } },
+            { primaryOemNumber: { contains: term, mode: 'insensitive' } },
           ],
         },
         include: fitmentInclude,
@@ -214,7 +214,7 @@ router.get('/barcode/:barcode', async (req, res, next) => {
       prisma.masterPart.findMany({
         where: {
           OR: [
-            { oemNumber: { equals: bc, mode: 'insensitive' } },
+            { primaryOemNumber: { equals: bc, mode: 'insensitive' } },
             { partName:  { contains: bc, mode: 'insensitive' } },
           ],
         },
@@ -268,7 +268,7 @@ router.get('/search', async (req, res, next) => {
       OR: [
         { partName:  { contains: term, mode: 'insensitive' } },
         { brand:     { contains: term, mode: 'insensitive' } },
-        { oemNumber: { contains: term, mode: 'insensitive' } },
+        { primaryOemNumber: { contains: term, mode: 'insensitive' } },
       ],
       ...(category && category !== 'All' ? { categoryL1: category } : {}),
     };
@@ -324,7 +324,7 @@ router.get('/oem/:oemNumber', async (req, res, next) => {
     const oem = req.params.oemNumber.trim();
     const [textParts, arrayIds] = await Promise.all([
       prisma.masterPart.findMany({
-        where: { oemNumber: { contains: oem, mode: 'insensitive' } },
+        where: { primaryOemNumber: { contains: oem, mode: 'insensitive' } },
         include: { fitments: { include: { vehicle: true } } },
       }),
       arrayLookupIds(oem),
@@ -382,13 +382,12 @@ router.get('/vehicles/:make/models', async (req, res, next) => {
 // ─── POST /api/catalog/contribute ─────────────────────────────────────────────
 // A shop owner contributes a new part that isn't in the catalog.
 // Status starts as PENDING — platform admin reviews and can VERIFY or REJECT.
-// Once VERIFIED it becomes available to all shops via the lookup endpoints.
 router.post('/contribute', authenticate, async (req, res, next) => {
   try {
     const {
-      partName, brand, categoryL1, categoryL2,
-      hsnCode, gstRate, unitOfSale, description,
-      oemNumber,
+      partName, brand, categoryL1, categoryL2, categoryL3,
+      hsnCode, gstRate, unitOfSale, weightGrams, description,
+      primaryOemNumber, oemNumber,
       oemNumbers, barcodes, images, specifications,
     } = req.body;
 
@@ -396,32 +395,35 @@ router.post('/contribute', authenticate, async (req, res, next) => {
       return res.status(400).json({ error: 'Part name is required' });
     }
 
-    // Deduplicate OEM numbers
     const allOems = Array.isArray(oemNumbers) ? oemNumbers : [];
-    if (oemNumber && !allOems.includes(oemNumber)) allOems.unshift(oemNumber);
-    const cleanOems    = [...new Set(allOems.filter(Boolean))];
+    const primaryOem = primaryOemNumber || oemNumber || null;
+    if (primaryOem && !allOems.includes(primaryOem)) allOems.unshift(primaryOem);
+    const cleanOems     = [...new Set(allOems.filter(Boolean))];
     const cleanBarcodes = Array.isArray(barcodes) ? [...new Set(barcodes.filter(Boolean))] : [];
     const cleanImages   = Array.isArray(images)   ? images.filter(Boolean) : [];
 
-    // Create MasterPart using base fields (always supported)
+    const shopId = req.user?.shopId || null;
+
     const part = await prisma.masterPart.create({
       data: {
-        partName:    partName.trim(),
-        brand:       brand?.trim()    || null,
-        categoryL1:  categoryL1       || null,
-        categoryL2:  categoryL2       || null,
-        hsnCode:     hsnCode          || null,
-        gstRate:     gstRate ? parseFloat(gstRate) : 18.00,
-        unitOfSale:  unitOfSale       || 'Piece',
-        description: description      || null,
-        imageUrl:    cleanImages[0]   || null,
-        oemNumber:   cleanOems[0]     || null,
-        status:      'PENDING',
-        source:      'CONTRIBUTED',
+        partName:            partName.trim(),
+        brand:               brand?.trim()    || null,
+        categoryL1:          categoryL1       || null,
+        categoryL2:          categoryL2       || null,
+        categoryL3:          categoryL3       || null,
+        primaryOemNumber:    primaryOem,
+        hsnCode:             hsnCode          || null,
+        gstRate:             gstRate ? parseFloat(gstRate) : 18.00,
+        unitOfSale:          unitOfSale       || 'Piece',
+        weightGrams:         weightGrams      ? parseInt(weightGrams) : null,
+        description:         description      || null,
+        imageUrl:            cleanImages[0]   || null,
+        status:              'PENDING',
+        source:              'CONTRIBUTED',
+        contributedByShopId: shopId,
       },
     });
 
-    // Update the new array columns via raw SQL (works before Prisma client is regenerated)
     if (cleanOems.length > 0 || cleanBarcodes.length > 0 || cleanImages.length > 0 || specifications) {
       try {
         const specsJson = specifications ? JSON.stringify(specifications) : null;
@@ -435,15 +437,202 @@ router.post('/contribute', authenticate, async (req, res, next) => {
           WHERE master_part_id = ${part.masterPartId}
         `;
       } catch (rawErr) {
-        // Non-fatal: part is created, array fields just won't be populated yet
         console.warn('[Catalog] Could not set array fields:', rawErr.message);
       }
     }
 
     res.json({ success: true, part });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/catalog/parts — list (admin uses status filter) ─────────────────
+router.get('/parts', authenticate, async (req, res, next) => {
+  try {
+    const { status, category, q, limit = 30, offset = 0 } = req.query;
+    const where = {};
+
+    // Non-admins can only see VERIFIED parts
+    const isAdmin = req.user.role === 'PLATFORM_ADMIN';
+    if (!isAdmin) {
+      where.status = 'VERIFIED';
+    } else if (status) {
+      where.status = status;
+    }
+
+    if (category) where.categoryL1 = { equals: category, mode: 'insensitive' };
+    if (q && q.trim().length >= 2) {
+      where.OR = [
+        { partName: { contains: q.trim(), mode: 'insensitive' } },
+        { brand:    { contains: q.trim(), mode: 'insensitive' } },
+      ];
+    }
+
+    const [parts, total] = await Promise.all([
+      prisma.masterPart.findMany({
+        where,
+        include: fitmentInclude,
+        orderBy: [{ status: 'asc' }, { partName: 'asc' }],
+        take:    parseInt(limit),
+        skip:    parseInt(offset),
+      }),
+      prisma.masterPart.count({ where }),
+    ]);
+
+    res.json({ success: true, parts, total });
+  } catch (err) { next(err); }
+});
+
+// ─── PUT /api/catalog/parts/:id — admin update / approve / reject ─────────────
+router.put('/parts/:masterPartId', authenticate, async (req, res, next) => {
+  try {
+    const isAdmin = req.user.role === 'PLATFORM_ADMIN';
+    const isShopOwner = ['SHOP_OWNER', 'SHOP_STAFF'].includes(req.user.role);
+
+    const part = await prisma.masterPart.findUnique({ where: { masterPartId: req.params.masterPartId } });
+    if (!part) return res.status(404).json({ error: 'Part not found' });
+
+    // Shop owners can only update parts they contributed
+    if (isShopOwner && part.contributedByShopId !== req.user.shopId) {
+      return res.status(403).json({ error: 'You can only edit parts you contributed' });
+    }
+
+    const {
+      partName, brand, categoryL1, categoryL2, categoryL3,
+      hsnCode, gstRate, unitOfSale, weightGrams, description,
+      primaryOemNumber, imageUrl, isUniversal, requiresFitment,
+      status, // admin only
+    } = req.body;
+
+    const data = {};
+    if (partName           !== undefined) data.partName          = partName.trim();
+    if (brand              !== undefined) data.brand             = brand || null;
+    if (categoryL1         !== undefined) data.categoryL1        = categoryL1 || null;
+    if (categoryL2         !== undefined) data.categoryL2        = categoryL2 || null;
+    if (categoryL3         !== undefined) data.categoryL3        = categoryL3 || null;
+    if (hsnCode            !== undefined) data.hsnCode           = hsnCode || null;
+    if (gstRate            !== undefined) data.gstRate           = parseFloat(gstRate);
+    if (unitOfSale         !== undefined) data.unitOfSale        = unitOfSale;
+    if (weightGrams        !== undefined) data.weightGrams       = weightGrams ? parseInt(weightGrams) : null;
+    if (description        !== undefined) data.description       = description || null;
+    if (primaryOemNumber   !== undefined) data.primaryOemNumber  = primaryOemNumber || null;
+    if (imageUrl           !== undefined) data.imageUrl          = imageUrl || null;
+    if (isUniversal        !== undefined) data.isUniversal       = Boolean(isUniversal);
+    if (requiresFitment    !== undefined) data.requiresFitment   = Boolean(requiresFitment);
+
+    // Only admin can change status and set verifiedAt
+    if (isAdmin && status !== undefined) {
+      const VALID_STATUSES = ['PENDING', 'VERIFIED', 'REJECTED'];
+      if (!VALID_STATUSES.includes(status)) {
+        return res.status(400).json({ error: `status must be one of: ${VALID_STATUSES.join(', ')}` });
+      }
+      data.status = status;
+      if (status === 'VERIFIED') data.verifiedAt = new Date();
+    }
+
+    const updated = await prisma.masterPart.update({
+      where: { masterPartId: req.params.masterPartId },
+      data,
+    });
+
+    res.json({ success: true, part: updated });
+  } catch (err) { next(err); }
+});
+
+// ─── Admin vehicle management ─────────────────────────────────────────────────
+
+// POST /api/catalog/vehicles — admin creates a new vehicle
+router.post('/vehicles', authenticate, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'PLATFORM_ADMIN') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    const {
+      make, model, variant, yearFrom, yearTo,
+      fuelType, engineCc, engineCode, transmission,
+      bodyType, vehicleType, absEquipped,
+    } = req.body;
+
+    if (!make || !model || !yearFrom) {
+      return res.status(400).json({ error: 'make, model, yearFrom are required' });
+    }
+
+    const vehicle = await prisma.vehicle.create({
+      data: {
+        make,
+        model,
+        variant:      variant      || null,
+        yearFrom:     parseInt(yearFrom),
+        yearTo:       yearTo       ? parseInt(yearTo)    : null,
+        fuelType:     fuelType     || null,
+        engineCc:     engineCc     ? parseInt(engineCc)  : null,
+        engineCode:   engineCode   || null,
+        transmission: transmission || null,
+        bodyType:     bodyType     || null,
+        vehicleType:  vehicleType  || 'Car',
+        absEquipped:  absEquipped  ? Boolean(absEquipped) : false,
+      },
+    });
+
+    res.status(201).json({ success: true, vehicle });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/catalog/vehicles/:id — admin updates vehicle
+router.put('/vehicles/:vehicleId', authenticate, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'PLATFORM_ADMIN') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const vehicle = await prisma.vehicle.findUnique({ where: { vehicleId: req.params.vehicleId } });
+    if (!vehicle) return res.status(404).json({ error: 'Vehicle not found' });
+
+    const {
+      make, model, variant, yearFrom, yearTo,
+      fuelType, engineCc, engineCode, transmission,
+      bodyType, vehicleType, absEquipped,
+    } = req.body;
+
+    const data = {};
+    if (make         !== undefined) data.make         = make;
+    if (model        !== undefined) data.model        = model;
+    if (variant      !== undefined) data.variant      = variant || null;
+    if (yearFrom     !== undefined) data.yearFrom     = parseInt(yearFrom);
+    if (yearTo       !== undefined) data.yearTo       = yearTo ? parseInt(yearTo) : null;
+    if (fuelType     !== undefined) data.fuelType     = fuelType || null;
+    if (engineCc     !== undefined) data.engineCc     = engineCc ? parseInt(engineCc) : null;
+    if (engineCode   !== undefined) data.engineCode   = engineCode || null;
+    if (transmission !== undefined) data.transmission = transmission || null;
+    if (bodyType     !== undefined) data.bodyType     = bodyType || null;
+    if (vehicleType  !== undefined) data.vehicleType  = vehicleType;
+    if (absEquipped  !== undefined) data.absEquipped  = Boolean(absEquipped);
+
+    const updated = await prisma.vehicle.update({ where: { vehicleId: req.params.vehicleId }, data });
+    res.json({ success: true, vehicle: updated });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/catalog/vehicles/:id — admin removes vehicle (only if no fitments or customer vehicles)
+router.delete('/vehicles/:vehicleId', authenticate, async (req, res, next) => {
+  try {
+    if (req.user.role !== 'PLATFORM_ADMIN') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const [fitmentCount, customerCount] = await Promise.all([
+      prisma.partFitment.count({ where: { vehicleId: req.params.vehicleId } }),
+      prisma.customerVehicle.count({ where: { vehicleId: req.params.vehicleId } }),
+    ]);
+
+    if (fitmentCount > 0 || customerCount > 0) {
+      return res.status(409).json({
+        error: `Cannot delete: vehicle has ${fitmentCount} fitment(s) and ${customerCount} customer garage entry(s)`,
+      });
+    }
+
+    await prisma.vehicle.delete({ where: { vehicleId: req.params.vehicleId } });
+    res.json({ success: true, message: 'Vehicle deleted' });
+  } catch (err) { next(err); }
 });
 
 export default router;

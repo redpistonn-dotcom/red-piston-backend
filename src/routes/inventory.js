@@ -49,7 +49,12 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
 // POST /api/shop/inventory
 router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const { masterPartId, sellingPrice, buyingPrice, stockQty, rackLocation, minStockAlert, isMarketplaceListed } = req.body;
+    const {
+      masterPartId, sellingPrice, buyingPrice, stockQty,
+      rackLocation, minStockAlert, maxStockLevel,
+      customPartName, barcode,
+      shopSpecificNotes, isMarketplaceListed,
+    } = req.body;
     if (!masterPartId || !sellingPrice) {
       return res.status(400).json({ error: 'masterPartId and sellingPrice required' });
     }
@@ -61,14 +66,18 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
 
     const item = await prisma.shopInventory.create({
       data: {
-        shopId: req.shopId,
+        shopId:              req.shopId,
         masterPartId,
-        sellingPrice: parseFloat(sellingPrice),
-        buyingPrice: buyingPrice ? parseFloat(buyingPrice) : null,
-        stockQty: stockQty || 0,
-        rackLocation,
-        minStockAlert: minStockAlert || 5,
-        isMarketplaceListed: isMarketplaceListed || false,
+        sellingPrice:        parseFloat(sellingPrice),
+        buyingPrice:         buyingPrice     ? parseFloat(buyingPrice) : null,
+        stockQty:            stockQty        || 0,
+        rackLocation:        rackLocation    || null,
+        minStockAlert:       minStockAlert   || 5,
+        maxStockLevel:       maxStockLevel   ? parseInt(maxStockLevel) : null,
+        customPartName:      customPartName  || null,
+        barcode:             barcode         || null,
+        shopSpecificNotes:   shopSpecificNotes || null,
+        isMarketplaceListed: isMarketplaceListed ?? true,
       },
       include: { masterPart: true },
     });
@@ -96,22 +105,27 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
 // PUT /api/shop/inventory/:id
 router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const { sellingPrice, buyingPrice, rackLocation, minStockAlert, isMarketplaceListed } = req.body;
+    const {
+      sellingPrice, buyingPrice, rackLocation,
+      minStockAlert, maxStockLevel,
+      customPartName, barcode,
+      shopSpecificNotes, isMarketplaceListed,
+    } = req.body;
 
-    const item = await prisma.shopInventory.findUnique({
-      where: { inventoryId: req.params.id },
-    });
-    if (!item || item.shopId !== req.shopId) {
-      return res.status(404).json({ error: 'Item not found' });
-    }
+    const item = await prisma.shopInventory.findUnique({ where: { inventoryId: req.params.id } });
+    if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
 
     const updated = await prisma.shopInventory.update({
       where: { inventoryId: req.params.id },
       data: {
-        ...(sellingPrice !== undefined && { sellingPrice: parseFloat(sellingPrice) }),
-        ...(buyingPrice !== undefined && { buyingPrice: parseFloat(buyingPrice) }),
-        ...(rackLocation !== undefined && { rackLocation }),
-        ...(minStockAlert !== undefined && { minStockAlert: parseInt(minStockAlert) }),
+        ...(sellingPrice       !== undefined && { sellingPrice:       parseFloat(sellingPrice) }),
+        ...(buyingPrice        !== undefined && { buyingPrice:        parseFloat(buyingPrice) }),
+        ...(rackLocation       !== undefined && { rackLocation }),
+        ...(minStockAlert      !== undefined && { minStockAlert:      parseInt(minStockAlert) }),
+        ...(maxStockLevel      !== undefined && { maxStockLevel:      maxStockLevel ? parseInt(maxStockLevel) : null }),
+        ...(customPartName     !== undefined && { customPartName:     customPartName || null }),
+        ...(barcode            !== undefined && { barcode:            barcode || null }),
+        ...(shopSpecificNotes  !== undefined && { shopSpecificNotes:  shopSpecificNotes || null }),
         ...(isMarketplaceListed !== undefined && { isMarketplaceListed }),
       },
       include: { masterPart: true },
@@ -142,44 +156,56 @@ router.get('/:id/movements', authenticate, requireShopOwner, async (req, res, ne
 // POST /api/shop/inventory/purchase
 router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    // Accept buyingPrice as an alias for unitPrice (frontend sync.js sends buyingPrice)
-    const { inventoryId, partyId, notes } = req.body;
-    const unitPrice = req.body.unitPrice ?? req.body.buyingPrice ?? null;
+    const { inventoryId, partyId, notes, referenceNumber, gstRate } = req.body;
+    const unitPrice      = req.body.unitPrice      ?? req.body.buyingPrice ?? null;
     const newSellingPrice = req.body.newSellingPrice ?? null;
     const qty = parseInt(req.body.qty);
+
     if (!inventoryId || isNaN(qty) || qty <= 0) {
       return res.status(400).json({ error: 'inventoryId and qty (positive integer) required' });
     }
 
-    const item = await prisma.shopInventory.findUnique({ where: { inventoryId } });
+    const item = await prisma.shopInventory.findUnique({
+      where:   { inventoryId },
+      include: { masterPart: { select: { gstRate: true } } },
+    });
     if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
 
-    const totalAmount = unitPrice ? parseFloat(unitPrice) * qty : null;
+    const parsedUnit  = unitPrice ? parseFloat(unitPrice) : null;
+    const parsedGst   = gstRate   ? parseFloat(gstRate)   : (parsedUnit ? parseFloat(item.masterPart?.gstRate || 18) : null);
+    const taxableAmt  = parsedUnit ? parsedUnit * qty : null;
+    const gstAmt      = (taxableAmt && parsedGst) ? taxableAmt * (parsedGst / 100) : null;
+    const totalAmount = taxableAmt ? taxableAmt + (gstAmt || 0) : null;
 
     await prisma.$transaction(async (tx) => {
-      // Record movement
       await tx.movement.create({
         data: {
-          shopId: req.shopId,
+          shopId:          req.shopId,
           inventoryId,
-          type: 'PURCHASE',
+          type:            'PURCHASE',
           qty,
-          unitPrice: unitPrice ? parseFloat(unitPrice) : null,
+          unitPrice:       parsedUnit,
+          gstRate:         parsedGst,
+          taxableAmount:   taxableAmt,
+          gstAmount:       gstAmt,
           totalAmount,
-          partyId,
-          notes,
+          partyId:         partyId         || null,
+          referenceNumber: referenceNumber || null,
+          notes:           notes           || null,
+          createdBy:       req.user.userId,
         },
       });
 
-      // Update cached stock
       await tx.shopInventory.update({
         where: { inventoryId },
-        data: { stockQty: { increment: qty } },
+        data:  {
+          stockQty: { increment: qty },
+          lastPurchasedAt: new Date(),
+        },
       });
 
-      // Update buying price and/or selling price if provided
       const priceUpdates = {};
-      if (unitPrice) priceUpdates.buyingPrice = parseFloat(unitPrice);
+      if (unitPrice)       priceUpdates.buyingPrice  = parseFloat(unitPrice);
       if (newSellingPrice) priceUpdates.sellingPrice = parseFloat(newSellingPrice);
       if (Object.keys(priceUpdates).length > 0) {
         await tx.shopInventory.update({ where: { inventoryId }, data: priceUpdates });
@@ -188,9 +214,38 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
 
     const newStock = await computeStock(inventoryId);
     res.json({ success: true, newStock });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/shop/inventory/low-stock ───────────────────────────────────────
+// Returns all items where stockQty <= minStockAlert
+router.get('/low-stock', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const items = await prisma.shopInventory.findMany({
+      where: {
+        shopId: req.shopId,
+        // stockQty at or below alert threshold
+        stockQty: { lte: prisma.shopInventory.fields.minStockAlert },
+      },
+      include: { masterPart: { select: { partName: true, brand: true, categoryL1: true, imageUrl: true } } },
+      orderBy: { stockQty: 'asc' },
+    });
+
+    // Prisma doesn't support field-to-field comparison in where, use raw filter
+    const lowStock = await prisma.$queryRaw`
+      SELECT
+        si.inventory_id, si.stock_qty, si.min_stock_alert, si.max_stock_level,
+        si.selling_price, si.buying_price, si.rack_location, si.custom_part_name, si.barcode,
+        mp.part_name, mp.brand, mp.category_l1, mp.image_url
+      FROM shop_inventory si
+      JOIN master_parts mp ON mp.master_part_id = si.master_part_id
+      WHERE si.shop_id = ${req.shopId}
+        AND si.stock_qty <= si.min_stock_alert
+      ORDER BY si.stock_qty ASC
+    `;
+
+    res.json({ success: true, items: lowStock, total: lowStock.length });
+  } catch (err) { next(err); }
 });
 
 // POST /api/shop/inventory/bulk-stock-in
@@ -266,15 +321,16 @@ router.post('/bulk-stock-in', authenticate, requireShopOwner, async (req, res, n
           // ── New to shop: create inventory row ──────────────────────────────
           const created = await tx.shopInventory.create({
             data: {
-              shopId:            req.shopId,
+              shopId:              req.shopId,
               masterPartId,
-              sellingPrice:      sellP,
-              buyingPrice:       buyP,
-              stockQty:          qty,
-              rackLocation:      rackLocation || null,
-              minStockAlert:     minAlert,
-              shopSpecificNotes: shopSpecificNotes || null,
-              lastPurchasedAt:   qty > 0 ? new Date() : null,
+              sellingPrice:        sellP,
+              buyingPrice:         buyP,
+              stockQty:            qty,
+              rackLocation:        rackLocation || null,
+              minStockAlert:       minAlert,
+              shopSpecificNotes:   shopSpecificNotes || null,
+              lastPurchasedAt:     qty > 0 ? new Date() : null,
+              isMarketplaceListed: true,
             },
           });
           invId   = created.inventoryId;

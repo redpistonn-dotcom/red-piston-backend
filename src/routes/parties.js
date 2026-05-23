@@ -1,119 +1,365 @@
+/**
+ * parties.js — Udhaar & Credit Management
+ *
+ * Mounted at: /api/shop/parties
+ *
+ * GET    /                         list parties (with outstanding balance)
+ * POST   /                         create party (customer / supplier)
+ * GET    /:id                      get single party
+ * PUT    /:id                      update party details
+ * DELETE /:id                      soft-delete (isActive = false)
+ *
+ * Ledger (immutable udhaar trail):
+ * GET    /:id/ledger               full ledger for a party
+ * POST   /:id/ledger               manually add opening-balance / adjustment
+ * POST   /:id/payment              record a payment received
+ *
+ * Summary:
+ * GET    /summary/overdue          parties whose outstanding is > creditDays old
+ */
+
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
 
 const router = Router();
 
-// GET /api/shop/parties
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const VALID_TYPES = ['CUSTOMER', 'SUPPLIER', 'BOTH'];
+
+/**
+ * Write one PartyLedger row and update Party.outstanding atomically.
+ * Always called inside a Prisma $transaction (tx).
+ */
+async function writeLedgerEntry(tx, { shopId, partyId, entryType, debitAmount = 0, creditAmount = 0, invoiceId = null, referenceNo = null, notes = null, createdBy = null }) {
+  // Get current outstanding to compute balanceAfter
+  const party = await tx.party.findUnique({ where: { partyId }, select: { outstanding: true } });
+  const currentBalance = Number(party.outstanding);
+  const balanceAfter = currentBalance + debitAmount - creditAmount;
+
+  // Write immutable ledger row
+  await tx.partyLedger.create({
+    data: {
+      shopId,
+      partyId,
+      entryType,
+      debitAmount,
+      creditAmount,
+      balanceAfter,
+      invoiceId:   invoiceId   || null,
+      referenceNo: referenceNo || null,
+      notes:       notes       || null,
+      createdBy:   createdBy   || null,
+    },
+  });
+
+  // Update denormalized outstanding cache
+  await tx.party.update({
+    where: { partyId },
+    data:  { outstanding: balanceAfter },
+  });
+
+  return balanceAfter;
+}
+
+// ─── GET / — list parties ─────────────────────────────────────────────────────
 router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const { type } = req.query;
-    const where = { shopId: req.shopId, isActive: true };
-    if (type) where.type = type;
+    const { type, search, includeInactive } = req.query;
+    const where = { shopId: req.shopId };
+
+    if (includeInactive !== 'true') where.isActive = true;
+    if (type && VALID_TYPES.includes(type)) where.type = type;
+    if (search) {
+      where.OR = [
+        { name:  { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+        { gstin: { contains: search, mode: 'insensitive' } },
+      ];
+    }
 
     const parties = await prisma.party.findMany({
       where,
-      orderBy: { name: 'asc' },
+      orderBy: [{ outstanding: 'desc' }, { name: 'asc' }],
     });
-    res.json({ parties });
-  } catch (err) {
-    next(err);
-  }
+
+    res.json({ success: true, parties, total: parties.length });
+  } catch (err) { next(err); }
 });
 
-// POST /api/shop/parties
+// ─── POST / — create party ────────────────────────────────────────────────────
 router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const { name, phone, gstin, address, type, creditLimit, notes } = req.body;
-    if (!name) return res.status(400).json({ error: 'Name required' });
+    const { name, phone, email, gstin, address, type, creditLimit, creditDays, notes, openingBalance } = req.body;
 
-    const party = await prisma.party.create({
-      data: {
-        shopId: req.shopId,
-        name,
-        phone,
-        gstin,
-        address,
-        type: type || 'CUSTOMER',
-        creditLimit: creditLimit ? parseFloat(creditLimit) : 0,
-        notes,
-      },
+    if (!name?.trim()) return res.status(400).json({ success: false, error: { message: 'Party name is required' } });
+
+    const party = await prisma.$transaction(async (tx) => {
+      const p = await tx.party.create({
+        data: {
+          shopId:      req.shopId,
+          name:        name.trim(),
+          phone:       phone       || null,
+          email:       email       || null,
+          gstin:       gstin       || null,
+          address:     address     || null,
+          type:        type        || 'CUSTOMER',
+          creditLimit: creditLimit ? parseFloat(creditLimit) : 0,
+          creditDays:  creditDays  ? parseInt(creditDays)    : 30,
+          notes:       notes       || null,
+          outstanding: 0,
+        },
+      });
+
+      // Write opening balance if provided
+      if (openingBalance && parseFloat(openingBalance) !== 0) {
+        const amt = parseFloat(openingBalance);
+        await writeLedgerEntry(tx, {
+          shopId:    req.shopId,
+          partyId:   p.partyId,
+          entryType: 'OPENING_BALANCE',
+          debitAmount:  amt > 0 ? amt  : 0,
+          creditAmount: amt < 0 ? -amt : 0,
+          notes:     'Opening balance',
+          createdBy: req.user.userId,
+        });
+        // Re-fetch with updated outstanding
+        return tx.party.findUnique({ where: { partyId: p.partyId } });
+      }
+      return p;
     });
-    res.json({ success: true, party });
-  } catch (err) {
-    next(err);
-  }
+
+    res.status(201).json({ success: true, party });
+  } catch (err) { next(err); }
 });
 
-// GET /api/shop/parties/:id/ledger
+// ─── GET /:id — single party ──────────────────────────────────────────────────
+router.get('/:id', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const party = await prisma.party.findFirst({
+      where: { partyId: req.params.id, shopId: req.shopId },
+    });
+    if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
+    res.json({ success: true, party });
+  } catch (err) { next(err); }
+});
+
+// ─── PUT /:id — update party ──────────────────────────────────────────────────
+router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const party = await prisma.party.findFirst({
+      where: { partyId: req.params.id, shopId: req.shopId },
+    });
+    if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
+
+    const { name, phone, email, gstin, address, type, creditLimit, creditDays, notes } = req.body;
+    const data = {};
+    if (name        !== undefined) data.name        = name.trim();
+    if (phone       !== undefined) data.phone       = phone || null;
+    if (email       !== undefined) data.email       = email || null;
+    if (gstin       !== undefined) data.gstin       = gstin || null;
+    if (address     !== undefined) data.address     = address || null;
+    if (type        !== undefined && VALID_TYPES.includes(type)) data.type = type;
+    if (creditLimit !== undefined) data.creditLimit = parseFloat(creditLimit);
+    if (creditDays  !== undefined) data.creditDays  = parseInt(creditDays);
+    if (notes       !== undefined) data.notes       = notes || null;
+
+    const updated = await prisma.party.update({ where: { partyId: req.params.id }, data });
+    res.json({ success: true, party: updated });
+  } catch (err) { next(err); }
+});
+
+// ─── DELETE /:id — soft delete ────────────────────────────────────────────────
+router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const party = await prisma.party.findFirst({
+      where: { partyId: req.params.id, shopId: req.shopId },
+    });
+    if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
+
+    await prisma.party.update({
+      where: { partyId: req.params.id },
+      data:  { isActive: false },
+    });
+    res.json({ success: true, message: 'Party deactivated' });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /:id/ledger — full udhaar trail ─────────────────────────────────────
 router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const party = await prisma.party.findUnique({ where: { partyId: req.params.id } });
-    if (!party || party.shopId !== req.shopId) return res.status(404).json({ error: 'Party not found' });
-
-    const invoices = await prisma.invoice.findMany({
-      where: { shopId: req.shopId, partyId: req.params.id },
-      orderBy: { createdAt: 'desc' },
+    const party = await prisma.party.findFirst({
+      where: { partyId: req.params.id, shopId: req.shopId },
     });
+    if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
 
-    res.json({ party, invoices, outstanding: party.outstanding });
-  } catch (err) {
-    next(err);
-  }
+    const { limit = 50, offset = 0 } = req.query;
+
+    const [entries, total] = await Promise.all([
+      prisma.partyLedger.findMany({
+        where: { partyId: req.params.id, shopId: req.shopId },
+        include: {
+          invoice: { select: { invoiceNumber: true, totalAmount: true, invoiceType: true, createdAt: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take:    parseInt(limit),
+        skip:    parseInt(offset),
+      }),
+      prisma.partyLedger.count({ where: { partyId: req.params.id, shopId: req.shopId } }),
+    ]);
+
+    res.json({
+      success: true,
+      party:   { partyId: party.partyId, name: party.name, outstanding: Number(party.outstanding), creditLimit: Number(party.creditLimit), creditDays: party.creditDays },
+      entries,
+      total,
+    });
+  } catch (err) { next(err); }
 });
 
-// POST /api/shop/parties/:id/payment
+// ─── POST /:id/ledger — manual opening balance / adjustment ──────────────────
+router.post('/:id/ledger', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const party = await prisma.party.findFirst({
+      where: { partyId: req.params.id, shopId: req.shopId },
+    });
+    if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
+
+    const VALID_ENTRY_TYPES = ['OPENING_BALANCE', 'ADJUSTMENT'];
+    const { entryType, debitAmount, creditAmount, referenceNo, notes } = req.body;
+
+    if (!entryType || !VALID_ENTRY_TYPES.includes(entryType)) {
+      return res.status(400).json({ success: false, error: { message: `entryType must be one of: ${VALID_ENTRY_TYPES.join(', ')}` } });
+    }
+    if ((debitAmount == null || debitAmount === '') && (creditAmount == null || creditAmount === '')) {
+      return res.status(400).json({ success: false, error: { message: 'debitAmount or creditAmount is required' } });
+    }
+
+    let balanceAfter;
+    await prisma.$transaction(async (tx) => {
+      balanceAfter = await writeLedgerEntry(tx, {
+        shopId:      req.shopId,
+        partyId:     req.params.id,
+        entryType,
+        debitAmount:  debitAmount  ? parseFloat(debitAmount)  : 0,
+        creditAmount: creditAmount ? parseFloat(creditAmount) : 0,
+        referenceNo:  referenceNo || null,
+        notes:        notes       || null,
+        createdBy:    req.user.userId,
+      });
+    });
+
+    res.status(201).json({ success: true, newOutstanding: balanceAfter });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /:id/payment — record payment received ──────────────────────────────
 router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { amount, mode, reference, notes } = req.body;
-    if (!amount || !mode) return res.status(400).json({ error: 'Amount and mode required' });
 
-    const party = await prisma.party.findUnique({ where: { partyId: req.params.id } });
-    if (!party || party.shopId !== req.shopId) return res.status(404).json({ error: 'Party not found' });
+    if (!amount || !mode) return res.status(400).json({ success: false, error: { message: 'Amount and mode are required' } });
 
     const parsedAmount = parseFloat(amount);
     if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      return res.status(400).json({ error: 'Amount must be a positive number' });
+      return res.status(400).json({ success: false, error: { message: 'Amount must be a positive number' } });
     }
 
-    // Use a transaction: update outstanding + create a RECEIPT movement for the audit trail
-    let updatedParty;
+    const party = await prisma.party.findFirst({
+      where: { partyId: req.params.id, shopId: req.shopId },
+    });
+    if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
+
+    let newOutstanding;
     await prisma.$transaction(async (tx) => {
-      updatedParty = await tx.party.update({
-        where: { partyId: req.params.id },
-        data: { outstanding: { decrement: parsedAmount } },
+      // Write ledger entry (credit = reduces outstanding)
+      newOutstanding = await writeLedgerEntry(tx, {
+        shopId:      req.shopId,
+        partyId:     req.params.id,
+        entryType:   'PAYMENT_RECEIVED',
+        creditAmount: parsedAmount,
+        referenceNo: reference || null,
+        notes:       [
+          `Payment via ${mode}`,
+          reference && `Ref: ${reference}`,
+          notes,
+        ].filter(Boolean).join(' · '),
+        createdBy: req.user.userId,
       });
 
-      // Find any inventory item from this shop to satisfy the FK on movement.inventoryId.
-      // RECEIPT movements are financial-only — they carry no stock change.
-      // We attach them to the first available inventory row for the shop so referential
-      // integrity is maintained without requiring a nullable inventoryId in the schema.
+      // Also create a RECEIPT movement for stock ledger audit trail
       const anyInv = await tx.shopInventory.findFirst({ where: { shopId: req.shopId } });
       if (anyInv) {
         await tx.movement.create({
           data: {
-            shopId: req.shopId,
+            shopId:      req.shopId,
             inventoryId: anyInv.inventoryId,
-            type: 'RECEIPT',
-            qty: 0,
+            type:        'RECEIPT',
+            qty:         0,
             totalAmount: parsedAmount,
-            partyId: req.params.id,
-            notes: [
-              `Payment from ${party.name} via ${mode}`,
-              reference && `Ref: ${reference}`,
-              notes,
-            ].filter(Boolean).join(' · '),
+            partyId:     req.params.id,
+            referenceNumber: reference || null,
+            notes:       `Payment from ${party.name} via ${mode}${reference ? ` · Ref: ${reference}` : ''}`,
           },
         });
       }
     });
 
-    // Use the updated value from the transaction result, not the stale snapshot
-    const newOutstanding = Number(updatedParty.outstanding);
     res.json({ success: true, newOutstanding });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
+// ─── GET /summary/overdue — parties past their credit days ───────────────────
+router.get('/summary/overdue', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    // Find parties with outstanding > 0 that have unpaid credit invoices past creditDays
+    const parties = await prisma.party.findMany({
+      where: {
+        shopId:      req.shopId,
+        isActive:    true,
+        outstanding: { gt: 0 },
+      },
+      orderBy: { outstanding: 'desc' },
+    });
+
+    // For each, check the oldest unpaid invoice to determine overdue status
+    const overdueList = await Promise.all(
+      parties.map(async (p) => {
+        const oldestCredit = await prisma.invoice.findFirst({
+          where:   { shopId: req.shopId, partyId: p.partyId, status: 'CREDIT' },
+          orderBy: { createdAt: 'asc' },
+          select:  { createdAt: true, totalAmount: true, invoiceNumber: true },
+        });
+
+        if (!oldestCredit) return null;
+
+        const daysSince = Math.floor((Date.now() - new Date(oldestCredit.createdAt).getTime()) / 86400000);
+        const isOverdue = daysSince > p.creditDays;
+
+        return {
+          partyId:     p.partyId,
+          name:        p.name,
+          phone:       p.phone,
+          outstanding: Number(p.outstanding),
+          creditLimit: Number(p.creditLimit),
+          creditDays:  p.creditDays,
+          daysSince,
+          isOverdue,
+          oldestUnpaidInvoice: oldestCredit,
+        };
+      })
+    );
+
+    const result = overdueList.filter(Boolean);
+    res.json({
+      success: true,
+      overdue:    result.filter(p => p.isOverdue),
+      atRisk:     result.filter(p => !p.isOverdue),
+      total:      result.length,
+    });
+  } catch (err) { next(err); }
+});
+
+export { writeLedgerEntry };
 export default router;

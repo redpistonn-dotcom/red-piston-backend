@@ -5,6 +5,20 @@ import { findUserByEmailInsensitive } from './helpers.js';
 
 const router = Router();
 
+// GST state codes (ISO 3166-2:IN numeric codes used in GSTIN)
+const STATE_CODE_MAP = {
+  'Andhra Pradesh': '37', 'Arunachal Pradesh': '12', 'Assam': '18', 'Bihar': '10',
+  'Chhattisgarh': '22', 'Goa': '30', 'Gujarat': '24', 'Haryana': '06',
+  'Himachal Pradesh': '02', 'Jharkhand': '20', 'Karnataka': '29', 'Kerala': '32',
+  'Madhya Pradesh': '23', 'Maharashtra': '27', 'Manipur': '14', 'Meghalaya': '17',
+  'Mizoram': '15', 'Nagaland': '13', 'Odisha': '21', 'Punjab': '03',
+  'Rajasthan': '08', 'Sikkim': '11', 'Tamil Nadu': '33', 'Telangana': '36',
+  'Tripura': '16', 'Uttar Pradesh': '09', 'Uttarakhand': '05', 'West Bengal': '19',
+  'Andaman and Nicobar Islands': '35', 'Chandigarh': '04',
+  'Dadra and Nagar Haveli and Daman and Diu': '26', 'Delhi': '07',
+  'Jammu and Kashmir': '01', 'Ladakh': '38', 'Lakshadweep': '31', 'Puducherry': '34',
+};
+
 /**
  * POST /api/auth/shop-setup
  *
@@ -18,7 +32,7 @@ const router = Router();
  */
 router.post('/shop-setup', async (req, res, next) => {
   try {
-    const { ownerName, shopName, city, contactPhone, gstin, address } = req.body;
+    const { ownerName, shopName, city, state, pincode, contactPhone, gstin, address } = req.body;
     // userId from body may be a string (JSON) or number — normalise to Int
     const userId = req.body.userId != null ? parseInt(req.body.userId) : NaN;
 
@@ -86,6 +100,10 @@ router.post('/shop-setup', async (req, res, next) => {
       });
     }
 
+    // ── Derive GST state code from state name ────────────────────────────────
+    const resolvedState = state?.trim() || 'Telangana';
+    const stateCode = STATE_CODE_MAP[resolvedState] || null;
+
     // ── Create shop + update user in a single transaction ───────────────────
     const [shop, updatedUser] = await prisma.$transaction([
       prisma.shop.create({
@@ -94,9 +112,11 @@ router.post('/shop-setup', async (req, res, next) => {
           ownerName: ownerName.trim(),
           phone: cleanPhone,
           city: city.trim(),
+          state: resolvedState,
+          stateCode: stateCode,
+          pincode: pincode?.trim() || null,
           gstin: gstin?.trim() || null,
           address: address?.trim() || null,
-          state: 'Telangana',
         },
       }),
       prisma.user.update({

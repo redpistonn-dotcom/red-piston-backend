@@ -45,6 +45,8 @@ async function ensureCustomerProfile(userId) {
 
 // ─── Profile ─────────────────────────────────────────────────────────────────
 
+const VALID_PROFILE_TYPES = ['INDIVIDUAL', 'MECHANIC', 'FLEET_MANAGER'];
+
 // GET /api/customer/profile
 router.get('/profile', authenticate, requireCustomer, async (req, res, next) => {
   try {
@@ -53,6 +55,25 @@ router.get('/profile', authenticate, requireCustomer, async (req, res, next) => 
   } catch (err) {
     next(err);
   }
+});
+
+// PATCH /api/customer/profile — update profileType
+router.patch('/profile', authenticate, requireCustomer, async (req, res, next) => {
+  try {
+    const { profileType } = req.body;
+    if (!profileType || !VALID_PROFILE_TYPES.includes(profileType)) {
+      return res.status(400).json({
+        success: false,
+        error: { message: `profileType must be one of: ${VALID_PROFILE_TYPES.join(', ')}` },
+      });
+    }
+    const profile = await prisma.customerProfile.upsert({
+      where:  { userId: req.user.userId },
+      update: { profileType },
+      create: { userId: req.user.userId, profileType },
+    });
+    res.json({ success: true, data: profile });
+  } catch (err) { next(err); }
 });
 
 // ─── Addresses ───────────────────────────────────────────────────────────────
@@ -212,7 +233,7 @@ router.get('/garage', authenticate, requireCustomer, async (req, res, next) => {
 // POST /api/customer/garage
 router.post('/garage', authenticate, requireCustomer, async (req, res, next) => {
   try {
-    const { vehicleId, nickname, make, model, variant, year, fuelType, registrationNo, isDefault } = req.body;
+    const { vehicleId, nickname, make, model, variant, year, fuelType, registrationNo, purchaseYear, isDefault } = req.body;
 
     if (!make || !model || !year) {
       return res.status(400).json({
@@ -224,29 +245,28 @@ router.post('/garage', authenticate, requireCustomer, async (req, res, next) => 
     if (isDefault) {
       await prisma.customerVehicle.updateMany({
         where: { userId: req.user.userId },
-        data: { isDefault: false },
+        data:  { isDefault: false },
       });
     }
 
     const vehicle = await prisma.customerVehicle.create({
       data: {
-        userId: req.user.userId,
-        vehicleId: vehicleId || null,
-        nickname: nickname || null,
+        userId:         req.user.userId,
+        vehicleId:      vehicleId      || null,
+        nickname:       nickname       || null,
         make,
         model,
-        variant: variant || null,
-        year: parseInt(year),
-        fuelType: fuelType || null,
+        variant:        variant        || null,
+        year:           parseInt(year),
+        fuelType:       fuelType       || null,
         registrationNo: registrationNo || null,
-        isDefault: isDefault || false,
+        purchaseYear:   purchaseYear   ? parseInt(purchaseYear) : null,
+        isDefault:      isDefault      || false,
       },
     });
 
     res.status(201).json({ success: true, data: vehicle });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
 // PUT /api/customer/garage/:id
@@ -259,15 +279,16 @@ router.put('/garage/:id', authenticate, requireCustomer, async (req, res, next) 
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Vehicle not found in garage' } });
     }
 
-    const { nickname, make, model, variant, year, fuelType, registrationNo } = req.body;
+    const { nickname, make, model, variant, year, fuelType, registrationNo, purchaseYear } = req.body;
     const data = {};
-    if (nickname !== undefined) data.nickname = nickname;
-    if (make !== undefined) data.make = make;
-    if (model !== undefined) data.model = model;
-    if (variant !== undefined) data.variant = variant;
-    if (year !== undefined) data.year = parseInt(year);
-    if (fuelType !== undefined) data.fuelType = fuelType;
+    if (nickname       !== undefined) data.nickname       = nickname;
+    if (make           !== undefined) data.make           = make;
+    if (model          !== undefined) data.model          = model;
+    if (variant        !== undefined) data.variant        = variant;
+    if (year           !== undefined) data.year           = parseInt(year);
+    if (fuelType       !== undefined) data.fuelType       = fuelType;
     if (registrationNo !== undefined) data.registrationNo = registrationNo;
+    if (purchaseYear   !== undefined) data.purchaseYear   = purchaseYear ? parseInt(purchaseYear) : null;
 
     const updated = await prisma.customerVehicle.update({
       where: { id: req.params.id },
@@ -324,6 +345,39 @@ router.delete('/garage/:id', authenticate, requireCustomer, async (req, res, nex
   } catch (err) {
     next(err);
   }
+});
+
+// ─── Orders ───────────────────────────────────────────────────────────────────
+
+// GET /api/customer/orders — customer's marketplace order history
+router.get('/orders', authenticate, requireCustomer, async (req, res, next) => {
+  try {
+    const { status, limit = 20, offset = 0 } = req.query;
+    const where = { customerId: req.user.userId };
+    if (status) where.status = status;
+
+    const [orders, total] = await Promise.all([
+      prisma.marketplaceOrder.findMany({
+        where,
+        include: {
+          items: {
+            include: {
+              inventory: {
+                include: { masterPart: { select: { partName: true, brand: true, imageUrl: true } } },
+              },
+            },
+          },
+          shop: { select: { name: true, city: true, phone: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take:    parseInt(limit),
+        skip:    parseInt(offset),
+      }),
+      prisma.marketplaceOrder.count({ where }),
+    ]);
+
+    res.json({ success: true, data: { orders, total } });
+  } catch (err) { next(err); }
 });
 
 export default router;
