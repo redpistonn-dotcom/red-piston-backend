@@ -329,21 +329,40 @@ model ShopUser {
 // VEHICLE & PARTS CATALOG
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── VEHICLE TYPE MASTER TABLE ────────────────────────────────────────────────
+// Seeded from VEHICLE_TYPES constant in frontend; also used in admin import dropdown.
+// Car, Motorcycle/2-Wheeler, Commercial Vehicle, Tractor, Auto Rickshaw, EV
+model VehicleType {
+  id        Int       @id @default(autoincrement()) @map("vehicle_type_id")
+  name      String    @unique   // e.g. "Car / Passenger Vehicle"
+  slug      String    @unique   // e.g. "car"
+  icon      String?             // e.g. "🚗"
+  sortOrder Int       @default(0) @map("sort_order")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  vehicles  Vehicle[]
+
+  @@map("vehicle_types")
+}
+
 model Vehicle {
-  vehicleId    String   @id @default(uuid()) @map("vehicle_id")
-  make         String
-  model        String
-  variant      String?
-  yearFrom     Int      @map("year_from")
-  yearTo       Int?     @map("year_to")
-  fuelType     String?  @map("fuel_type")
-  engineCc     Int?     @map("engine_cc")
-  engineCode   String?  @map("engine_code")
-  transmission String?
-  bodyType     String?  @map("body_type")
-  vehicleType  String   @default("Car") @map("vehicle_type")
-  absEquipped  Boolean  @default(false) @map("abs_equipped")
-  createdAt    DateTime @default(now()) @map("created_at")
+  vehicleId      String       @id @default(uuid()) @map("vehicle_id")
+  make           String
+  model          String
+  variant        String?
+  yearFrom       Int          @map("year_from")
+  yearTo         Int?         @map("year_to")
+  fuelType       String?      @map("fuel_type")
+  engineCc       Int?         @map("engine_cc")
+  engineCode     String?      @map("engine_code")
+  transmission   String?
+  bodyType       String?      @map("body_type")
+  vehicleType    String       @default("Car") @map("vehicle_type")   // legacy string kept for compat
+  vehicleTypeId  Int?         @map("vehicle_type_id")                // FK to VehicleType master table
+  absEquipped    Boolean      @default(false) @map("abs_equipped")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  vehicleTypeRef VehicleType? @relation(fields: [vehicleTypeId], references: [id])
 
   fitments            PartFitment[]
   customerVehicles    CustomerVehicle[]

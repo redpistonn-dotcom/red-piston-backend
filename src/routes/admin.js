@@ -418,6 +418,12 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
             },
           });
           if (!vehicle) {
+            // Resolve vehicleTypeId from the vehicleType slug string if provided
+            let vehicleTypeId = null;
+            if (p.vehicleType) {
+              const vt = await prisma.vehicleType.findUnique({ where: { slug: p.vehicleType } });
+              vehicleTypeId = vt?.id || null;
+            }
             vehicle = await prisma.vehicle.create({
               data: {
                 make: p.vehicleMake,
@@ -426,7 +432,8 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
                 yearFrom,
                 yearTo,
                 fuelType: p.fuelType || null,
-                vehicleType: 'Car',
+                vehicleType: p.vehicleType || 'Car',
+                vehicleTypeId,
               },
             });
           }
@@ -454,6 +461,14 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
       success: true,
       data: { created, updated, skipped, fitments, errors: errors.slice(0, 20), total: parts.length },
     });
+  } catch (err) { next(err); }
+});
+
+// GET /api/admin/vehicle-types — list all vehicle types (for admin dropdowns)
+router.get('/vehicle-types', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const types = await prisma.vehicleType.findMany({ orderBy: { sortOrder: 'asc' } });
+    res.json({ success: true, data: types });
   } catch (err) { next(err); }
 });
 

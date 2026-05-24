@@ -81,8 +81,28 @@ const masterParts = [
   { partName: 'Battery 45Ah', brand: 'Exide', categoryL1: 'Electrical', hsnCode: '8507', gstRate: 28, unitOfSale: 'Piece', status: 'VERIFIED', source: 'MANUAL' },
 ];
 
+const vehicleTypes = [
+  { name: 'Car / Passenger Vehicle',    slug: 'car',          icon: '🚗', sortOrder: 1 },
+  { name: 'Motorcycle / 2-Wheeler',     slug: '2wheeler',     icon: '🏍️', sortOrder: 2 },
+  { name: 'Commercial Vehicle (LCV/HCV)',slug: 'commercial',  icon: '🚚', sortOrder: 3 },
+  { name: 'Tractor / Farm Equipment',   slug: 'tractor',      icon: '🚜', sortOrder: 4 },
+  { name: 'Auto Rickshaw / 3-Wheeler',  slug: 'autorickshaw', icon: '🛺', sortOrder: 5 },
+  { name: 'Electric Vehicle',           slug: 'ev',           icon: '⚡', sortOrder: 6 },
+];
+
 async function main() {
   console.log('Seeding database...');
+
+  // Seed vehicle types
+  console.log('Inserting vehicle types...');
+  for (const vt of vehicleTypes) {
+    await prisma.vehicleType.upsert({
+      where: { slug: vt.slug },
+      update: { name: vt.name, icon: vt.icon, sortOrder: vt.sortOrder },
+      create: vt,
+    });
+  }
+  console.log(`✓ ${vehicleTypes.length} vehicle types seeded`);
 
   // Seed vehicles
   console.log('Inserting vehicles...');
