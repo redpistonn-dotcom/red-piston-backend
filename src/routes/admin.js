@@ -290,7 +290,7 @@ router.get('/catalog/parts', authenticate, requireAdmin, async (req, res, next) 
           masterPartId: true, partName: true, brand: true,
           primaryOemNumber: true, categoryL1: true, categoryL2: true,
           hsnCode: true, gstRate: true, unitOfSale: true,
-          status: true, source: true, createdAt: true,
+          status: true, source: true, createdAt: true, updatedAt: true,
           _count: { select: { inventory: true, fitments: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -316,12 +316,12 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
       return res.status(400).json({ success: false, error: { code: 'BATCH_TOO_LARGE', message: 'Maximum 1000 parts per request. Use batching.' } });
     }
 
-    let created = 0, updated = 0, skipped = 0, fitments = 0;
+    let created = 0, updated = 0, unchanged = 0, invalid = 0, fitments = 0;
     const errors = [];
 
     for (const p of parts) {
       try {
-        if (!p.partName?.trim() && !p.oemNumber) { skipped++; continue; }
+        if (!p.partName?.trim() && !p.oemNumber) { invalid++; continue; }
 
         const oemNumber = p.oemNumber ? String(p.oemNumber).trim() : null;
 
@@ -374,7 +374,7 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
               await prisma.masterPart.update({ where: { masterPartId: existing.masterPartId }, data: updateData });
               updated++;
             } else {
-              skipped++;
+              unchanged++;   // exists in DB, nothing new to change
             }
             continue;
           }
@@ -453,13 +453,13 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
         }
       } catch (rowErr) {
         errors.push({ oemNumber: p.oemNumber, error: rowErr.message });
-        skipped++;
+        invalid++;   // row errored — treat as invalid/skipped
       }
     }
 
     res.json({
       success: true,
-      data: { created, updated, skipped, fitments, errors: errors.slice(0, 20), total: parts.length },
+      data: { created, updated, unchanged, invalid, fitments, errors: errors.slice(0, 20), total: parts.length },
     });
   } catch (err) { next(err); }
 });
