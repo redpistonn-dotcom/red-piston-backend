@@ -316,7 +316,7 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
       return res.status(400).json({ success: false, error: { code: 'BATCH_TOO_LARGE', message: 'Maximum 1000 parts per request. Use batching.' } });
     }
 
-    let created = 0, updated = 0, skipped = 0;
+    let created = 0, updated = 0, skipped = 0, fitments = 0;
     const errors = [];
 
     for (const p of parts) {
@@ -381,7 +381,7 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
         }
 
         // Create new master part
-        await prisma.masterPart.create({
+        const newPart = await prisma.masterPart.create({
           data: {
             partName: (p.partName || p.oemNumber).trim(),
             primaryOemNumber: oemNumber,
@@ -402,6 +402,48 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
           },
         });
         created++;
+
+        // ── Vehicle fitment — create Vehicle + PartFitment if columns provided ─
+        if (p.vehicleMake && p.vehicleModel) {
+          const yearFrom = p.yearFrom ? parseInt(p.yearFrom) : new Date().getFullYear() - 10;
+          const yearTo   = p.yearTo   ? parseInt(p.yearTo)   : null;
+          // Find or create the Vehicle record
+          let vehicle = await prisma.vehicle.findFirst({
+            where: {
+              make: p.vehicleMake,
+              model: p.vehicleModel,
+              yearFrom,
+              ...(p.fuelType ? { fuelType: p.fuelType } : {}),
+              ...(p.variant  ? { variant:  p.variant  } : {}),
+            },
+          });
+          if (!vehicle) {
+            vehicle = await prisma.vehicle.create({
+              data: {
+                make: p.vehicleMake,
+                model: p.vehicleModel,
+                variant: p.variant || null,
+                yearFrom,
+                yearTo,
+                fuelType: p.fuelType || null,
+                vehicleType: 'Car',
+              },
+            });
+          }
+          // Upsert fitment link
+          await prisma.partFitment.upsert({
+            where: { masterPartId_vehicleId: { masterPartId: newPart.masterPartId, vehicleId: vehicle.vehicleId } },
+            update: {},
+            create: {
+              masterPartId: newPart.masterPartId,
+              vehicleId: vehicle.vehicleId,
+              fitType: 'EXACT',
+              confidence: 'unverified',
+              source: 'SUPPLIER_IMPORT',
+            },
+          });
+          fitments++;
+        }
       } catch (rowErr) {
         errors.push({ oemNumber: p.oemNumber, error: rowErr.message });
         skipped++;
@@ -410,7 +452,7 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
 
     res.json({
       success: true,
-      data: { created, updated, skipped, errors: errors.slice(0, 20), total: parts.length },
+      data: { created, updated, skipped, fitments, errors: errors.slice(0, 20), total: parts.length },
     });
   } catch (err) { next(err); }
 });
