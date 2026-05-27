@@ -304,156 +304,213 @@ router.get('/catalog/parts', authenticate, requireAdmin, async (req, res, next) 
 });
 
 // POST /api/admin/catalog/bulk-import — upsert master_parts from Excel import
-// Body: { parts: [{ partName, oemNumber, brand?, categoryL1?, mrp?, buyPrice?, supplier? }] }
-// Accepts up to 1000 records per request (batch in batches of 500 from frontend)
+// Optimised: 1 findMany lookup + createMany + batched transaction updates per request
+// Body: { parts: [{ partName, oemNumber, brand?, categoryL1?, mrp?, buyPrice?, ... }] }
 router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res, next) => {
   try {
     const { parts } = req.body;
     if (!Array.isArray(parts) || parts.length === 0) {
       return res.status(400).json({ success: false, error: { code: 'EMPTY_BATCH', message: 'parts array is required and must not be empty' } });
     }
-    if (parts.length > 1000) {
-      return res.status(400).json({ success: false, error: { code: 'BATCH_TOO_LARGE', message: 'Maximum 1000 parts per request. Use batching.' } });
-    }
 
     let created = 0, updated = 0, unchanged = 0, invalid = 0, fitments = 0;
     const errors = [];
 
+    // ── 1. Validate & normalise every incoming row ──────────────────────────
+    const valid = [];
     for (const p of parts) {
-      try {
-        if (!p.partName?.trim() && !p.oemNumber) { invalid++; continue; }
+      if (!p.partName?.trim() && !p.oemNumber) { invalid++; continue; }
+      const oemNumber = p.oemNumber ? String(p.oemNumber).trim() : null;
+      const altOems   = Array.isArray(p.alternateOemNumbers)
+        ? p.alternateOemNumbers.map(s => String(s).trim()).filter(Boolean)
+        : [];
+      const specs = {};
+      if (p.mrp     != null) specs.mrp      = parseFloat(p.mrp);
+      if (p.buyPrice != null) specs.buyPrice = parseFloat(p.buyPrice);
+      valid.push({ ...p, _oemNumber: oemNumber, _altOems: altOems, _specs: Object.keys(specs).length ? specs : null });
+    }
 
-        const oemNumber = p.oemNumber ? String(p.oemNumber).trim() : null;
+    // ── 2. One query to find all already-existing OEM numbers ───────────────
+    const oemLookup = valid.map(p => p._oemNumber).filter(Boolean);
+    const existingRows = oemLookup.length > 0
+      ? await prisma.masterPart.findMany({
+          where: { primaryOemNumber: { in: oemLookup } },
+          select: { masterPartId: true, primaryOemNumber: true, oemNumbers: true, specifications: true },
+        })
+      : [];
+    const existingMap = new Map(existingRows.map(e => [e.primaryOemNumber, e]));
 
-        // Build alternate OEM numbers array
-        const altOems = Array.isArray(p.alternateOemNumbers)
-          ? p.alternateOemNumbers.map(s => String(s).trim()).filter(Boolean)
-          : [];
-        const allOems = oemNumber
-          ? [oemNumber, ...altOems.filter(o => o !== oemNumber)]
-          : altOems;
+    // ── 3. Split into creates / updates / unchanged ─────────────────────────
+    const toCreate  = [];
+    const toUpdate  = []; // { existing, updateData, incoming }
 
-        // Build specifications JSON (price references from supplier)
-        const specs = {};
-        if (p.mrp != null)       specs.mrp      = parseFloat(p.mrp);
-        if (p.buyPrice != null)  specs.buyPrice = parseFloat(p.buyPrice);
-        const specsJson = Object.keys(specs).length > 0 ? specs : undefined;
-
-        // Upsert: match on primaryOemNumber if provided; otherwise always create
-        if (oemNumber) {
-          const existing = await prisma.masterPart.findFirst({
-            where: { primaryOemNumber: oemNumber },
-            select: { masterPartId: true, oemNumbers: true, specifications: true },
-          });
-
-          if (existing) {
-            // Update non-null incoming fields (preserve existing data)
-            const updateData = {};
-            if (p.partName?.trim()) updateData.partName = p.partName.trim();
-            if (p.brand)       updateData.brand       = p.brand;
-            if (p.categoryL1)  updateData.categoryL1  = p.categoryL1;
-            if (p.categoryL2)  updateData.categoryL2  = p.categoryL2;
-            if (p.categoryL3)  updateData.categoryL3  = p.categoryL3;
-            if (p.hsnCode)     updateData.hsnCode     = p.hsnCode;
-            if (p.gstRate != null) updateData.gstRate = parseFloat(p.gstRate);
-            if (p.unit)        updateData.unitOfSale  = p.unit;
-            if (p.description) updateData.description = p.description;
-            if (p.weightGrams != null) updateData.weightGrams = parseInt(p.weightGrams);
-            if (specsJson) {
-              // Merge with existing specifications
-              updateData.specifications = { ...(existing.specifications || {}), ...specsJson };
-            }
-            // Merge new OEM numbers into the existing array
-            if (altOems.length > 0) {
-              const merged = [...new Set([...(existing.oemNumbers || []), ...altOems])];
-              if (merged.length !== (existing.oemNumbers || []).length) {
-                updateData.oemNumbers = merged;
-              }
-            }
-            if (Object.keys(updateData).length > 0) {
-              await prisma.masterPart.update({ where: { masterPartId: existing.masterPartId }, data: updateData });
-              updated++;
-            } else {
-              unchanged++;   // exists in DB, nothing new to change
-            }
-            continue;
-          }
+    for (const p of valid) {
+      const existing = p._oemNumber ? existingMap.get(p._oemNumber) : null;
+      if (existing) {
+        const updateData = {};
+        if (p.partName?.trim())     updateData.partName    = p.partName.trim();
+        if (p.brand)                updateData.brand       = p.brand;
+        if (p.categoryL1)           updateData.categoryL1  = p.categoryL1;
+        if (p.categoryL2)           updateData.categoryL2  = p.categoryL2;
+        if (p.categoryL3)           updateData.categoryL3  = p.categoryL3;
+        if (p.hsnCode)              updateData.hsnCode     = p.hsnCode;
+        if (p.gstRate != null)      updateData.gstRate     = parseFloat(p.gstRate);
+        if (p.unit)                 updateData.unitOfSale  = p.unit;
+        if (p.description)          updateData.description = p.description;
+        if (p.weightGrams != null)  updateData.weightGrams = parseInt(p.weightGrams);
+        if (p._specs) updateData.specifications = { ...(existing.specifications || {}), ...p._specs };
+        if (p._altOems.length > 0) {
+          const merged = [...new Set([...(existing.oemNumbers || []), ...p._altOems])];
+          if (merged.length !== (existing.oemNumbers || []).length) updateData.oemNumbers = merged;
         }
+        if (Object.keys(updateData).length > 0) toUpdate.push({ existing, updateData, incoming: p });
+        else unchanged++;
+      } else {
+        toCreate.push(p);
+      }
+    }
 
-        // Create new master part
-        const newPart = await prisma.masterPart.create({
-          data: {
-            partName: (p.partName || p.oemNumber).trim(),
-            primaryOemNumber: oemNumber,
-            oemNumbers: allOems,
-            brand: p.brand || null,
-            categoryL1: p.categoryL1 || null,
-            categoryL2: p.categoryL2 || null,
-            categoryL3: p.categoryL3 || null,
-            hsnCode: p.hsnCode || null,
-            gstRate: p.gstRate != null ? parseFloat(p.gstRate) : 18.00,
-            unitOfSale: p.unit || 'Piece',
-            description: p.description || null,
-            weightGrams: p.weightGrams != null ? parseInt(p.weightGrams) : null,
-            specifications: specsJson || null,
-            status: 'VERIFIED',
-            source: 'SUPPLIER_IMPORT',
-            verifiedAt: new Date(),
-          },
-        });
-        created++;
+    // ── 4. Bulk-create new parts in one DB round-trip ───────────────────────
+    if (toCreate.length > 0) {
+      const createResult = await prisma.masterPart.createMany({
+        data: toCreate.map(p => ({
+          partName:         (p.partName || p._oemNumber || '').trim(),
+          primaryOemNumber: p._oemNumber,
+          oemNumbers:       p._oemNumber ? [p._oemNumber, ...p._altOems.filter(o => o !== p._oemNumber)] : p._altOems,
+          brand:            p.brand        || null,
+          categoryL1:       p.categoryL1   || null,
+          categoryL2:       p.categoryL2   || null,
+          categoryL3:       p.categoryL3   || null,
+          hsnCode:          p.hsnCode      || null,
+          gstRate:          p.gstRate != null ? parseFloat(p.gstRate) : 18.00,
+          unitOfSale:       p.unit         || 'Piece',
+          description:      p.description  || null,
+          weightGrams:      p.weightGrams != null ? parseInt(p.weightGrams) : null,
+          specifications:   p._specs       || null,
+          status:           'VERIFIED',
+          source:           'SUPPLIER_IMPORT',
+          verifiedAt:       new Date(),
+        })),
+        skipDuplicates: true,
+      });
+      created += createResult.count; // actual inserts (skipDuplicates may reduce this)
+    }
 
-        // ── Vehicle fitment — create Vehicle + PartFitment if columns provided ─
-        if (p.vehicleMake && p.vehicleModel) {
+    // ── 5. Bulk-update existing parts — single SQL statement via CTE ────────
+    // Replaces N individual prisma.masterPart.update() calls with one raw SQL
+    // UPDATE … FROM (jsonb_array_elements) which is O(1) round-trips regardless
+    // of batch size.  NULL values are COALESCE'd to keep the existing column.
+    if (toUpdate.length > 0) {
+      const rows = toUpdate.map(({ existing, updateData }) => ({
+        id:           existing.masterPartId,
+        part_name:    updateData.partName     ?? null,
+        brand:        updateData.brand        ?? null,
+        category_l1:  updateData.categoryL1   ?? null,
+        category_l2:  updateData.categoryL2   ?? null,
+        category_l3:  updateData.categoryL3   ?? null,
+        hsn_code:     updateData.hsnCode      ?? null,
+        gst_rate:     updateData.gstRate      ?? null,
+        unit_of_sale: updateData.unitOfSale   ?? null,
+        description:  updateData.description  ?? null,
+        weight_grams: updateData.weightGrams  ?? null,
+        // JSON / array fields serialised as jsonb — null = don't touch
+        specifications: updateData.specifications ?? null,
+        oem_numbers:    updateData.oemNumbers     ?? null,
+      }));
+
+      await prisma.$executeRawUnsafe(`
+        WITH data AS (
+          SELECT
+            (v->>'id')::uuid                                            AS id,
+            v->>'part_name'                                             AS part_name,
+            v->>'brand'                                                 AS brand,
+            v->>'category_l1'                                           AS category_l1,
+            v->>'category_l2'                                           AS category_l2,
+            v->>'category_l3'                                           AS category_l3,
+            v->>'hsn_code'                                              AS hsn_code,
+            (v->>'gst_rate')::numeric                                   AS gst_rate,
+            v->>'unit_of_sale'                                          AS unit_of_sale,
+            v->>'description'                                           AS description,
+            (v->>'weight_grams')::int                                   AS weight_grams,
+            CASE WHEN jsonb_typeof(v->'specifications') = 'object'
+                 THEN v->'specifications' ELSE NULL END                 AS specifications,
+            CASE WHEN jsonb_typeof(v->'oem_numbers') = 'array'
+                 THEN ARRAY(SELECT jsonb_array_elements_text(v->'oem_numbers'))
+                 ELSE NULL END                                          AS oem_numbers
+          FROM jsonb_array_elements($1::jsonb) AS v
+        )
+        UPDATE master_parts AS mp
+        SET
+          part_name      = COALESCE(data.part_name,      mp.part_name),
+          brand          = COALESCE(data.brand,          mp.brand),
+          category_l1    = COALESCE(data.category_l1,    mp.category_l1),
+          category_l2    = COALESCE(data.category_l2,    mp.category_l2),
+          category_l3    = COALESCE(data.category_l3,    mp.category_l3),
+          hsn_code       = COALESCE(data.hsn_code,       mp.hsn_code),
+          gst_rate       = COALESCE(data.gst_rate,       mp.gst_rate),
+          unit_of_sale   = COALESCE(data.unit_of_sale,   mp.unit_of_sale),
+          description    = COALESCE(data.description,    mp.description),
+          weight_grams   = COALESCE(data.weight_grams,   mp.weight_grams),
+          specifications = COALESCE(data.specifications, mp.specifications),
+          oem_numbers    = COALESCE(data.oem_numbers,    mp.oem_numbers),
+          updated_at     = NOW()
+        FROM data
+        WHERE mp.master_part_id = data.id
+      `, JSON.stringify(rows));
+
+      updated += toUpdate.length;
+    }
+
+    // ── 6. Vehicle fitments (only for newly created parts with vehicle data) ─
+    const fitmentRows = toCreate.filter(p => p.vehicleMake && p.vehicleModel);
+    if (fitmentRows.length > 0) {
+      // Fetch the IDs of parts we just created
+      const newOems = fitmentRows.map(p => p._oemNumber).filter(Boolean);
+      const newParts = await prisma.masterPart.findMany({
+        where: { primaryOemNumber: { in: newOems } },
+        select: { masterPartId: true, primaryOemNumber: true },
+      });
+      const newMap = new Map(newParts.map(p => [p.primaryOemNumber, p]));
+
+      // Cache vehicle type IDs
+      const vtCache = new Map();
+      const getVtId = async (slug) => {
+        if (!slug) return null;
+        if (vtCache.has(slug)) return vtCache.get(slug);
+        const vt = await prisma.vehicleType.findUnique({ where: { slug } });
+        vtCache.set(slug, vt?.id || null);
+        return vt?.id || null;
+      };
+
+      for (const p of fitmentRows) {
+        try {
+          const part = newMap.get(p._oemNumber);
+          if (!part) continue;
           const yearFrom = p.yearFrom ? parseInt(p.yearFrom) : new Date().getFullYear() - 10;
           const yearTo   = p.yearTo   ? parseInt(p.yearTo)   : null;
-          // Find or create the Vehicle record
           let vehicle = await prisma.vehicle.findFirst({
-            where: {
-              make: p.vehicleMake,
-              model: p.vehicleModel,
-              yearFrom,
+            where: { make: p.vehicleMake, model: p.vehicleModel, yearFrom,
               ...(p.fuelType ? { fuelType: p.fuelType } : {}),
-              ...(p.variant  ? { variant:  p.variant  } : {}),
-            },
+              ...(p.variant  ? { variant:  p.variant  } : {}) },
           });
           if (!vehicle) {
-            // Resolve vehicleTypeId from the vehicleType slug string if provided
-            let vehicleTypeId = null;
-            if (p.vehicleType) {
-              const vt = await prisma.vehicleType.findUnique({ where: { slug: p.vehicleType } });
-              vehicleTypeId = vt?.id || null;
-            }
             vehicle = await prisma.vehicle.create({
-              data: {
-                make: p.vehicleMake,
-                model: p.vehicleModel,
-                variant: p.variant || null,
-                yearFrom,
-                yearTo,
-                fuelType: p.fuelType || null,
+              data: { make: p.vehicleMake, model: p.vehicleModel, variant: p.variant || null,
+                yearFrom, yearTo, fuelType: p.fuelType || null,
                 vehicleType: p.vehicleType || 'Car',
-                vehicleTypeId,
-              },
+                vehicleTypeId: await getVtId(p.vehicleType) },
             });
           }
-          // Upsert fitment link
           await prisma.partFitment.upsert({
-            where: { masterPartId_vehicleId: { masterPartId: newPart.masterPartId, vehicleId: vehicle.vehicleId } },
+            where: { masterPartId_vehicleId: { masterPartId: part.masterPartId, vehicleId: vehicle.vehicleId } },
             update: {},
-            create: {
-              masterPartId: newPart.masterPartId,
-              vehicleId: vehicle.vehicleId,
-              fitType: 'EXACT',
-              confidence: 'unverified',
-              source: 'SUPPLIER_IMPORT',
-            },
+            create: { masterPartId: part.masterPartId, vehicleId: vehicle.vehicleId,
+              fitType: 'EXACT', confidence: 'unverified', source: 'SUPPLIER_IMPORT' },
           });
           fitments++;
+        } catch (fe) {
+          errors.push({ oemNumber: p._oemNumber, error: fe.message });
         }
-      } catch (rowErr) {
-        errors.push({ oemNumber: p.oemNumber, error: rowErr.message });
-        invalid++;   // row errored — treat as invalid/skipped
       }
     }
 

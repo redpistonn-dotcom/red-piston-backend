@@ -242,6 +242,75 @@ router.get('/vehicles', async (req, res, next) => {
   }
 });
 
+// ─── GET /api/marketplace/vehicles/types ─────────────────────────────────────
+// Returns all vehicle types with their body types nested.
+// Used to populate type pickers and body-type dropdowns together in one call.
+router.get('/vehicles/types', async (req, res, next) => {
+  try {
+    const types = await prisma.vehicleType.findMany({
+      orderBy: { sortOrder: 'asc' },
+      include: {
+        bodyTypes: {
+          where: { isActive: true },
+          orderBy: { sortOrder: 'asc' },
+          select: {
+            bodyTypeId: true, name: true, slug: true, icon: true, sortOrder: true,
+          },
+        },
+      },
+    });
+    res.json({ success: true, data: types });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/marketplace/vehicles/body-types?vehicleTypeId=1 ────────────────
+// Returns body types for a given vehicle type ID (or all if no filter).
+router.get('/vehicles/body-types', async (req, res, next) => {
+  try {
+    const { vehicleTypeId, vehicleTypeSlug } = req.query;
+    const where = { isActive: true };
+    if (vehicleTypeId) {
+      where.vehicleTypeId = parseInt(vehicleTypeId, 10);
+    } else if (vehicleTypeSlug) {
+      where.vehicleType = { slug: vehicleTypeSlug };
+    }
+    const bodyTypes = await prisma.vehicleBodyType.findMany({
+      where,
+      orderBy: { sortOrder: 'asc' },
+      include: {
+        vehicleType: { select: { id: true, name: true, slug: true, icon: true } },
+      },
+    });
+    res.json({ success: true, data: bodyTypes });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/marketplace/vehicles/manufacturers ─────────────────────────────
+// Returns all manufacturers from the vehicle_manufacturers table.
+// Query: vehicleType = "car" | "2wheeler" | "commercial" | "tractor"
+router.get('/vehicles/manufacturers', async (req, res, next) => {
+  try {
+    const { vehicleType } = req.query;
+    const where = { isActive: true };
+    if (vehicleType && vehicleType !== 'all') {
+      where.vehicleTypes = { has: vehicleType };
+    }
+    const manufacturers = await prisma.vehicleManufacturer.findMany({
+      where,
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: {
+        manufacturerId: true,
+        name:           true,
+        slug:           true,
+        country:        true,
+        vehicleTypes:   true,
+        parentGroup:    true,
+      },
+    });
+    res.json({ success: true, data: manufacturers });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/marketplace/vehicles/makes ─────────────────────────────────────
 // Returns distinct makes for top-level dropdown
 router.get('/vehicles/makes', async (req, res, next) => {
@@ -261,11 +330,43 @@ router.get('/vehicles/makes', async (req, res, next) => {
 });
 
 // ─── GET /api/marketplace/vehicles/models ────────────────────────────────────
-// Returns distinct models for a given make
+// Two modes:
+//   manufacturerId (int) → query vehicle_models table (new hierarchy)
+//   make (string)        → query flat vehicles table (legacy fallback)
 router.get('/vehicles/models', async (req, res, next) => {
   try {
-    const { make } = req.query;
-    if (!make) return res.status(400).json({ success: false, error: { code: 'MISSING_MAKE', message: 'make is required' } });
+    const { manufacturerId, make, vehicleType } = req.query;
+
+    // ── New path: structured VehicleModel table ──────────────────────────────
+    if (manufacturerId) {
+      const where = {
+        manufacturerId: parseInt(manufacturerId, 10),
+        isActive: true,
+      };
+      if (vehicleType) where.vehicleType = vehicleType;
+      const models = await prisma.vehicleModel.findMany({
+        where,
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        select: {
+          modelId:    true,
+          name:       true,
+          slug:       true,
+          vehicleType: true,
+          bodyType:   true,
+          yearFrom:   true,
+          yearTo:     true,
+        },
+      });
+      return res.json({ success: true, data: models });
+    }
+
+    // ── Legacy path: flat Vehicle table keyed by make string ─────────────────
+    if (!make) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'MISSING_PARAM', message: 'manufacturerId or make is required' },
+      });
+    }
     const results = await prisma.vehicle.findMany({
       where: { make: { equals: make, mode: 'insensitive' } },
       distinct: ['model'],

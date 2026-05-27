@@ -119,6 +119,9 @@ export async function createSession(res, user, { isNewUser = false, req = null }
   const ipAddress = req ? (req.ip || req.connection?.remoteAddress || null) : null;
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
+  // Single active session — revoke all previous sessions for this user
+  await prisma.refreshToken.deleteMany({ where: { userId: user.userId } });
+
   await prisma.refreshToken.create({
     data: {
       userId: user.userId,

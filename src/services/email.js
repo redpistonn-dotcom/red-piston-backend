@@ -32,7 +32,8 @@ function getResendClient() {
           text,
         });
       } catch (err) {
-        console.error(`[EMAIL] Failed to send email to ${to}:`, err);
+        console.error(`[EMAIL] Failed to send email to ${to}:`, err?.message || err);
+        if (err?.statusCode) console.error(`[EMAIL] Resend status: ${err.statusCode}`, err?.message);
         throw err;
       }
     }
@@ -115,19 +116,28 @@ function otpEmailHtml(code) {
   `);
 }
 
-function passwordResetHtml(resetUrl) {
+function passwordResetHtml(resetUrl, isFirstPassword = false) {
+  const heading = isFirstPassword ? 'Set a password for your account' : 'Reset your password';
+  const subtext = isFirstPassword
+    ? 'You signed up with Google or phone. Click the button below to add an email + password login to your account.'
+    : 'We received a request to reset the password for your account. Click the button below to set a new password.';
+  const btnLabel = isFirstPassword ? 'Set My Password' : 'Reset Password';
+  const ignoreNote = isFirstPassword
+    ? "If you didn't request this, you can safely ignore this email."
+    : "If you didn't request a password reset, ignore this email. Your password won't change.";
+
   return baseTemplate(`
     <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">
-      Reset your password
+      ${heading}
     </h1>
     <p style="margin:0 0 28px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      We received a request to reset the password for your account. Click the button below to set a new password.
+      ${subtext}
     </p>
     <div style="text-align:center;margin-bottom:28px;">
       <a href="${resetUrl}"
          style="display:inline-block;background:#F59E0B;color:#000;font-size:15px;font-weight:700;
                 padding:14px 36px;border-radius:10px;text-decoration:none;letter-spacing:0.3px;">
-        Reset Password
+        ${btnLabel}
       </a>
     </div>
     <p style="margin:0 0 16px;font-size:13px;color:#6B7280;line-height:1.5;">
@@ -142,7 +152,7 @@ function passwordResetHtml(resetUrl) {
       This link expires in <strong style="color:#9CA3AF;">1 hour</strong>.
     </p>
     <p style="margin:0;font-size:13px;color:#6B7280;">
-      If you didn't request a password reset, ignore this email. Your password won't change.
+      ${ignoreNote}
     </p>
   `);
 }
@@ -285,20 +295,30 @@ export async function verifyEmailOtp(email, code) {
 }
 
 /**
- * Send password reset email with a tokenized link.
+ * Send password reset (or first-time set) email with a tokenized link.
+ * @param {string} email
+ * @param {string} token - raw reset token
+ * @param {boolean} isFirstPassword - true if the user has no password yet (Google/phone account)
  */
-export async function sendPasswordResetEmail(email, token) {
+export async function sendPasswordResetEmail(email, token, isFirstPassword = false) {
   const frontendUrl = getFrontendAppUrl();
   const resetPath = frontendUrl.toLowerCase().includes('/reset-password')
     ? frontendUrl
     : `${frontendUrl}/reset-password`;
   const resetUrl = `${resetPath}?token=${token}`;
 
+  const subject = isFirstPassword
+    ? 'Set a password for your AutoSpace account'
+    : 'Reset your AutoSpace password';
+  const plainText = isFirstPassword
+    ? `Add a password to your AutoSpace account by visiting: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`
+    : `Reset your password by visiting: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`;
+
   await sendMail({
     to: email,
-    subject: 'Reset your AutoSpace password',
-    html: passwordResetHtml(resetUrl),
-    text: `Reset your password by visiting: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
+    subject,
+    html: passwordResetHtml(resetUrl, isFirstPassword),
+    text: plainText,
   });
 }
 

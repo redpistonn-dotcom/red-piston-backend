@@ -67,18 +67,26 @@ router.post('/forgot-password', passwordResetLimiter, async (req, res, next) => 
     const emailNormalized = normalizeEmail(email);
     console.log(`[RESET] Password reset requested for: ${email}`);
     if (!emailNormalized) {
-      console.log('[RESET] Missing email in request');
       return res.status(400).json({
         success: false,
         error: { code: 'MISSING_EMAIL', message: 'Email is required' },
       });
     }
-    // Always return success to avoid leaking email existence
+
     const user = await findUserByEmailInsensitive(emailNormalized);
-    if (!user || !user.passwordHash) {
-      console.log(`[RESET] No user found or no password hash for: ${email}`);
-      return res.json({ success: true, message: 'If the email is registered, a reset link has been sent' });
+
+    // No account at all — tell the user clearly
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'USER_NOT_FOUND', message: 'No account found with this email. Please create an account first.' },
+      });
     }
+
+    // Account found — allow password set/reset regardless of how they originally signed up.
+    // Google/phone users can use this flow to ADD a password to their account
+    // so they can also sign in with email + password going forward.
+
     // Invalidate previous unused tokens for this user
     await prisma.passwordResetToken.updateMany({
       where: { userId: user.userId, used: false },
@@ -93,10 +101,19 @@ router.post('/forgot-password', passwordResetLimiter, async (req, res, next) => 
         expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
       },
     });
-    console.log(`[RESET] Sending password reset email to: ${email}`);
-    await sendPasswordResetEmail(emailNormalized, rawToken);
-    res.json({ success: true, message: 'If the email is registered, a reset link has been sent' });
-    console.log(`[RESET] Password reset flow completed for: ${email}`);
+
+    // In dev mode — log the reset URL to console so you can test without email
+    if (process.env.NODE_ENV === 'development') {
+      const devUrl = `${process.env.RESET_PASSWORD_URL || 'http://localhost:5173/reset-password'}?token=${rawToken}`;
+      console.log(`\n[RESET] ✉  DEV MODE — reset link for ${email}:\n${devUrl}\n`);
+    }
+
+    // If no password exists yet (Google/phone user), send a "set password" email
+    const isFirstPassword = !user.passwordHash;
+    console.log(`[RESET] Sending ${isFirstPassword ? 'set-password' : 'reset'} email to: ${email}`);
+    await sendPasswordResetEmail(emailNormalized, rawToken, isFirstPassword);
+    res.json({ success: true, message: 'Reset link sent! Check your inbox and spam folder.' });
+    console.log(`[RESET] Email sent successfully for: ${email}`);
   } catch (err) {
     console.error('[RESET] Error in password reset flow:', err);
     next(err);

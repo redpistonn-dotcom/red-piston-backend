@@ -112,11 +112,12 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
       shopSpecificNotes, isMarketplaceListed,
     } = req.body;
 
-    const item = await prisma.shopInventory.findUnique({ where: { inventoryId: req.params.id } });
+    const inventoryId = parseInt(req.params.id);
+    const item = await prisma.shopInventory.findUnique({ where: { inventoryId } });
     if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
 
     const updated = await prisma.shopInventory.update({
-      where: { inventoryId: req.params.id },
+      where: { inventoryId },
       data: {
         ...(sellingPrice       !== undefined && { sellingPrice:       parseFloat(sellingPrice) }),
         ...(buyingPrice        !== undefined && { buyingPrice:        parseFloat(buyingPrice) }),
@@ -139,14 +140,15 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
 // GET /api/shop/inventory/:id/movements
 router.get('/:id/movements', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const item = await prisma.shopInventory.findUnique({ where: { inventoryId: req.params.id } });
+    const inventoryId = parseInt(req.params.id);
+    const item = await prisma.shopInventory.findUnique({ where: { inventoryId } });
     if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
 
     const movements = await prisma.movement.findMany({
-      where: { inventoryId: req.params.id },
+      where: { inventoryId },
       orderBy: { createdAt: 'desc' },
     });
-    const currentStock = await computeStock(req.params.id);
+    const currentStock = await computeStock(inventoryId);
     res.json({ movements, currentStock });
   } catch (err) {
     next(err);
@@ -386,14 +388,15 @@ router.post('/bulk-stock-in', authenticate, requireShopOwner, async (req, res, n
 // PATCH /api/shop/inventory/:id/marketplace — toggle isMarketplaceListed
 router.patch('/:id/marketplace', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const item = await prisma.shopInventory.findUnique({ where: { inventoryId: req.params.id } });
+    const inventoryId = parseInt(req.params.id);
+    const item = await prisma.shopInventory.findUnique({ where: { inventoryId } });
     if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
 
     const { listed } = req.body; // explicit boolean, or toggle if omitted
     const newValue = listed !== undefined ? Boolean(listed) : !item.isMarketplaceListed;
 
     const updated = await prisma.shopInventory.update({
-      where: { inventoryId: req.params.id },
+      where: { inventoryId },
       data: { isMarketplaceListed: newValue },
       include: { masterPart: true },
     });

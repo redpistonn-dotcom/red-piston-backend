@@ -7,6 +7,7 @@ import sessionRoutes from './session.js';
 import profileRoutes from './profile.js';
 import providerRoutes from './providers.js';
 import shopSetupRoutes from './shopSetup.js';
+import linkPhoneRoutes from './link-phone.js';
 
 const router = Router();
 
@@ -18,5 +19,6 @@ router.use(sessionRoutes);
 router.use(profileRoutes);
 router.use(providerRoutes);
 router.use(shopSetupRoutes);
+router.use(linkPhoneRoutes);
 
 export default router;

@@ -51,7 +51,7 @@ model User {
   // Computed convenience: true once any auth method is verified
   isVerified    Boolean  @default(false) @map("is_verified")
   // Primary shop association for SHOP_OWNER / SHOP_STAFF
-  shopId        String?  @map("shop_id")
+  shopId        Int?     @map("shop_id")
   shop          Shop?    @relation(fields: [shopId], references: [shopId])
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -85,7 +85,7 @@ model User {
 
 // One row per login method per user (Google sub, Firebase UID, phone, email).
 model AuthProvider {
-  id         String   @id @default(uuid())
+  id         Int      @id @default(autoincrement())
   userId     Int      @map("user_id")
   // EMAIL | PHONE | GOOGLE | FIREBASE
   provider   String
@@ -100,7 +100,7 @@ model AuthProvider {
 
 // Hashed OTPs for phone login and email verification.
 model OtpCode {
-  id         String    @id @default(uuid())
+  id         Int       @id @default(autoincrement())
   phone      String?
   email      String?
   code       String
@@ -120,9 +120,9 @@ model OtpCode {
 
 // Active sessions — one row per device per user.
 model RefreshToken {
-  id         String    @id @default(uuid())
+  id         Int       @id @default(autoincrement())
   userId     Int       @map("user_id")
-  shopId     String?   @map("shop_id")
+  shopId     Int?      @map("shop_id")
   tokenHash  String    @unique @map("token_hash")
   deviceInfo Json      @default("{}") @map("device_info")
   ipAddress  String?   @map("ip_address")
@@ -138,7 +138,7 @@ model RefreshToken {
 
 // Short-lived email password reset tokens — stored as SHA-256 hash.
 model PasswordResetToken {
-  id        String   @id @default(uuid())
+  id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
   tokenHash String   @unique @map("token_hash")
   expiresAt DateTime @map("expires_at")
@@ -155,7 +155,7 @@ model PasswordResetToken {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model UserProfile {
-  id          String    @id @default(uuid())
+  id          Int       @id @default(autoincrement())
   userId      Int       @unique @map("user_id")
   gender      String?
   dateOfBirth DateTime? @map("date_of_birth") @db.Date
@@ -167,7 +167,7 @@ model UserProfile {
 }
 
 model UserSettings {
-  id                   String  @id @default(uuid())
+  id                   Int     @id @default(autoincrement())
   userId               Int     @unique @map("user_id")
   notificationsEnabled Boolean @default(true) @map("notifications_enabled")
   emailNotifications   Boolean @default(true) @map("email_notifications")
@@ -180,7 +180,7 @@ model UserSettings {
 }
 
 model CustomerProfile {
-  id            String   @id @default(uuid())
+  id            Int      @id @default(autoincrement())
   userId        Int      @unique @map("user_id")
   // INDIVIDUAL | MECHANIC | FLEET_MANAGER
   profileType   String   @default("INDIVIDUAL") @map("profile_type")
@@ -196,7 +196,7 @@ model CustomerProfile {
 }
 
 model CustomerAddress {
-  addressId  String   @id @default(uuid()) @map("address_id")
+  addressId  Int      @id @default(autoincrement()) @map("address_id")
   userId     Int      @map("user_id")
   label      String   @default("Home")
   fullName   String   @map("full_name")
@@ -220,9 +220,9 @@ model CustomerAddress {
 }
 
 model CustomerVehicle {
-  id             String   @id @default(uuid())
+  id             Int      @id @default(autoincrement())
   userId         Int      @map("user_id")
-  vehicleId      String?  @map("vehicle_id")
+  vehicleId      Int?     @map("vehicle_id")
   nickname       String?
   make           String
   model          String
@@ -242,7 +242,7 @@ model CustomerVehicle {
 }
 
 model AdminProfile {
-  id          String   @id @default(uuid())
+  id          Int      @id @default(autoincrement())
   userId      Int      @unique @map("user_id")
   // SUPER_ADMIN | OPS | SUPPORT | FINANCE
   adminRole   String   @default("SUPPORT") @map("admin_role")
@@ -261,7 +261,7 @@ model AdminProfile {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model Shop {
-  shopId              String    @id @default(uuid()) @map("shop_id")
+  shopId              Int       @id @default(autoincrement()) @map("shop_id")
   name                String
   ownerName           String?   @map("owner_name")
   phone               String    @unique
@@ -307,8 +307,8 @@ model Shop {
 }
 
 model ShopUser {
-  id           String    @id @default(uuid())
-  shopId       String    @map("shop_id")
+  id           Int       @id @default(autoincrement())
+  shopId       Int       @map("shop_id")
   userId       Int       @map("user_id")
   // OWNER | MANAGER | CASHIER | MECHANIC | DELIVERY
   role         String    @default("CASHIER")
@@ -329,6 +329,67 @@ model ShopUser {
 // VEHICLE & PARTS CATALOG
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── VEHICLE MANUFACTURER ─────────────────────────────────────────────────────
+// One row per brand/OEM — Maruti Suzuki, Hero MotoCorp, Tata Motors, VECV, etc.
+// A single manufacturer can span multiple vehicle types (Tata: car + commercial;
+// Mahindra: car + commercial + tractor).  vehicleTypes is a Postgres string[] so
+// the frontend can filter makes by type without a join.
+model VehicleManufacturer {
+  manufacturerId Int      @id @default(autoincrement()) @map("manufacturer_id")
+  name           String   @unique                         // "Maruti Suzuki"
+  slug           String   @unique                         // "maruti-suzuki"
+  parentGroup    String?  @map("parent_group")            // "Suzuki Group", "Tata Group"
+  country        String   @default("India")
+  // Postgres text[]: ["car","2wheeler","commercial","tractor"]
+  vehicleTypes   String[] @default([]) @map("vehicle_types")
+  sortOrder      Int      @default(0) @map("sort_order")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  models         VehicleModel[]
+
+  @@map("vehicle_manufacturers")
+}
+
+// ─── VEHICLE MODEL ────────────────────────────────────────────────────────────
+// One row per nameplate — Swift, Nexon, Splendor, Activa, Eicher Pro 2049, etc.
+// yearTo = null  →  model still in production.
+// The frontend year-picker iterates yearFrom..min(yearTo, currentYear).
+model VehicleModel {
+  modelId        Int      @id @default(autoincrement()) @map("model_id")
+  manufacturerId Int      @map("manufacturer_id")
+  name           String                                   // "Swift", "Nexon"
+  slug           String                                   // "swift", "nexon"
+  // Legacy string — kept for fast querying without join
+  // car | 2wheeler | commercial | tractor
+  vehicleType    String   @map("vehicle_type")
+  // FK → vehicle_types.vehicle_type_id (structured; null until backfill runs)
+  vehicleTypeId  Int?     @map("vehicle_type_id")
+  // Legacy string — kept for backward compat
+  // hatchback | sedan | suv | mpv | pickup | motorcycle | scooter
+  // mini-truck | truck | bus | van | 3-wheeler | tractor
+  bodyType       String?  @map("body_type")
+  // FK → vehicle_body_types.body_type_id (structured; null until backfill runs)
+  bodyTypeId     Int?     @map("body_type_id")
+  yearFrom       Int      @map("year_from")
+  yearTo         Int?     @map("year_to")
+  isActive       Boolean  @default(true) @map("is_active")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  manufacturer   VehicleManufacturer  @relation(fields: [manufacturerId], references: [manufacturerId])
+  vehicleTypeRef VehicleType?         @relation(fields: [vehicleTypeId], references: [id])
+  bodyTypeRef    VehicleBodyType?     @relation(fields: [bodyTypeId], references: [bodyTypeId])
+  vehicles       Vehicle[]
+
+  @@unique([manufacturerId, name])
+  @@index([manufacturerId])
+  @@index([vehicleType])
+  @@index([vehicleTypeId])
+  @@index([bodyTypeId])
+  @@map("vehicle_models")
+}
+
 // ─── VEHICLE TYPE MASTER TABLE ────────────────────────────────────────────────
 // Seeded from VEHICLE_TYPES constant in frontend; also used in admin import dropdown.
 // Car, Motorcycle/2-Wheeler, Commercial Vehicle, Tractor, Auto Rickshaw, EV
@@ -340,13 +401,42 @@ model VehicleType {
   sortOrder Int       @default(0) @map("sort_order")
   createdAt DateTime  @default(now()) @map("created_at")
 
-  vehicles  Vehicle[]
+  vehicles      Vehicle[]
+  vehicleModels VehicleModel[]
+  bodyTypes     VehicleBodyType[]
 
   @@map("vehicle_types")
 }
 
+// ─── VEHICLE BODY TYPE ────────────────────────────────────────────────────────
+// One row per body style per vehicle type.
+//   Car:        hatchback | sedan | suv | mpv | crossover | coupe | van | pickup
+//   2-Wheeler:  motorcycle | scooter | moped
+//   Commercial: mini-truck | truck | bus | pickup | van (cargo)
+//   Tractor:    tractor | mini-tractor | power-tiller | harvester
+//   Auto Rick:  3-wheeler | e-rickshaw
+//   EV:         electric-car | electric-scooter | electric-motorcycle | etc.
+model VehicleBodyType {
+  bodyTypeId    Int      @id @default(autoincrement()) @map("body_type_id")
+  vehicleTypeId Int      @map("vehicle_type_id")         // FK → vehicle_types.vehicle_type_id
+  name          String                                    // "Hatchback", "SUV"
+  slug          String   @unique                         // "hatchback", "suv"
+  icon          String?                                  // "🚗", "🏍️"
+  description   String?
+  sortOrder     Int      @default(0) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  vehicleType   VehicleType    @relation(fields: [vehicleTypeId], references: [id])
+  vehicles      Vehicle[]
+  vehicleModels VehicleModel[]
+
+  @@index([vehicleTypeId])
+  @@map("vehicle_body_types")
+}
+
 model Vehicle {
-  vehicleId      String       @id @default(uuid()) @map("vehicle_id")
+  vehicleId      Int          @id @default(autoincrement()) @map("vehicle_id")
   make           String
   model          String
   variant        String?
@@ -356,33 +446,43 @@ model Vehicle {
   engineCc       Int?         @map("engine_cc")
   engineCode     String?      @map("engine_code")
   transmission   String?
+  // Legacy string — kept for fast querying without join
   bodyType       String?      @map("body_type")
-  vehicleType    String       @default("Car") @map("vehicle_type")   // legacy string kept for compat
-  vehicleTypeId  Int?         @map("vehicle_type_id")                // FK to VehicleType master table
+  // FK → vehicle_body_types.body_type_id (structured; null until backfill runs)
+  bodyTypeId     Int?         @map("body_type_id")
+  // Legacy string kept for compat ("Car", "Motorcycle", …)
+  vehicleType    String       @default("Car") @map("vehicle_type")
+  vehicleTypeId  Int?         @map("vehicle_type_id")   // FK → vehicle_types
+  // FK to VehicleModel — set during seeding & when shop confirms a new fitment
+  modelId        Int?         @map("model_id")
   absEquipped    Boolean      @default(false) @map("abs_equipped")
   createdAt      DateTime     @default(now()) @map("created_at")
 
-  vehicleTypeRef VehicleType? @relation(fields: [vehicleTypeId], references: [id])
+  vehicleTypeRef  VehicleType?     @relation(fields: [vehicleTypeId], references: [id])
+  bodyTypeRef     VehicleBodyType? @relation(fields: [bodyTypeId], references: [bodyTypeId])
+  vehicleModelRef VehicleModel?    @relation(fields: [modelId], references: [modelId])
 
   fitments            PartFitment[]
   customerVehicles    CustomerVehicle[]
   confirmFitRequests  ConfirmFitRequest[]
 
   @@index([make, model])
+  @@index([vehicleTypeId])
+  @@index([bodyTypeId])
   @@map("vehicles")
 }
 
 model MasterPart {
-  masterPartId       String    @id @default(uuid()) @map("master_part_id")
+  masterPartId       Int       @id @default(autoincrement()) @map("master_part_id")
   partName           String    @map("part_name")
   brand              String?
   categoryL1         String?   @map("category_l1")
   categoryL2         String?   @map("category_l2")
   categoryL3         String?   @map("category_l3")
   // Primary OEM part number (first/canonical — rest go in oemNumbers array)
-  primaryOemNumber   String?   @map("primary_oem_number")
-  oemNumbers         String[]  @default([]) @map("oem_numbers")
-  barcodes           String[]  @default([]) @map("barcodes")
+  primaryOemNumber   String?   @unique @map("primary_oem_number")
+  oemNumbers         String?   @map("oem_numbers")
+  barcodes           String?   @map("barcodes")
   hsnCode            String?   @map("hsn_code")
   gstRate            Decimal   @default(18.00) @map("gst_rate") @db.Decimal(5, 2)
   unitOfSale         String    @default("Piece") @map("unit_of_sale")
@@ -390,13 +490,13 @@ model MasterPart {
   description        String?
   specifications     Json?
   imageUrl           String?   @map("image_url")
-  images             String[]  @default([])
+  images             String?
   isUniversal        Boolean   @default(false) @map("is_universal")
   requiresFitment    Boolean   @default(true) @map("requires_fitment")
   status             String    @default("PENDING")
   source             String    @default("MANUAL")
   // Shop that first contributed this part to the catalog
-  contributedByShopId String?  @map("contributed_by_shop_id")
+  contributedByShopId Int?     @map("contributed_by_shop_id")
   verifiedAt         DateTime? @map("verified_at")
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
@@ -412,9 +512,9 @@ model MasterPart {
 }
 
 model PartFitment {
-  fitmentId    String     @id @default(uuid()) @map("fitment_id")
-  masterPartId String     @map("master_part_id")
-  vehicleId    String     @map("vehicle_id")
+  fitmentId    Int        @id @default(autoincrement()) @map("fitment_id")
+  masterPartId Int        @map("master_part_id")
+  vehicleId    Int        @map("vehicle_id")
   // EXACT | COMPATIBLE | UNIVERSAL
   fitType      String     @map("fit_type")
   // verified | shop_confirmed | unverified
@@ -439,11 +539,11 @@ model PartFitment {
 }
 
 model ConfirmFitRequest {
-  id           String    @id @default(uuid())
+  id           Int       @id @default(autoincrement())
   userId       Int       @map("user_id")
-  masterPartId String    @map("master_part_id")
-  shopId       String    @map("shop_id")
-  vehicleId    String?   @map("vehicle_id")
+  masterPartId Int       @map("master_part_id")
+  shopId       Int       @map("shop_id")
+  vehicleId    Int?      @map("vehicle_id")
 
   // Vehicle info captured from user
   make         String
@@ -463,7 +563,7 @@ model ConfirmFitRequest {
 
   // Once shop confirms, auto-save to PartFitment
   savedToFitments Boolean   @default(false) @map("saved_to_fitments")
-  fitmentId       String?   @map("fitment_id")
+  fitmentId       Int?      @map("fitment_id")
 
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
@@ -485,9 +585,9 @@ model ConfirmFitRequest {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model ShopInventory {
-  inventoryId           String    @id @default(uuid()) @map("inventory_id")
-  shopId                String    @map("shop_id")
-  masterPartId          String    @map("master_part_id")
+  inventoryId           Int       @id @default(autoincrement()) @map("inventory_id")
+  shopId                Int       @map("shop_id")
+  masterPartId          Int       @map("master_part_id")
   sellingPrice          Decimal   @map("selling_price") @db.Decimal(10, 2)
   buyingPrice           Decimal?  @map("buying_price") @db.Decimal(10, 2)
   stockQty              Int       @default(0) @map("stock_qty")
@@ -522,9 +622,9 @@ model ShopInventory {
 
 // Immutable stock ledger — INSERT ONLY, never UPDATE or DELETE rows.
 model Movement {
-  movementId    String   @id @default(uuid()) @map("movement_id")
-  shopId        String   @map("shop_id")
-  inventoryId   String   @map("inventory_id")
+  movementId    Int      @id @default(autoincrement()) @map("movement_id")
+  shopId        Int      @map("shop_id")
+  inventoryId   Int      @map("inventory_id")
   createdBy     Int?     @map("created_by")
   type          String
   qty           Int
@@ -534,8 +634,8 @@ model Movement {
   totalAmount   Decimal? @map("total_amount") @db.Decimal(10, 2)
   gstAmount     Decimal? @map("gst_amount") @db.Decimal(10, 2)
   profit        Decimal? @db.Decimal(10, 2)
-  invoiceId     String?  @map("invoice_id")
-  partyId       String?  @map("party_id")
+  invoiceId     Int?     @map("invoice_id")
+  partyId       Int?     @map("party_id")
   // External reference: bill number, PO number, challan number, etc.
   referenceNumber String? @map("reference_number")
   notes         String?
@@ -557,8 +657,8 @@ model Movement {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model Party {
-  partyId     String   @id @default(uuid()) @map("party_id")
-  shopId      String   @map("shop_id")
+  partyId     Int      @id @default(autoincrement()) @map("party_id")
+  shopId      Int      @map("shop_id")
   name        String
   phone       String?
   email       String?
@@ -587,9 +687,9 @@ model Party {
 // Udhaar ledger — immutable credit/debit trail per party.
 // Every credit sale, payment received, and adjustment creates a row here.
 model PartyLedger {
-  ledgerId      String   @id @default(uuid()) @map("ledger_id")
-  shopId        String   @map("shop_id")
-  partyId       String   @map("party_id")
+  ledgerId      Int      @id @default(autoincrement()) @map("ledger_id")
+  shopId        Int      @map("shop_id")
+  partyId       Int      @map("party_id")
   // SALE_CREDIT | PAYMENT_RECEIVED | RETURN_CREDIT | ADJUSTMENT | OPENING_BALANCE
   entryType     String   @map("entry_type")
   // Positive = amount party owes shop (debit); Negative = shop owes party (credit)
@@ -597,7 +697,7 @@ model PartyLedger {
   creditAmount  Decimal  @default(0) @map("credit_amount") @db.Decimal(10, 2)
   // Running balance after this entry (positive = party owes shop)
   balanceAfter  Decimal  @map("balance_after") @db.Decimal(10, 2)
-  invoiceId     String?  @map("invoice_id")
+  invoiceId     Int?     @map("invoice_id")
   referenceNo   String?  @map("reference_no")
   notes         String?
   // Staff member who recorded this entry
@@ -618,10 +718,10 @@ model PartyLedger {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model Invoice {
-  invoiceId      String   @id @default(uuid()) @map("invoice_id")
+  invoiceId      Int      @id @default(autoincrement()) @map("invoice_id")
   invoiceNumber  String   @unique @map("invoice_number")
-  shopId         String   @map("shop_id")
-  partyId        String?  @map("party_id")
+  shopId         Int      @map("shop_id")
+  partyId        Int?     @map("party_id")
   createdBy      Int?     @map("created_by")
   // RETAIL | CREDIT | ESTIMATE | RETURN | WORKSHOP
   invoiceType    String   @default("RETAIL") @map("invoice_type")
@@ -645,7 +745,7 @@ model Invoice {
   // True when full or partial credit was extended (links to PartyLedger)
   isCreditSale   Boolean  @default(false) @map("is_credit_sale")
   // Set when this invoice was generated from a marketplace order
-  marketplaceOrderId String? @map("marketplace_order_id")
+  marketplaceOrderId Int? @map("marketplace_order_id")
   // UPI transaction reference ID captured at POS
   upiReference   String?  @map("upi_reference")
   pdfUrl         String?  @map("pdf_url")
@@ -669,9 +769,9 @@ model Invoice {
 }
 
 model InvoiceItem {
-  itemId      String   @id @default(uuid()) @map("item_id")
-  invoiceId   String   @map("invoice_id")
-  inventoryId String   @map("inventory_id")
+  itemId      Int      @id @default(autoincrement()) @map("item_id")
+  invoiceId   Int      @map("invoice_id")
+  inventoryId Int      @map("inventory_id")
   partName    String   @map("part_name")
   brand       String?
   hsnCode     String?  @map("hsn_code")
@@ -691,8 +791,8 @@ model InvoiceItem {
 }
 
 model InvoicePayment {
-  id         String   @id @default(uuid())
-  invoiceId  String   @map("invoice_id")
+  id         Int      @id @default(autoincrement())
+  invoiceId  Int      @map("invoice_id")
   amount     Decimal  @db.Decimal(10, 2)
   mode       String
   reference  String?
@@ -709,10 +809,10 @@ model InvoicePayment {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model PurchaseOrder {
-  poId          String    @id @default(uuid()) @map("po_id")
+  poId          Int       @id @default(autoincrement()) @map("po_id")
   poNumber      String    @unique @map("po_number")
-  shopId        String    @map("shop_id")
-  partyId       String?   @map("party_id")
+  shopId        Int       @map("shop_id")
+  partyId       Int?      @map("party_id")
   createdBy     Int?      @map("created_by")
   supplierName  String?   @map("supplier_name")
   supplierPhone String?   @map("supplier_phone")
@@ -741,9 +841,9 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  itemId      String   @id @default(uuid()) @map("item_id")
-  poId        String   @map("po_id")
-  inventoryId String   @map("inventory_id")
+  itemId      Int      @id @default(autoincrement()) @map("item_id")
+  poId        Int      @map("po_id")
+  inventoryId Int      @map("inventory_id")
   partName    String   @map("part_name")
   hsnCode     String?  @map("hsn_code")
   orderedQty  Int      @map("ordered_qty")
@@ -766,9 +866,9 @@ model PurchaseOrderItem {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model JobCard {
-  jobId         String    @id @default(uuid()) @map("job_id")
+  jobId         Int       @id @default(autoincrement()) @map("job_id")
   jobNumber     String    @unique @map("job_number")
-  shopId        String    @map("shop_id")
+  shopId        Int       @map("shop_id")
   createdBy     Int?      @map("created_by")
   assignedTo    String?   @map("assigned_to")
   customerName  String    @map("customer_name")
@@ -805,9 +905,9 @@ model JobCard {
 }
 
 model JobCardItem {
-  id          String   @id @default(uuid())
-  jobId       String   @map("job_id")
-  inventoryId String?  @map("inventory_id")
+  id          Int      @id @default(autoincrement())
+  jobId       Int      @map("job_id")
+  inventoryId Int?     @map("inventory_id")
   description String
   qty         Int      @default(1)
   unitPrice   Decimal  @map("unit_price") @db.Decimal(10, 2)
@@ -825,14 +925,14 @@ model JobCardItem {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model MarketplaceOrder {
-  orderId              String    @id @default(uuid()) @map("order_id")
+  orderId              Int       @id @default(autoincrement()) @map("order_id")
   orderNumber          String    @unique @map("order_number")
   customerId           Int?      @map("customer_id")
-  customerVehicleId    String?   @map("customer_vehicle_id")
-  shopId               String    @map("shop_id")
+  customerVehicleId    Int?      @map("customer_vehicle_id")
+  shopId               Int       @map("shop_id")
   customerName         String?   @map("customer_name")
   customerPhone        String    @map("customer_phone")
-  deliveryAddressId    String?   @map("delivery_address_id")
+  deliveryAddressId    Int?      @map("delivery_address_id")
   deliveryAddress      String?   @map("delivery_address")
   deliveryFee          Decimal   @default(0) @map("delivery_fee") @db.Decimal(10, 2)
   subtotal             Decimal   @db.Decimal(10, 2)
@@ -868,9 +968,9 @@ model MarketplaceOrder {
 }
 
 model MarketplaceOrderItem {
-  itemId      String   @id @default(uuid()) @map("item_id")
-  orderId     String   @map("order_id")
-  inventoryId String   @map("inventory_id")
+  itemId      Int      @id @default(autoincrement()) @map("item_id")
+  orderId     Int      @map("order_id")
+  inventoryId Int      @map("inventory_id")
   partName    String   @map("part_name")
   brand       String?
   qty         Int
@@ -884,10 +984,10 @@ model MarketplaceOrderItem {
 }
 
 model MarketplaceReview {
-  reviewId         String    @id @default(uuid()) @map("review_id")
-  masterPartId     String    @map("master_part_id")
-  inventoryId      String?   @map("inventory_id")
-  orderId          String?   @map("order_id")
+  reviewId         Int       @id @default(autoincrement()) @map("review_id")
+  masterPartId     Int       @map("master_part_id")
+  inventoryId      Int?      @map("inventory_id")
+  orderId          Int?      @map("order_id")
   userId           Int?      @map("user_id")
   customerName     String    @map("customer_name")
   rating           Int
