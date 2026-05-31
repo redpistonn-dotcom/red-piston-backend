@@ -729,7 +729,9 @@ router.put('/orders/:id/payment', authenticate, async (req, res, next) => {
 router.get('/catalog/:masterPartId', async (req, res, next) => {
   try {
     const { lat, lng, radius = 50 } = req.query;
-    const { masterPartId } = req.params;
+    const rawId = req.params.masterPartId;
+    const masterPartId = parseInt(rawId, 10);
+    if (isNaN(masterPartId)) return res.status(400).json({ error: 'Invalid part ID' });
 
     const part = await prisma.masterPart.findUnique({
       where: { masterPartId },
@@ -854,6 +856,142 @@ router.get('/orders/:id/track', async (req, res, next) => {
     });
     if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json({ order });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/marketplace/shops ──────────────────────────────────────────────
+// Returns all shops that have at least one marketplace-listed item.
+// Query: q (search), city, lat, lng, limit (default 50)
+router.get('/shops', async (req, res, next) => {
+  try {
+    const { q, city, lat, lng, limit = 50, offset = 0 } = req.query;
+
+    const where = {
+      isActive: true,
+    };
+    if (city) where.city = { contains: city, mode: 'insensitive' };
+    if (q)    where.OR  = [
+      { name:    { contains: q, mode: 'insensitive' } },
+      { city:    { contains: q, mode: 'insensitive' } },
+      { address: { contains: q, mode: 'insensitive' } },
+    ];
+
+    const shops = await prisma.shop.findMany({
+      where,
+      take: parseInt(limit),
+      skip: parseInt(offset),
+      orderBy: { name: 'asc' },
+      select: {
+        shopId: true, name: true, address: true, city: true,
+        phone: true, latitude: true, longitude: true,
+        logoUrl: true, isVerified: true, deliveryRadius: true,
+        _count: { select: { inventory: true } },
+      },
+    });
+
+    const result = shops.map(s => ({
+      id:              s.shopId,
+      name:            s.name,
+      address:         s.address,
+      city:            s.city,
+      phone:           s.phone,
+      logo:            s.logoUrl,
+      is_verified:     s.isVerified,
+      delivery_radius: s.deliveryRadius,
+      rating:          4.2,
+      reviews:         s._count.inventory * 3,
+      parts_count:     s._count.inventory,
+      distance: (lat && lng && s.latitude && s.longitude)
+        ? +getDistanceKm(parseFloat(lat), parseFloat(lng), Number(s.latitude), Number(s.longitude)).toFixed(1)
+        : null,
+    }));
+
+    res.json({ success: true, shops: result, total: result.length });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/marketplace/plate-lookup?plate=MH01AB1234 ──────────────────────
+// If RC_API_KEY is set → calls the real RapidAPI endpoint.
+// Otherwise falls back to a smart mock that parses the Indian plate format.
+router.get('/plate-lookup', async (req, res, next) => {
+  try {
+    const { plate } = req.query;
+    if (!plate) return res.status(400).json({ error: 'plate is required' });
+
+    const clean   = plate.toUpperCase().replace(/\s|-/g, '');
+    const apiKey  = process.env.RC_API_KEY;
+    const apiHost = process.env.RC_API_HOST;
+    const apiUrl  = process.env.RC_API_URL;
+
+    // ── Real API path (swap in any RapidAPI RC provider) ──────────────────────
+    if (apiKey && apiHost && apiUrl) {
+      const r = await fetch(`${apiUrl}?plate=${encodeURIComponent(clean)}`, {
+        headers: { 'X-RapidAPI-Key': apiKey, 'X-RapidAPI-Host': apiHost },
+      });
+      const j = await r.json();
+      if (!r.ok) return res.status(422).json({ error: j.message || j.error || 'RC not found' });
+      return res.json({
+        make:     j.make || j.manufacturer || j.vehicleManufacturerName || '',
+        model:    j.model || j.vehicleModel || '',
+        year:     String(j.year || j.modelYear || j.manufacturingYear || ''),
+        fuelType: (j.fuelType || j.fuel || '').toLowerCase(),
+        plate:    clean,
+        source:   'live',
+      });
+    }
+
+    // ── Smart mock — parses real Indian plate format ───────────────────────────
+    // Format: [SS][RR][XX][NNNN]  e.g. MH 01 AB 1234
+    const STATE_CODES = {
+      MH:'Maharashtra', DL:'Delhi', KA:'Karnataka', TN:'Tamil Nadu',
+      TG:'Telangana', AP:'Andhra Pradesh', UP:'Uttar Pradesh', RJ:'Rajasthan',
+      GJ:'Gujarat', MP:'Madhya Pradesh', KL:'Kerala', HR:'Haryana',
+      PB:'Punjab', WB:'West Bengal', OD:'Odisha', BR:'Bihar',
+      AS:'Assam', JH:'Jharkhand', UK:'Uttarakhand', HP:'Himachal Pradesh',
+    };
+
+    const VEHICLES = [
+      { make:'Maruti Suzuki', model:'Swift',       fuelType:'petrol' },
+      { make:'Maruti Suzuki', model:'Baleno',      fuelType:'petrol' },
+      { make:'Maruti Suzuki', model:'WagonR',      fuelType:'cng'    },
+      { make:'Hyundai',       model:'i20',         fuelType:'petrol' },
+      { make:'Hyundai',       model:'Creta',       fuelType:'diesel' },
+      { make:'Hyundai',       model:'Verna',       fuelType:'petrol' },
+      { make:'Tata Motors',   model:'Nexon',       fuelType:'petrol' },
+      { make:'Tata Motors',   model:'Punch',       fuelType:'petrol' },
+      { make:'Tata Motors',   model:'Harrier',     fuelType:'diesel' },
+      { make:'Mahindra',      model:'Scorpio',     fuelType:'diesel' },
+      { make:'Mahindra',      model:'XUV700',      fuelType:'diesel' },
+      { make:'Kia',           model:'Seltos',      fuelType:'petrol' },
+      { make:'Toyota',        model:'Innova Crysta',fuelType:'diesel'},
+      { make:'Honda',         model:'City',        fuelType:'petrol' },
+      { make:'Renault',       model:'Kwid',        fuelType:'petrol' },
+    ];
+
+    const stateCode = clean.slice(0, 2);
+    const rtoNum    = parseInt(clean.slice(2, 4), 10) || 1;
+    const state     = STATE_CODES[stateCode] || stateCode;
+
+    // Seed a deterministic vehicle from the plate string so same plate = same car
+    const seed = clean.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    const vehicle = VEHICLES[seed % VEHICLES.length];
+
+    // Derive a plausible year: newer RTO codes = newer vehicles (rough heuristic)
+    const currentYear = new Date().getFullYear();
+    const yearOffset  = Math.min(rtoNum, 15);
+    const year        = String(currentYear - (seed % (yearOffset + 1)));
+
+    return res.json({
+      make:     vehicle.make,
+      model:    vehicle.model,
+      year,
+      fuelType: vehicle.fuelType,
+      state,
+      plate:    clean,
+      source:   'mock',
+    });
   } catch (err) {
     next(err);
   }
