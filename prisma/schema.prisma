@@ -80,6 +80,8 @@ model User {
   reviews               MarketplaceReview[]
   confirmFitRequests    ConfirmFitRequest[]
 
+  @@index([shopId])                             // list all users belonging to a shop
+  @@index([role])                               // admin role-based queries
   @@map("users")
 }
 
@@ -508,6 +510,8 @@ model MasterPart {
 
   @@index([partName])
   @@index([brand])
+  @@index([categoryL1])                         // category browse — GET /marketplace/browse?category=
+  @@index([status])                             // admin catalog filtering by PENDING / VERIFIED / REJECTED
   @@map("master_parts")
 }
 
@@ -617,6 +621,8 @@ model ShopInventory {
 
   @@unique([shopId, masterPartId])
   @@index([shopId])
+  @@index([shopId, isMarketplaceListed])        // marketplace browse — hot path, filters listed + shopId together
+  @@index([shopId, stockQty])                  // low-stock alerts
   @@map("shop_inventory")
 }
 
@@ -649,6 +655,7 @@ model Movement {
 
   @@index([shopId, createdAt(sort: Desc)])
   @@index([inventoryId])
+  @@index([shopId, type])                       // movement type reporting (SALE / PURCHASE / RETURN breakdown)
   @@map("movements")
 }
 
@@ -681,6 +688,7 @@ model Party {
   ledgerEntries  PartyLedger[]
 
   @@index([shopId])
+  @@index([shopId, type])                       // filter CUSTOMER vs SUPPLIER
   @@map("parties")
 }
 
@@ -765,6 +773,8 @@ model Invoice {
   ledgerEntries PartyLedger[]
 
   @@index([shopId, createdAt(sort: Desc)])
+  @@index([shopId, status])                     // filter PAID / CREDIT / ESTIMATE invoices
+  @@index([partyId])                            // party invoice history
   @@map("invoices")
 }
 
@@ -787,6 +797,8 @@ model InvoiceItem {
   invoice   Invoice       @relation(fields: [invoiceId], references: [invoiceId], onDelete: Cascade)
   inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
 
+  @@index([invoiceId])
+  @@index([inventoryId])
   @@map("invoice_items")
 }
 
@@ -858,6 +870,8 @@ model PurchaseOrderItem {
   purchaseOrder PurchaseOrder @relation(fields: [poId], references: [poId], onDelete: Cascade)
   inventory     ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
 
+  @@index([poId])
+  @@index([inventoryId])
   @@map("purchase_order_items")
 }
 
@@ -901,6 +915,7 @@ model JobCard {
   items   JobCardItem[]
 
   @@index([shopId, createdAt(sort: Desc)])
+  @@index([shopId, status])                     // dashboard open-jobs filter
   @@map("job_cards")
 }
 
@@ -917,6 +932,8 @@ model JobCardItem {
   jobCard   JobCard        @relation(fields: [jobId], references: [jobId], onDelete: Cascade)
   inventory ShopInventory? @relation(fields: [inventoryId], references: [inventoryId])
 
+  @@index([jobId])
+  @@index([inventoryId])
   @@map("job_card_items")
 }
 
@@ -964,6 +981,8 @@ model MarketplaceOrder {
 
   @@index([customerId, createdAt(sort: Desc)])
   @@index([shopId, createdAt(sort: Desc)])
+  @@index([shopId, status])                     // shop order management by status
+  @@index([paymentStatus])                      // payout processing queries
   @@map("marketplace_orders")
 }
 
@@ -980,6 +999,8 @@ model MarketplaceOrderItem {
   order     MarketplaceOrder @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
   inventory ShopInventory    @relation(fields: [inventoryId], references: [inventoryId])
 
+  @@index([orderId])
+  @@index([inventoryId])
   @@map("marketplace_order_items")
 }
 

@@ -14,24 +14,11 @@ import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
 import { generateInvoicePdf } from '../services/pdf.js';
 import { sendInvoiceWhatsApp } from '../services/whatsapp.js';
+import { nextSeq, currentYYYYMM } from '../lib/sequence.js';
 
 const router = Router();
 
 const VALID_INVOICE_TYPES = ['RETAIL', 'CREDIT', 'ESTIMATE', 'RETURN', 'WORKSHOP'];
-
-// ─── Helper: Generate invoice number YYYYMM-XXXX ─────────────────────────────
-async function generateInvoiceNumber(shopId) {
-  const now    = new Date();
-  const prefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const lastInvoice = await prisma.invoice.findFirst({
-    where:   { shopId, invoiceNumber: { startsWith: prefix } },
-    orderBy: { invoiceNumber: 'desc' },
-  });
-  const seq = lastInvoice
-    ? parseInt(lastInvoice.invoiceNumber.split('-')[1]) + 1
-    : 1;
-  return `${prefix}-${String(seq).padStart(4, '0')}`;
-}
 
 // ─── Helper: write one PartyLedger debit row (mirrors parties.js helper) ─────
 async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAmount = 0, invoiceId, entryType, notes, createdBy }) {
@@ -65,7 +52,8 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
       ? invoiceType
       : (paymentMode === 'CREDIT' ? 'CREDIT' : 'RETAIL');
 
-    const invoiceNumber = await generateInvoiceNumber(req.shopId);
+    // invoiceNumber is generated INSIDE the transaction below via nextSeq()
+    // so the counter increment and the invoice INSERT are in the same atomic unit.
 
     // ── Validate stock + calculate line-item totals ───────────────────────────
     let subtotal = 0, cgst = 0, sgst = 0;
@@ -80,6 +68,10 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
         throw { status: 400, message: `Invalid inventory item: ${item.inventoryId}` };
       }
 
+      // Pre-flight stock check — provides a user-friendly error message.
+      // NOTE: the authoritative atomic guard happens inside the transaction below via
+      // updateMany({ where: { stockQty: { gte: qty } } }) — this pre-flight check is
+      // only for early UX feedback; it does NOT prevent the race.
       if (invType !== 'ESTIMATE' && inv.stockQty < item.qty) {
         throw { status: 400, message: `Insufficient stock for ${inv.masterPart.partName}: have ${inv.stockQty}, need ${item.qty}` };
       }
@@ -120,6 +112,13 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
 
     // ── Create invoice + movements in a single transaction ───────────────────
     const invoice = await prisma.$transaction(async (tx) => {
+      // Generate invoice number INSIDE the transaction so the counter increment
+      // and the invoice INSERT are in the same atomic unit.  If the transaction
+      // rolls back (e.g. stock check fails) the counter rolls back too.
+      const yyyymm = currentYYYYMM();
+      const seq = await nextSeq(tx, req.shopId, `INV-${yyyymm}`);
+      const invoiceNumber = `${yyyymm}-${String(seq).padStart(4, '0')}`;
+
       const inv = await tx.invoice.create({
         data: {
           invoiceNumber,
@@ -189,15 +188,24 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
             },
           });
 
-          await tx.shopInventory.update({
-            where: { inventoryId: item.inventoryId },
-            data: {
-              stockQty: invType === 'RETURN'
-                ? { increment: item.qty }
-                : { decrement: item.qty },
-              lastSoldAt: invType !== 'RETURN' ? new Date() : undefined,
-            },
-          });
+          if (invType === 'RETURN') {
+            await tx.shopInventory.update({
+              where: { inventoryId: item.inventoryId },
+              data:  { stockQty: { increment: item.qty } },
+            });
+          } else {
+            // Atomic decrement: only succeeds when stockQty >= qty at the moment of
+            // the UPDATE, eliminating the TOCTOU race between the pre-flight check
+            // above and the actual decrement. If count === 0 another request beat us
+            // to the last units and we must abort the transaction.
+            const deducted = await tx.shopInventory.updateMany({
+              where: { inventoryId: item.inventoryId, stockQty: { gte: item.qty } },
+              data:  { stockQty: { decrement: item.qty }, lastSoldAt: new Date() },
+            });
+            if (deducted.count === 0) {
+              throw { status: 400, message: `Insufficient stock for ${item.partName} — it was just sold to another customer` };
+            }
+          }
         }
       }
 

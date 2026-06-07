@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate } from '../middleware/auth.js';
@@ -693,14 +694,44 @@ router.put('/orders/:id/status', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PUT /api/marketplace/orders/:id/payment — update payment status (Razorpay webhook)
+// PUT /api/marketplace/orders/:id/payment — update payment status (Razorpay callback)
+//
+// SECURITY: Any transition to PAID requires a valid Razorpay HMAC-SHA256 signature.
+// Without this check an authenticated user could self-mark their own order as paid
+// by sending {"paymentStatus":"PAID"} without actually paying.
 router.put('/orders/:id/payment', authenticate, async (req, res, next) => {
   try {
-    const { paymentStatus, razorpayOrderId, razorpayPaymentId } = req.body;
+    const { paymentStatus, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
     const VALID_PAY_STATUSES = ['PENDING', 'PAID', 'FAILED', 'REFUNDED'];
 
     if (!paymentStatus || !VALID_PAY_STATUSES.includes(paymentStatus)) {
       return res.status(400).json({ error: `paymentStatus must be one of: ${VALID_PAY_STATUSES.join(', ')}` });
+    }
+
+    // Verify Razorpay HMAC signature before accepting a PAID status
+    if (paymentStatus === 'PAID') {
+      if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+        return res.status(400).json({
+          error: 'razorpayOrderId, razorpayPaymentId, and razorpaySignature are required to mark an order as PAID',
+        });
+      }
+      const keySecret = process.env.RAZORPAY_KEY_SECRET;
+      if (!keySecret) {
+        console.error('[Marketplace] RAZORPAY_KEY_SECRET is not set — cannot verify payment signature');
+        return res.status(503).json({ error: 'Payment verification is not configured' });
+      }
+      const expectedSignature = crypto
+        .createHmac('sha256', keySecret)
+        .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+        .digest('hex');
+      // Constant-time comparison to prevent timing attacks
+      const sigBuffer  = Buffer.from(razorpaySignature, 'hex');
+      const expBuffer  = Buffer.from(expectedSignature, 'hex');
+      const sigValid   = sigBuffer.length === expBuffer.length &&
+                         crypto.timingSafeEqual(sigBuffer, expBuffer);
+      if (!sigValid) {
+        return res.status(403).json({ error: 'Invalid payment signature' });
+      }
     }
 
     const order = await prisma.marketplaceOrder.findUnique({ where: { orderId: req.params.id } });

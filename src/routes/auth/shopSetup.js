@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import prisma from '../../db/prisma.js';
+import { authenticate } from '../../middleware/auth.js';
 import { sendShopOwnerVerificationAlert } from '../../services/email.js';
 import { findUserByEmailInsensitive } from './helpers.js';
 
@@ -26,21 +27,20 @@ const STATE_CODE_MAP = {
  * we set their account to PENDING. Collects the shop details, creates
  * the Shop record, then sets verificationStatus = PENDING and alerts admins.
  *
- * No auth token required — the userId returned during registration is proof enough.
- * We also enforce that the user must be a SHOP_OWNER in NOT_REQUIRED status
- * (i.e., they have not already submitted their details).
+ * Requires a valid JWT (Bearer token) — userId is always sourced from the
+ * verified token claim, never from the request body (which would allow any
+ * authenticated user to submit a shop setup as an arbitrary userId).
  */
-router.post('/shop-setup', async (req, res, next) => {
+router.post('/shop-setup', authenticate, async (req, res, next) => {
   try {
     const { ownerName, shopName, address, city, state, pincode, contactPhone, email, gstin } = req.body;
-    // userId from body may be a string (JSON) or number — normalise to Int
-    const userId = req.body.userId != null ? parseInt(req.body.userId) : NaN;
+    // userId always comes from the verified JWT — never trusts the request body
+    const userId = req.user.userId;
 
-    // ── Validate required fields ─────────────────────────────────────────────
-    if (!userId || isNaN(userId)) {
-      return res.status(400).json({
+    if (!userId) {
+      return res.status(401).json({
         success: false,
-        error: { code: 'MISSING_USER_ID', message: 'A valid userId (integer) is required' },
+        error: { code: 'UNAUTHENTICATED', message: 'Valid authentication token required' },
       });
     }
     if (!ownerName?.trim()) {

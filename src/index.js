@@ -3,6 +3,9 @@ import { config } from 'dotenv';
 config({ override: true });
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import compression from 'compression';
+import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth/index.js';
 import catalogRoutes from './routes/catalog.js';
@@ -23,6 +26,28 @@ import { authLimiter } from './middleware/rateLimiter.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ── Security headers (helmet) ─────────────────────────────────────────────────
+// Sets X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security etc.
+// crossOriginResourcePolicy: 'cross-origin' lets the marketplace load product
+// images from S3/CDN origins without triggering CORP blocks.
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  // CSP disabled — the frontend is a separate SPA origin and sets its own policy.
+  // Re-enable with a strict policy once the frontend domain is finalised.
+  contentSecurityPolicy: false,
+}));
+
+// ── Request logging (morgan) ──────────────────────────────────────────────────
+// 'dev' format: METHOD /path STATUS ms - bytes — colourised in terminal.
+// Skip health-check pings so they don't flood the log.
+app.use(morgan('dev', {
+  skip: (req) => req.path === '/health',
+}));
+
+// ── Gzip compression ──────────────────────────────────────────────────────────
+// Must be applied before routes so it wraps every response.
+app.use(compression({ threshold: 1024 }));
 
 const allowedOrigins = (
   process.env.FRONTEND_URL

@@ -27,9 +27,17 @@ function initFirebase() {
 export async function verifyFirebaseToken(idToken) {
   initFirebase();
 
-  // Dev mode bypass: if no Firebase credentials, accept a dev token format
-  // Dev token format: "dev:<phone>" or "dev-google:<email>"
+  // Hard-block dev bypass in production — Firebase MUST be initialised there
   if (!firebaseInitialized) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'Firebase Admin SDK is not initialised. ' +
+        'Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY environment variables.'
+      );
+    }
+
+    // Dev / test only: accept predictable token formats so local development needs no Firebase project
+    // Token format: "dev:<phone>" or "dev-google:<email>"
     if (idToken.startsWith('dev:')) {
       const phone = idToken.replace('dev:', '').trim();
       return { uid: `dev_${phone}`, phone_number: `+91${phone}`, provider: 'phone' };

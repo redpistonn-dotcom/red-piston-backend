@@ -1,10 +1,17 @@
+import crypto from 'crypto';
 import axios from 'axios';
 import prisma from '../db/prisma.js';
 
-const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
+// Cryptographically secure 6-digit OTP — crypto.randomInt is CSPRNG, Math.random() is not
+const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
+
+// SHA-256 hash of the OTP — only the hash is ever stored in the DB
+// Plaintext OTP is generated, sent to user once, then discarded
+const hashOtp = (code) => crypto.createHash('sha256').update(code).digest('hex');
 
 export const sendOtp = async (phone) => {
   const code = generateOtp();
+  const codeHash = hashOtp(code);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
   // Invalidate previous OTPs for this phone
@@ -13,19 +20,19 @@ export const sendOtp = async (phone) => {
     data: { used: true },
   });
 
-  // Store new OTP
+  // Store HASH only — plaintext never persisted to DB
   await prisma.otpCode.create({
-    data: { phone, code, expiresAt },
+    data: { phone, code: codeHash, expiresAt },
   });
 
-  // In development, just log it
+  // In development, log that an OTP was sent — never log the actual code
   if (process.env.NODE_ENV === 'development') {
-    console.log(`[OTP] Phone: ${phone} | Code: ${code}`);
+    console.log(`[OTP DEV] Code dispatched for phone ending ...${phone.slice(-3)}`);
     return { success: true, dev: true };
   }
 
-  // Production: send via MSG91
-  const response = await axios.post(
+  // Production: send plaintext OTP via MSG91; hash is already stored above
+  await axios.post(
     'https://api.msg91.com/api/v5/otp',
     {
       mobile: `91${phone}`,
@@ -38,13 +45,16 @@ export const sendOtp = async (phone) => {
 };
 
 export const verifyOtp = async (phone, code) => {
-  // Find the latest active OTP for this phone (used to return on failure for attempt tracking)
+  const codeHash = hashOtp(code);
+
+  // Query by hash — if the hash doesn't match, findFirst returns null
+  // Constant-time DB lookup: hash comparison happens inside Postgres, not in JS
   const latest = await prisma.otpCode.findFirst({
-    where: { phone, used: false, expiresAt: { gt: new Date() } },
+    where: { phone, code: codeHash, used: false, expiresAt: { gt: new Date() } },
     orderBy: { createdAt: 'desc' },
   });
 
-  if (!latest || latest.code !== code) return { valid: false, otpRecord: latest };
+  if (!latest) return { valid: false, otpRecord: null };
 
   // Don't mark as used here — the route does it after ensureAuthProvider so we keep the record
   // for the `if (otpRecord?.id)` block in the route

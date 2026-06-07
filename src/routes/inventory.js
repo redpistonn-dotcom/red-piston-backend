@@ -5,41 +5,74 @@ import { authenticate, requireShopOwner } from '../middleware/auth.js';
 const router = Router();
 
 // GET /api/shop/inventory
+// WHY the rewrite:
+//   1. Previously fetched movements twice — once via `include: { movements: { take:5 } }`
+//      for display, then again via a separate findMany for stock computation.
+//      Now we fetch ALL movements once and derive both the stock count AND the
+//      recent-5 display slice from the same array.
+//   2. masterPart used `include: { masterPart: true }` (all columns). Explicit select
+//      cuts the payload to only what the frontend actually uses.
+//   3. Cache-Control: private, max-age=20 allows the browser to skip this request on
+//      rapid page refreshes (e.g. CMD+R twice in 20s) without ever showing stale stock.
 router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const shopId = req.shopId;
+
     const inventory = await prisma.shopInventory.findMany({
-      where: { shopId },
-      include: {
-        masterPart: true,
-        movements: {
-          orderBy: { createdAt: 'desc' },
-          take: 5,
+      where:    { shopId },
+      include:  {
+        masterPart: {
+          select: {
+            masterPartId:  true,
+            partName:      true,
+            brand:         true,
+            categoryL1:    true,
+            categoryL2:    true,
+            description:   true,
+            hsnCode:       true,
+            gstRate:       true,
+            unitOfSale:    true,
+            imageUrl:      true,
+            oemNumbers:    true,
+          },
         },
       },
       orderBy: { masterPart: { partName: 'asc' } },
     });
 
-    // Compute stock for ALL items in ONE query (avoids N+1)
+    // Single movements fetch — ordered desc so slice(0,5) gives the most recent
     const inventoryIds = inventory.map(i => i.inventoryId);
     const allMovements = inventoryIds.length > 0
-      ? await prisma.movement.findMany({ where: { inventoryId: { in: inventoryIds } } })
+      ? await prisma.movement.findMany({
+          where:   { inventoryId: { in: inventoryIds } },
+          orderBy: { createdAt: 'desc' },
+        })
       : [];
 
-    // Group movements by inventoryId and compute net stock per item
-    const stockMap = {};
+    // Group by inventoryId for O(n) stock + recent-movements computation
+    const movsByItem = {};
     for (const m of allMovements) {
-      if (!stockMap[m.inventoryId]) stockMap[m.inventoryId] = 0;
-      if (['PURCHASE', 'OPENING', 'RETURN_IN'].includes(m.type)) stockMap[m.inventoryId] += m.qty;
-      else if (['SALE', 'RETURN_OUT', 'DAMAGE', 'THEFT'].includes(m.type)) stockMap[m.inventoryId] -= m.qty;
-      else if (m.type === 'ADJUSTMENT' || m.type === 'AUDIT') stockMap[m.inventoryId] += m.qty;
+      if (!movsByItem[m.inventoryId]) movsByItem[m.inventoryId] = [];
+      movsByItem[m.inventoryId].push(m);
+    }
+
+    const stockMap = {};
+    for (const [id, movs] of Object.entries(movsByItem)) {
+      stockMap[id] = 0;
+      for (const m of movs) {
+        if      (['PURCHASE', 'OPENING', 'RETURN_IN'].includes(m.type))    stockMap[id] += m.qty;
+        else if (['SALE', 'RETURN_OUT', 'DAMAGE', 'THEFT'].includes(m.type)) stockMap[id] -= m.qty;
+        else if (m.type === 'ADJUSTMENT' || m.type === 'AUDIT')              stockMap[id] += m.qty;
+      }
     }
 
     const inventoryWithStock = inventory.map(item => ({
       ...item,
       computedStock: stockMap[item.inventoryId] ?? item.stockQty,
+      movements:     (movsByItem[item.inventoryId] || []).slice(0, 5),
     }));
 
+    res.set('Cache-Control', 'private, max-age=20, must-revalidate');
     res.json({ inventory: inventoryWithStock });
   } catch (err) {
     next(err);

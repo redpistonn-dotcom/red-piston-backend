@@ -84,6 +84,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
       orderBy: [{ outstanding: 'desc' }, { name: 'asc' }],
     });
 
+    res.set('Cache-Control', 'private, max-age=15, must-revalidate');
     res.json({ success: true, parties, total: parties.length });
   } catch (err) { next(err); }
 });
@@ -311,32 +312,43 @@ router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, nex
 });
 
 // ─── GET /summary/overdue — parties past their credit days ───────────────────
+// WHY the rewrite: the original code ran 1 query for all parties, then 1 query
+// PER party to find its oldest invoice — an N+1 that causes 100+ DB round-trips
+// when a shop has 100 parties. Rewritten to exactly 2 queries regardless of N.
 router.get('/summary/overdue', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    // Find parties with outstanding > 0 that have unpaid credit invoices past creditDays
     const parties = await prisma.party.findMany({
-      where: {
-        shopId:      req.shopId,
-        isActive:    true,
-        outstanding: { gt: 0 },
-      },
+      where:   { shopId: req.shopId, isActive: true, outstanding: { gt: 0 } },
       orderBy: { outstanding: 'desc' },
     });
 
-    // For each, check the oldest unpaid invoice to determine overdue status
-    const overdueList = await Promise.all(
-      parties.map(async (p) => {
-        const oldestCredit = await prisma.invoice.findFirst({
-          where:   { shopId: req.shopId, partyId: p.partyId, status: 'CREDIT' },
-          orderBy: { createdAt: 'asc' },
-          select:  { createdAt: true, totalAmount: true, invoiceNumber: true },
-        });
+    if (parties.length === 0) {
+      return res.json({ success: true, overdue: [], atRisk: [], total: 0 });
+    }
 
+    // Fetch all credit invoices for all parties in ONE query, sorted oldest-first.
+    // We then group in JS — the first entry per partyId is the oldest invoice.
+    const creditInvoices = await prisma.invoice.findMany({
+      where: {
+        shopId:  req.shopId,
+        partyId: { in: parties.map(p => p.partyId) },
+        status:  'CREDIT',
+      },
+      orderBy: { createdAt: 'asc' },
+      select:  { partyId: true, createdAt: true, totalAmount: true, invoiceNumber: true },
+    });
+
+    // Group: keep only the oldest invoice per party (array already sorted asc)
+    const oldestByParty = {};
+    for (const inv of creditInvoices) {
+      if (!oldestByParty[inv.partyId]) oldestByParty[inv.partyId] = inv;
+    }
+
+    const result = parties
+      .map(p => {
+        const oldestCredit = oldestByParty[p.partyId];
         if (!oldestCredit) return null;
-
         const daysSince = Math.floor((Date.now() - new Date(oldestCredit.createdAt).getTime()) / 86400000);
-        const isOverdue = daysSince > p.creditDays;
-
         return {
           partyId:     p.partyId,
           name:        p.name,
@@ -345,18 +357,17 @@ router.get('/summary/overdue', authenticate, requireShopOwner, async (req, res, 
           creditLimit: Number(p.creditLimit),
           creditDays:  p.creditDays,
           daysSince,
-          isOverdue,
+          isOverdue:   daysSince > p.creditDays,
           oldestUnpaidInvoice: oldestCredit,
         };
       })
-    );
+      .filter(Boolean);
 
-    const result = overdueList.filter(Boolean);
     res.json({
       success: true,
-      overdue:    result.filter(p => p.isOverdue),
-      atRisk:     result.filter(p => !p.isOverdue),
-      total:      result.length,
+      overdue: result.filter(p => p.isOverdue),
+      atRisk:  result.filter(p => !p.isOverdue),
+      total:   result.length,
     });
   } catch (err) { next(err); }
 });

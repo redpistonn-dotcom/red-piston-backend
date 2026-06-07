@@ -16,22 +16,13 @@
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
+import { nextSeq, currentYYYYMM } from '../lib/sequence.js';
 
 const router = Router();
 
 const VALID_STATUSES = ['RECEIVED', 'IN_PROGRESS', 'WAITING_PARTS', 'READY', 'DELIVERED', 'CANCELLED'];
 const VALID_PRIORITIES = ['LOW', 'NORMAL', 'HIGH', 'URGENT'];
 
-async function generateJobNumber(shopId) {
-  const now = new Date();
-  const prefix = `JOB-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const last = await prisma.jobCard.findFirst({
-    where: { shopId, jobNumber: { startsWith: prefix } },
-    orderBy: { jobNumber: 'desc' },
-  });
-  const seq = last ? parseInt(last.jobNumber.split('-')[2]) + 1 : 1;
-  return `${prefix}-${String(seq).padStart(4, '0')}`;
-}
 
 // GET /api/shop/workshop/jobs
 router.get('/jobs', authenticate, requireShopOwner, async (req, res, next) => {
@@ -80,29 +71,36 @@ router.post('/jobs', authenticate, requireShopOwner, async (req, res, next) => {
       });
     }
 
-    const jobNumber = await generateJobNumber(req.shopId);
+    // Generate job number and create the job card in one atomic transaction.
+    // nextSeq uses INSERT ON CONFLICT DO UPDATE which takes a row-level lock on
+    // (shop_id, counter_key), serialising concurrent requests on the same key.
+    const job = await prisma.$transaction(async (tx) => {
+      const yyyymm = currentYYYYMM();
+      const seq = await nextSeq(tx, req.shopId, `JOB-${yyyymm}`);
+      const jobNumber = `JOB-${yyyymm}-${String(seq).padStart(4, '0')}`;
 
-    const job = await prisma.jobCard.create({
-      data: {
-        jobNumber,
-        shopId: req.shopId,
-        createdBy: req.user.userId,
-        assignedTo: assignedTo || null,
-        customerName,
-        customerPhone: customerPhone || null,
-        vehicleMake,
-        vehicleModel,
-        vehicleYear: vehicleYear ? parseInt(vehicleYear) : null,
-        vehicleReg: vehicleReg || null,
-        vehicleFuel: vehicleFuel || null,
-        odometerIn: odometerIn ? parseInt(odometerIn) : null,
-        complaint: complaint || null,
-        priority: priority || 'NORMAL',
-        estimatedAt: estimatedAt ? new Date(estimatedAt) : null,
-        labourCharge: labourCharge ? parseFloat(labourCharge) : 0,
-        notes: notes || null,
-      },
-      include: { items: true },
+      return tx.jobCard.create({
+        data: {
+          jobNumber,
+          shopId: req.shopId,
+          createdBy: req.user.userId,
+          assignedTo: assignedTo || null,
+          customerName,
+          customerPhone: customerPhone || null,
+          vehicleMake,
+          vehicleModel,
+          vehicleYear: vehicleYear ? parseInt(vehicleYear) : null,
+          vehicleReg: vehicleReg || null,
+          vehicleFuel: vehicleFuel || null,
+          odometerIn: odometerIn ? parseInt(odometerIn) : null,
+          complaint: complaint || null,
+          priority: priority || 'NORMAL',
+          estimatedAt: estimatedAt ? new Date(estimatedAt) : null,
+          labourCharge: labourCharge ? parseFloat(labourCharge) : 0,
+          notes: notes || null,
+        },
+        include: { items: true },
+      });
     });
 
     res.status(201).json({ success: true, data: job });

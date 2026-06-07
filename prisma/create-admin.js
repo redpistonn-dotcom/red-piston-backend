@@ -4,8 +4,16 @@ import prisma from '../src/db/prisma.js';
 import bcrypt from 'bcryptjs';
 
 async function createAdmin() {
-  const email = 'admin@autospaceerp.com';
-  const password = 'Admin@2025!';
+  // Credentials MUST come from environment — never hardcode them in source
+  const email    = process.env.ADMIN_EMAIL;
+  const password = process.env.ADMIN_PASSWORD;
+
+  if (!email || !password) {
+    console.error('❌ ADMIN_EMAIL and ADMIN_PASSWORD environment variables must be set before running this script.');
+    console.error('   Example: ADMIN_EMAIL=you@example.com ADMIN_PASSWORD=S3cure! node prisma/create-admin.js');
+    process.exit(1);
+  }
+
   const passwordHash = await bcrypt.hash(password, 12);
 
   // Check if already exists
@@ -50,7 +58,6 @@ async function createAdmin() {
 
   console.log('✅ Admin user created successfully!');
   console.log('   Email:', email);
-  console.log('   Password:', password);
   console.log('   UserId:', admin.userId);
   console.log('   Role:', admin.role);
   await prisma.$disconnect();
