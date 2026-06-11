@@ -2,7 +2,7 @@ import { Router } from 'express';
 import prisma from '../../db/prisma.js';
 import { sendOtp, verifyOtp } from '../../services/otp.js';
 import { otpSendLimiter } from '../../middleware/rateLimiter.js';
-import { createSession, ensureAuthProvider, checkShopOwnerVerification, getUserTypeId } from './helpers.js';
+import { createSession, ensureAuthProvider, checkShopOwnerVerification, getUserTypeId, needsShopSetup, shopSetupResponse } from './helpers.js';
 import { sendShopOwnerVerificationAlert } from '../../services/email.js';
 
 const router = Router();
@@ -56,7 +56,8 @@ router.post('/request-otp', otpSendLimiter, async (req, res, next) => {
 // POST /api/auth/verify-otp
 router.post('/verify-otp', async (req, res, next) => {
   try {
-    const { phone, otp, role, name, vehicle } = req.body;
+    // mode = "signin" → never create a new user; return NO_ACCOUNT if not found
+    const { phone, otp, role, name, vehicle, mode } = req.body;
     if (!phone || !/^\d{10}$/.test(phone)) {
       return res.status(400).json({
         success: false,
@@ -118,6 +119,15 @@ router.post('/verify-otp', async (req, res, next) => {
     // Upsert user by phone
     let isNewUser = false;
     let user = await prisma.user.findUnique({ where: { phone }, include: { shop: true, userType: true } });
+
+    // Sign-in mode must never silently create an account
+    if (!user && mode === 'signin') {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NO_ACCOUNT', message: 'No account found with this phone number. Please create an account first.' },
+      });
+    }
+
     if (!user) {
       const initialRole = role === 'shop' ? 'SHOP_OWNER' : 'CUSTOMER';
       const userTypeId = await getUserTypeId(initialRole);
@@ -151,16 +161,11 @@ router.post('/verify-otp', async (req, res, next) => {
 
     await ensureAuthProvider(user.userId, 'PHONE', phone);
 
-    // New shop owner via phone → collect shop details first (frontend shows SHOP_DETAILS form).
-    // We do NOT set PENDING yet — that happens after shop-setup is submitted.
-    if (isNewUser && user.role === 'SHOP_OWNER') {
-      return res.json({
-        success: true,
-        needsShopDetails: true,
-        userId: user.userId,
-        phone: user.phone,
-        message: 'Please provide your shop details to complete registration.',
-      });
+    // Shop owner needing shop setup (brand-new OR returning after abandoning
+    // the shop-details step) → resume the form. Tokens included: /shop-setup
+    // requires a Bearer token.
+    if (needsShopSetup(user)) {
+      return res.json(await shopSetupResponse(res, user, { req, isNewUser }));
     }
 
     // Block pending/rejected shop owners from logging in

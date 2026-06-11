@@ -157,6 +157,10 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
       data: { shopId: shop.shopId },
     });
 
+    // Revoke all sessions: the account is now PENDING and must not keep a live
+    // session from the setup flow (tokens were issued so /shop-setup could be called).
+    await prisma.refreshToken.deleteMany({ where: { userId } }).catch(() => {});
+
     // ── Alert all platform admins ────────────────────────────────────────────
     const admins = await prisma.user.findMany({
       where: { role: 'PLATFORM_ADMIN', isActive: true, email: { not: null } },

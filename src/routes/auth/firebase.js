@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import prisma from '../../db/prisma.js';
 import { verifyFirebaseToken } from '../../services/firebase.js';
-import { createSession, ensureAuthProvider, findUserByEmailInsensitive, normalizeEmail, checkShopOwnerVerification, getUserTypeId } from './helpers.js';
+import { createSession, ensureAuthProvider, findUserByEmailInsensitive, normalizeEmail, checkShopOwnerVerification, getUserTypeId, needsShopSetup, shopSetupResponse } from './helpers.js';
 import { sendShopOwnerVerificationAlert } from '../../services/email.js';
 
 const router = Router();
@@ -126,19 +126,13 @@ router.post('/firebase', async (req, res, next) => {
     if (phoneClean) await ensureAuthProvider(user.userId, 'PHONE', phoneClean);
     if (emailNormalized) await ensureAuthProvider(user.userId, 'EMAIL', emailNormalized);
 
-    // ── Step 6: New shop owner via Google → collect shop details first ───────
-    // We do NOT set PENDING yet — that happens after the frontend collects shop
-    // details and calls POST /api/auth/shop-setup.
-    if (isNewUser && user.role === 'SHOP_OWNER') {
-      return res.json({
-        success: true,
-        needsShopDetails: true,
-        userId: user.userId,
-        userName: user.name || null,
-        phone: user.phone || null,
-        message: 'Please provide your shop details to complete registration.',
-        isNewUser,
-      });
+    // ── Step 6: Shop owner needing shop setup → collect shop details first ────
+    // Covers brand-new shop owners AND returning ones who abandoned the
+    // shop-details step (no shop, verification never started). Tokens included:
+    // /shop-setup requires a Bearer token.
+    if (needsShopSetup(user)) {
+      const payload = await shopSetupResponse(res, user, { req, isNewUser });
+      return res.json(payload);
     }
 
     // Block pending/rejected shop owners from logging in via Google

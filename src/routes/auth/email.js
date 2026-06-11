@@ -2,7 +2,7 @@ import { Router } from 'express';
 import prisma from '../../db/prisma.js';
 import { hashPassword, verifyPassword, validatePasswordStrength } from '../../services/password.js';
 import { sendEmailOtp, verifyEmailOtp, sendWelcomeEmail, sendShopOwnerVerificationAlert } from '../../services/email.js';
-import { createSession, ensureAuthProvider, findUserByEmailInsensitive, normalizeEmail, checkShopOwnerVerification, getUserTypeId } from './helpers.js';
+import { createSession, ensureAuthProvider, findUserByEmailInsensitive, normalizeEmail, checkShopOwnerVerification, getUserTypeId, needsShopSetup, shopSetupResponse } from './helpers.js';
 import { emailLoginLimiter } from '../../middleware/rateLimiter.js';
 
 const router = Router();
@@ -64,13 +64,11 @@ router.post('/register', async (req, res, next) => {
 
     // New shop owner via email → collect shop details first.
     // We do NOT set PENDING yet — that happens after /api/auth/shop-setup is called.
+    // Tokens ARE issued here: /shop-setup requires a Bearer token, and without one
+    // the user could never complete registration.
     if (user.role === 'SHOP_OWNER') {
-      return res.status(201).json({
-        success: true,
-        needsShopDetails: true,
-        userId: user.userId,
-        message: 'Please provide your shop details to complete registration.',
-      });
+      const payload = await shopSetupResponse(res, user, { req, isNewUser: true });
+      return res.status(201).json(payload);
     }
 
     // Save first vehicle if provided
@@ -116,9 +114,9 @@ router.post('/login', emailLoginLimiter, async (req, res, next) => {
     const user = await findUserByEmailInsensitive(emailNormalized, { include: { shop: true, userType: true } });
 
     if (!user) {
-      return res.status(401).json({
+      return res.status(404).json({
         success: false,
-        error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' },
+        error: { code: 'NO_ACCOUNT', message: 'No account found with this email. Please create an account first.' },
       });
     }
 
@@ -179,6 +177,12 @@ router.post('/login', emailLoginLimiter, async (req, res, next) => {
 
     if (user.email) {
       await ensureAuthProvider(user.userId, 'EMAIL', normalizeEmail(user.email));
+    }
+
+    // Shop owner who abandoned signup before submitting shop details →
+    // resume the shop-details step instead of granting normal access.
+    if (needsShopSetup(user)) {
+      return res.json(await shopSetupResponse(res, user, { req }));
     }
 
     if (!checkShopOwnerVerification(user, res)) return;

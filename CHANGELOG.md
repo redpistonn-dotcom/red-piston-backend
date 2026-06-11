@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-06-11] — Auth Flow Hardening: Interrupted-Signup Resume + Sign-in/Sign-up Separation
+
+### Security / Auth Fixes
+
+- **Abandoned shop-owner signup no longer grants full access (`src/routes/auth/helpers.js`, `email.js`, `otp.js`, `firebase.js`)**: a shop owner who quit registration before submitting shop details (`verificationStatus = NOT_REQUIRED`, no `shopId`) previously passed `checkShopOwnerVerification` on the next login and entered the app with no shop attached. New `needsShopSetup(user)` helper detects this state in every login path (email/password, phone OTP, Google) and returns `needsShopDetails: true, resume: true` with prefill data (name/email/phone) so the frontend resumes the shop-details form instead.
+- **`needsShopDetails` responses now issue session tokens (`shopSetupResponse` in `helpers.js`)**: `/api/auth/shop-setup` requires a Bearer token, but registration responses previously returned no token — brand-new shop owners could 401 when submitting their shop details. All shop-setup-needed responses now include `accessToken`/`refreshToken`.
+- **Sessions revoked after shop-setup submission (`shopSetup.js`)**: once details are submitted the account becomes PENDING; all refresh tokens are deleted so the setup-flow session cannot be reused.
+- **Refresh endpoint blocks PENDING/REJECTED shop owners (`session.js`)**: login already blocked them, but `/api/auth/refresh` did not check `verificationStatus` — a stored refresh token was a backdoor into a live session. Now revokes the token and returns 403 `SHOP_OWNER_PENDING`/`SHOP_OWNER_REJECTED`.
+- **Unknown email on login returns explicit `NO_ACCOUNT` 404 (`email.js`)** instead of the generic "Invalid email or password", so the frontend can say "No account found — please create an account first". Wrong password on an *existing* account still returns `INVALID_CREDENTIALS` (no change to lockout logic).
+- **`/verify-otp` no longer silently creates accounts during sign-in (`otp.js`)**: accepts `mode: "signin"` (same contract as `/firebase`) and returns `NO_ACCOUNT` when the phone is not registered, instead of implicitly registering a new user.
+
 ## [2026-06-08] — Security Hardening + Data Integrity + DB Index Improvements
 
 ### Security Fixes (Phase 1 — Critical)

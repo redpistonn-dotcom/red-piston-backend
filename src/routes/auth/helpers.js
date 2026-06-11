@@ -155,6 +155,39 @@ export async function createSession(res, user, { isNewUser = false, req = null }
 }
 
 /**
+ * True when a shop owner abandoned signup before submitting shop details:
+ * role is SHOP_OWNER but no shop exists and verification was never started.
+ * Such users must be routed back to the shop-details form, never given
+ * normal access (they'd land in the ERP with no shop attached).
+ */
+export function needsShopSetup(user) {
+  return user.role === 'SHOP_OWNER' && !user.shopId && user.verificationStatus === 'NOT_REQUIRED';
+}
+
+/**
+ * Response for shop owners who still need to complete shop setup.
+ * Issues a real session (access token is REQUIRED by /shop-setup's authenticate
+ * middleware) and returns the data we already have so the frontend can prefill
+ * the form and show resume progress. `resume` distinguishes "came back later"
+ * from a fresh registration.
+ */
+export async function shopSetupResponse(res, user, { req = null, isNewUser = false } = {}) {
+  const payload = await createSession(res, user, { isNewUser, req });
+  return {
+    ...payload,
+    needsShopDetails: true,
+    resume: !isNewUser,
+    userId: user.userId,
+    userName: user.name || null,
+    phone: user.phone || null,
+    email: user.email || null,
+    message: isNewUser
+      ? 'Please provide your shop details to complete registration.'
+      : 'Welcome back! Your shop registration was left incomplete — please finish your shop details to continue.',
+  };
+}
+
+/**
  * Block login for shop owners whose account is not yet approved.
  * Returns false and sends the 403 response if blocked; returns true to continue.
  */

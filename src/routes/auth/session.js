@@ -61,6 +61,24 @@ router.post('/refresh', async (req, res, next) => {
       });
     }
 
+    // Pending/rejected shop owners must not refresh into a live session —
+    // login already blocks them; refresh must not be a backdoor.
+    if (user.role === 'SHOP_OWNER' && ['PENDING', 'REJECTED'].includes(user.verificationStatus)) {
+      await prisma.refreshToken.update({
+        where: { id: stored.id },
+        data: { revokedAt: new Date() },
+      }).catch(() => {});
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: `SHOP_OWNER_${user.verificationStatus}`,
+          message: user.verificationStatus === 'PENDING'
+            ? 'Your account is pending verification by our team.'
+            : 'Your shop owner application was not approved. Contact support for details.',
+        },
+      });
+    }
+
     const { accessToken, refreshToken: newRawRT } = generateTokens(
       user.userId,
       user.shopId,
