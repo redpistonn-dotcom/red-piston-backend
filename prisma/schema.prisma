@@ -280,6 +280,12 @@ model Shop {
   longitude           Decimal?  @db.Decimal(9, 6)
   deliveryRadiusKm    Int?      @default(10) @map("delivery_radius_km")
   shopDescription     String?   @map("shop_description")
+  // shopCategory: AUTO_PARTS | WORKSHOP | BOTH | TYRES | ELECTRICAL | GENERAL
+  shopCategory        String?   @map("shop_category")
+  whatsappNumber      String?   @map("whatsapp_number")
+  // JSON array: [{ day: "Mon-Fri", open: "09:00", close: "18:00" }]
+  operatingHours      Json?     @map("operating_hours")
+  photoUrl            String?   @map("photo_url")
   logoUrl             String?   @map("logo_url")
   // Bank details for marketplace payouts
   bankAccountNumber   String?   @map("bank_account_number")

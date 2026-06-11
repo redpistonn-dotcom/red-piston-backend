@@ -14,7 +14,7 @@ const LOCK_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 // POST /api/auth/register — email + password signup
 router.post('/register', async (req, res, next) => {
   try {
-    const { email, password, role } = req.body;
+    const { email, password, role, name, vehicle } = req.body;
     const emailNormalized = normalizeEmail(email);
 
     // Validate email
@@ -54,6 +54,7 @@ router.post('/register', async (req, res, next) => {
         role: initialRole,
         userTypeId,
         emailVerified: false,
+        name: name?.trim() || null,
       },
       include: { shop: true, userType: true },
     });
@@ -70,6 +71,22 @@ router.post('/register', async (req, res, next) => {
         userId: user.userId,
         message: 'Please provide your shop details to complete registration.',
       });
+    }
+
+    // Save first vehicle if provided
+    if (vehicle?.make && vehicle?.model && vehicle?.year) {
+      await prisma.customerVehicle.create({
+        data: {
+          userId: user.userId,
+          make: vehicle.make.trim(),
+          model: vehicle.model.trim(),
+          year: parseInt(vehicle.year),
+          variant: vehicle.variant?.trim() || null,
+          fuelType: vehicle.fuelType?.trim() || null,
+          registrationNo: vehicle.registrationNo?.trim() || null,
+          isDefault: true,
+        },
+      }).catch(e => console.error('[register] vehicle save failed:', e));
     }
 
     // Send verification OTP + welcome email (fire & forget)

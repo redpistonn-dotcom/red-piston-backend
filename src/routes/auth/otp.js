@@ -56,7 +56,7 @@ router.post('/request-otp', otpSendLimiter, async (req, res, next) => {
 // POST /api/auth/verify-otp
 router.post('/verify-otp', async (req, res, next) => {
   try {
-    const { phone, otp, role } = req.body;
+    const { phone, otp, role, name, vehicle } = req.body;
     if (!phone || !/^\d{10}$/.test(phone)) {
       return res.status(400).json({
         success: false,
@@ -122,10 +122,25 @@ router.post('/verify-otp', async (req, res, next) => {
       const initialRole = role === 'shop' ? 'SHOP_OWNER' : 'CUSTOMER';
       const userTypeId = await getUserTypeId(initialRole);
       user = await prisma.user.create({
-        data: { phone, role: initialRole, userTypeId, phoneVerified: true, isVerified: true },
+        data: { phone, role: initialRole, userTypeId, phoneVerified: true, isVerified: true, name: name?.trim() || null },
         include: { shop: true, userType: true },
       });
       isNewUser = true;
+      // Save first vehicle for new customers
+      if (user.role === 'CUSTOMER' && vehicle?.make && vehicle?.model && vehicle?.year) {
+        await prisma.customerVehicle.create({
+          data: {
+            userId: user.userId,
+            make: vehicle.make.trim(),
+            model: vehicle.model.trim(),
+            year: parseInt(vehicle.year),
+            variant: vehicle.variant?.trim() || null,
+            fuelType: vehicle.fuelType?.trim() || null,
+            registrationNo: vehicle.registrationNo?.trim() || null,
+            isDefault: true,
+          },
+        }).catch(e => console.error('[verify-otp] vehicle save failed:', e));
+      }
     } else if (!user.phoneVerified) {
       user = await prisma.user.update({
         where: { userId: user.userId },

@@ -33,7 +33,7 @@ const STATE_CODE_MAP = {
  */
 router.post('/shop-setup', authenticate, async (req, res, next) => {
   try {
-    const { ownerName, shopName, address, city, state, pincode, contactPhone, email, gstin } = req.body;
+    const { ownerName, shopName, address, city, state, pincode, contactPhone, email, gstin, shopCategory, whatsappNumber, operatingHours, photoUrl } = req.body;
     // userId always comes from the verified JWT — never trusts the request body
     const userId = req.user.userId;
 
@@ -67,10 +67,22 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
         error: { code: 'MISSING_CITY', message: 'City is required' },
       });
     }
+    if (!pincode?.trim() || !/^\d{6}$/.test(pincode.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_PINCODE', message: 'A valid 6-digit pincode is required' },
+      });
+    }
     if (!contactPhone || !/^\d{10}$/.test(contactPhone.replace(/\s/g, ''))) {
       return res.status(400).json({
         success: false,
         error: { code: 'INVALID_PHONE', message: 'A valid 10-digit contact phone number is required' },
+      });
+    }
+    if (whatsappNumber && !/^\d{10}$/.test(whatsappNumber.replace(/\s/g, ''))) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_WHATSAPP', message: 'WhatsApp number must be 10 digits' },
       });
     }
 
@@ -122,8 +134,12 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
           city: city.trim(),
           state: resolvedState,
           stateCode: stateCode,
-          pincode: pincode?.trim() || null,
+          pincode: pincode.trim(),
           gstin: gstin?.trim() || null,
+          shopCategory: shopCategory?.trim() || null,
+          whatsappNumber: whatsappNumber?.replace(/\s/g, '') || null,
+          operatingHours: operatingHours || null,
+          photoUrl: photoUrl?.trim() || null,
         },
       }),
       prisma.user.update({
