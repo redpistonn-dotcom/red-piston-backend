@@ -277,7 +277,7 @@ router.patch('/me/shop', authenticate, async (req, res, next) => {
       });
     }
 
-    const { name, ownerName, gstin, address, city, pincode, shopDescription, logoUrl } = req.body;
+    const { name, ownerName, gstin, address, city, pincode, shopDescription, logoUrl, photoUrl, shopCategory, whatsappNumber } = req.body;
     const data = {};
 
     if (name !== undefined) {
@@ -296,6 +296,9 @@ router.patch('/me/shop', authenticate, async (req, res, next) => {
     if (pincode !== undefined) data.pincode = pincode?.trim() || null;
     if (shopDescription !== undefined) data.shopDescription = shopDescription;
     if (logoUrl !== undefined) data.logoUrl = logoUrl;
+    if (photoUrl !== undefined) data.photoUrl = photoUrl;
+    if (shopCategory !== undefined) data.shopCategory = shopCategory;
+    if (whatsappNumber !== undefined) data.whatsappNumber = whatsappNumber;
 
     if (Object.keys(data).length === 0) {
       return res.status(400).json({
