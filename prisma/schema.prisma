@@ -310,8 +310,35 @@ model Shop {
   jobCards            JobCard[]
   marketplaceOrders   MarketplaceOrder[]
   confirmFitRequests  ConfirmFitRequest[]
+  purchaseBills       PurchaseBill[]
 
   @@map("shops")
+}
+
+// Supplier invoices uploaded by shop owners (OCR/parse → review → stock-in).
+// `extracted` keeps the full parse result so the bill can be re-reviewed later.
+model PurchaseBill {
+  billId        Int       @id @default(autoincrement()) @map("bill_id")
+  shopId        Int       @map("shop_id")
+  fileUrl       String?   @map("file_url")
+  fileName      String?   @map("file_name")
+  supplierName  String?   @map("supplier_name")
+  supplierGstin String?   @map("supplier_gstin")
+  invoiceNumber String?   @map("invoice_number")
+  invoiceDate   String?   @map("invoice_date")
+  taxableTotal  Decimal?  @map("taxable_total") @db.Decimal(12, 2)
+  grandTotal    Decimal?  @map("grand_total") @db.Decimal(12, 2)
+  itemCount     Int       @default(0) @map("item_count")
+  extracted     Json?
+  sumMatches    Boolean   @default(false) @map("sum_matches")
+  status        String    @default("PENDING_REVIEW") // PENDING_REVIEW | IMPORTED
+  importedAt    DateTime? @map("imported_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  shop          Shop      @relation(fields: [shopId], references: [shopId])
+
+  @@index([shopId, createdAt])
+  @@map("purchase_bills")
 }
 
 model ShopUser {

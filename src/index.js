@@ -22,6 +22,7 @@ import shopProfileRoutes from './routes/shop.js';
 import workshopRoutes from './routes/workshop.js';
 import purchaseOrderRoutes from './routes/purchaseOrders.js';
 import uploadRoutes from './routes/upload.js';
+import purchaseBillRoutes from './routes/purchaseBills.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authLimiter } from './middleware/rateLimiter.js';
 
@@ -66,8 +67,11 @@ app.use(cors({
   credentials: true,
 }));
 // Global Body Parsers with DoS Protection
-// Use 100kb strict limit globally. Use route-specific parsers or proxy-level 
+// Use 100kb strict limit globally. Use route-specific parsers or proxy-level
 // buffers (e.g. Nginx client_max_body_size) if larger payloads are needed.
+// Purchase-bill PDFs arrive base64-encoded — the raised limit MUST be
+// registered BEFORE the global 100kb parser (body-parser is first-wins).
+app.use('/api/shop/purchase-bills/extract', express.json({ limit: '18mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ limit: '100kb', extended: true }));
 app.use(cookieParser());
@@ -89,6 +93,7 @@ app.use('/api/shop/staff', staffRoutes);
 app.use('/api/shop/profile', shopProfileRoutes);
 app.use('/api/shop/workshop', workshopRoutes);
 app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
+app.use('/api/shop/purchase-bills', purchaseBillRoutes);
 // Bulk import needs a larger body — only applied to this path
 app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
 app.use('/api/admin', adminRoutes);

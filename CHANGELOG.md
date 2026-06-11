@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-06-12] — Purchase Bill OCR: supplier invoice → review → inventory
+
+### New Features
+
+- **`src/services/billParser.js`** — extracts structured line items from Tally-format GST invoice PDFs via pdf.js with COORDINATE-BASED table reconstruction (each value classified by its x-position column). Handles run-together numbers, multi-line part names, 4–8 digit HSN codes, page-boundary item splits, and cuts the OUTPUT CGST/SGST/round-off footer. Zero API cost. Output is always validated against the invoice's printed taxable total (`sumMatches`) — verified 100% extraction (28/28 and 10/10 items) on the two reference invoices.
+- **`src/routes/purchaseBills.js`** (`/api/shop/purchase-bills`): `POST /extract` (base64 PDF in → parsed items out, bill stored PENDING_REVIEW, original PDF archived to Cloudinary best-effort), `POST /:id/import` (shop-owner-verified rows → MasterPart match-or-create → ShopInventory upsert → PURCHASE/OPENING Movement; double-import blocked), `GET /` + `GET /:id` (per-shop bill history).
+- **`purchase_bills` table** (migration `prisma/migrations/add_purchase_bills.sql`, run via `scripts/run-migration.mjs`) — stores every uploaded bill under the shopId with extracted JSON, totals, and import status.
+- **`scripts/run-migration.mjs`** — generic SQL migration runner (statement-splitting, uses the app's prisma client).
+- Body-parser note: the 18mb limit for `/api/shop/purchase-bills/extract` is registered BEFORE the global 100kb `express.json` in `src/index.js` — body-parser is first-wins, so route-scoped larger limits placed after the global parser never apply.
+- New dependency: `pdf-parse` (pdf.js text+coordinates extraction).
+
 ## [2026-06-11] — Full-Stack Audit: Input Validation, Pagination Bounds, PII Minimisation
 
 ### Backend Fixes

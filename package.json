@@ -33,6 +33,7 @@
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.11.0",
+    "pdf-parse": "^1.1.1",
     "pdfmake": "^0.2.10",
     "resend": "^6.9.4",
     "uuid": "^9.0.0"
