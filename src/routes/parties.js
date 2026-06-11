@@ -204,8 +204,8 @@ router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next)
           invoice: { select: { invoiceNumber: true, totalAmount: true, invoiceType: true, createdAt: true } },
         },
         orderBy: { createdAt: 'desc' },
-        take:    parseInt(limit),
-        skip:    parseInt(offset),
+        take:    Math.min(Math.max(parseInt(limit) || 50, 1), 200),
+        skip:    Math.max(parseInt(offset) || 0, 0),
       }),
       prisma.partyLedger.count({ where: { partyId: req.params.id, shopId: req.shopId } }),
     ]);

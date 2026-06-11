@@ -297,11 +297,12 @@ describe('POST /api/auth/firebase', () => {
 
   // ── New SHOP_OWNER — needs shop details ────────────────────────────────────
 
-  it('returns needsShopDetails=true for new SHOP_OWNER (no session issued)', async () => {
+  it('returns needsShopDetails=true for new SHOP_OWNER with a setup session', async () => {
     verifyFirebaseToken.mockResolvedValue(DECODED_GOOGLE);
     setupNoUser();
     prisma.userType.findUnique.mockResolvedValue({ id: 3 });
-    prisma.user.create.mockResolvedValue({ ...DB_SHOP_OWNER, shopId: null, shop: null, loginCount: 0 });
+    // Fresh shop owners have the schema default verificationStatus NOT_REQUIRED
+    prisma.user.create.mockResolvedValue({ ...DB_SHOP_OWNER, shopId: null, shop: null, verificationStatus: 'NOT_REQUIRED', loginCount: 0 });
     prisma.authProvider.create.mockResolvedValue({});
 
     const res = await request(app)
@@ -310,8 +311,10 @@ describe('POST /api/auth/firebase', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.needsShopDetails).toBe(true);
-    // No access/refresh tokens — session must not be created before shop setup
-    expect(res.body.accessToken).toBeUndefined();
+    // Tokens ARE issued: POST /api/auth/shop-setup requires a Bearer token,
+    // so the setup flow needs a session. shop-setup revokes it on submit.
+    expect(res.body.accessToken).toBeDefined();
+    expect(res.body.refreshToken).toBeDefined();
   });
 
   // ── PENDING shop owner ─────────────────────────────────────────────────────

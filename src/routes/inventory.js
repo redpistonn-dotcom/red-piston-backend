@@ -325,9 +325,13 @@ router.post('/bulk-stock-in', authenticate, requireShopOwner, async (req, res, n
       }
 
       try {
-        const qty     = stockQty     ? parseInt(stockQty)       : 0;
+        const qty     = Math.max(0, parseInt(stockQty) || 0);
         const buyP    = buyingPrice  ? parseFloat(buyingPrice)  : null;
         const sellP   = parseFloat(sellingPrice);
+        if (!Number.isFinite(sellP) || sellP < 0) {
+          errors.push({ masterPartId, error: 'sellingPrice must be a non-negative number' });
+          continue;
+        }
         const minAlert = minStockAlert ? parseInt(minStockAlert) : 5;
 
         const existing = await tx.shopInventory.findUnique({
@@ -444,6 +448,7 @@ router.post('/adjust', authenticate, requireShopOwner, async (req, res, next) =>
   try {
     const { inventoryId, type, qty, notes } = req.body;
     if (!inventoryId || !type || qty === undefined) return res.status(400).json({ error: 'inventoryId, type, and qty required' });
+    if (!Number.isFinite(parseInt(qty))) return res.status(400).json({ error: 'qty must be a number' });
 
     // All adjustment types accepted from frontend (AUDIT, OPENING, CREDIT_NOTE, DEBIT_NOTE are
     // financial-only and carry no stock change)
@@ -470,6 +475,12 @@ router.post('/adjust', authenticate, requireShopOwner, async (req, res, next) =>
     } else {
       // RETURN_IN, OPENING: always positive; ADJUSTMENT: caller controls sign via qty
       qtyChange = parseInt(qty);
+    }
+
+    // Never let an adjustment drive stock below zero (phantom negative stock
+    // is unrecoverable through the UI)
+    if (qtyChange < 0 && item.stockQty + qtyChange < 0) {
+      return res.status(400).json({ error: `Adjustment would make stock negative (current: ${item.stockQty})` });
     }
 
     await prisma.$transaction(async (tx) => {

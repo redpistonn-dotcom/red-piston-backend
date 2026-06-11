@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate } from '../middleware/auth.js';
+import { pageBounds } from '../lib/pagination.js';
 
 const router = Router();
 
@@ -34,6 +35,7 @@ router.get('/browse', async (req, res, next) => {
       part_type,        // "OEM" | "OES" | undefined = all
       shop_id,          // filter to a single shop's inventory
     } = req.query;
+    const { take, skip } = pageBounds(limit, offset, { defLimit: 40, maxLimit: 100 });
 
     // ── Step 1: Resolve vehicle_id from make/model/year if not provided directly ──
     let resolvedVehicleId = vehicle_id || null;
@@ -118,8 +120,8 @@ router.get('/browse', async (req, res, next) => {
           : false,
       },
       orderBy: { partName: 'asc' },
-      take: parseInt(limit),
-      skip: parseInt(offset),
+      take,
+      skip,
     });
 
     // ── Step 4: Count total (for pagination) ─────────────────────────────────
@@ -204,8 +206,8 @@ router.get('/browse', async (req, res, next) => {
       data: {
         parts: result,
         total,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: take,
+        offset: skip,
         vehicleId:     resolvedVehicleId,
         vehicleApplied: !!resolvedVehicleId,
       },
@@ -243,7 +245,7 @@ router.get('/vehicles', async (req, res, next) => {
     const vehicles = await prisma.vehicle.findMany({
       where,
       orderBy: [{ make: 'asc' }, { model: 'asc' }, { yearFrom: 'desc' }],
-      take: parseInt(limit),
+      take: pageBounds(limit, 0, { defLimit: 50, maxLimit: 200 }).take,
       select: {
         vehicleId: true, make: true, model: true, variant: true,
         yearFrom: true, yearTo: true, fuelType: true,
@@ -456,8 +458,7 @@ router.get('/search', async (req, res, next) => {
         },
         fitments: vehicle_id ? { where: { vehicleId: vehicle_id }, include: { vehicle: true } } : false,
       },
-      take: parseInt(limit),
-      skip: parseInt(offset),
+      ...pageBounds(limit, offset),
     });
 
     // Filter by location if provided
@@ -505,8 +506,7 @@ router.get('/orders', authenticate, async (req, res, next) => {
           shop:  { select: { name: true, phone: true, address: true, city: true } },
         },
         orderBy: { createdAt: 'desc' },
-        take:    parseInt(limit),
-        skip:    parseInt(offset),
+        ...pageBounds(limit, offset),
       }),
       prisma.marketplaceOrder.count({ where }),
     ]);
@@ -527,12 +527,13 @@ router.get('/orders/shop', authenticate, async (req, res, next) => {
       prisma.marketplaceOrder.findMany({
         where,
         include: {
+          // Customer phone deliberately excluded from the list view (PII
+          // minimisation) — it's available on the order detail endpoint.
           items: { include: { inventory: { include: { masterPart: { select: { partName: true, brand: true } } } } } },
-          customer: { select: { name: true, phone: true } },
+          customer: { select: { name: true } },
         },
         orderBy: { createdAt: 'desc' },
-        take:    parseInt(limit),
-        skip:    parseInt(offset),
+        ...pageBounds(limit, offset),
       }),
       prisma.marketplaceOrder.count({ where }),
     ]);
@@ -562,7 +563,8 @@ router.get('/orders/:id', authenticate, async (req, res, next) => {
     const isAdmin = req.user.role === 'PLATFORM_ADMIN';
 
     if (!isAdmin && order.customerId !== userId && order.shopId !== shopId) {
-      return res.status(403).json({ error: 'Access denied' });
+      // 404 (not 403) so unauthorized callers can't probe which order IDs exist
+      return res.status(404).json({ error: 'Order not found' });
     }
 
     res.json({ success: true, order });
@@ -932,8 +934,7 @@ router.get('/shops', async (req, res, next) => {
 
     const shops = await prisma.shop.findMany({
       where,
-      take: parseInt(limit),
-      skip: parseInt(offset),
+      ...pageBounds(limit, offset),
       orderBy: { name: 'asc' },
       select: {
         shopId: true, name: true, address: true, city: true,

@@ -220,6 +220,12 @@ router.post('/jobs/:id/items', authenticate, requireShopOwner, async (req, res, 
 
     const parsedQty = parseInt(qty);
     const parsedPrice = parseFloat(unitPrice);
+    if (!Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice < 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_VALUES', message: 'qty must be a positive integer and unitPrice a non-negative number' },
+      });
+    }
     const total = parsedQty * parsedPrice;
 
     const item = await prisma.jobCardItem.create({

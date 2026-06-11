@@ -76,9 +76,17 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
         throw { status: 400, message: `Insufficient stock for ${inv.masterPart.partName}: have ${inv.stockQty}, need ${item.qty}` };
       }
 
+      const itemQty = parseInt(item.qty);
+      if (!Number.isFinite(itemQty) || itemQty <= 0) {
+        throw { status: 400, message: `Invalid quantity for ${inv.masterPart.partName}` };
+      }
       const unitPrice  = parseFloat(item.unitPrice || inv.sellingPrice);
-      const discount   = parseFloat(item.discount || 0);
-      const taxableAmt = (unitPrice - discount) * item.qty;
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        throw { status: 400, message: `Invalid unit price for ${inv.masterPart.partName}` };
+      }
+      // Negative discount would silently become a price increase
+      const discount   = Math.max(0, parseFloat(item.discount) || 0);
+      const taxableAmt = (unitPrice - discount) * itemQty;
       const gstRate    = parseFloat(inv.masterPart.gstRate || 18);
       const itemCgst   = taxableAmt * (gstRate / 2 / 100);
       const itemSgst   = itemCgst;
@@ -93,7 +101,7 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
         partName:    inv.masterPart.partName,
         brand:       inv.masterPart.brand,
         hsnCode:     inv.masterPart.hsnCode,
-        qty:         item.qty,
+        qty:         itemQty,
         unitPrice,
         discount,
         taxableAmt,
@@ -343,6 +351,9 @@ router.post('/invoice/:id/payment', authenticate, requireShopOwner, async (req, 
     if (!invoice) return res.status(404).json({ success: false, error: { message: 'Invoice not found' } });
 
     const parsedAmount = parseFloat(amount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ success: false, error: { message: 'Amount must be a positive number' } });
+    }
 
     await prisma.$transaction(async (tx) => {
       await tx.invoicePayment.create({

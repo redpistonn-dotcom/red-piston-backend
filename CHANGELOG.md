@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-06-11] — Full-Stack Audit: Input Validation, Pagination Bounds, PII Minimisation
+
+### Backend Fixes
+
+- **Pagination bounds (`src/lib/pagination.js`, applied across `marketplace.js`, `parties.js`)**: all user-supplied `limit`/`offset` params are now clamped (`1..max`, `offset >= 0`). Previously negative values made Prisma paginate from the end (scraping bypass) and `limit=abc` threw 500s. Unit tests in `src/tests/pagination.test.js`.
+- **Invoice payments (`billing.js`)**: amount must now be a positive finite number — negative payment amounts were accepted and would corrupt party ledgers.
+- **Invoice line items (`billing.js`)**: qty must be a positive integer, unit price non-negative, and negative discounts (a price-increase fraud vector) are clamped to 0.
+- **Workshop job items (`workshop.js`)**: qty/unitPrice validated (was accepting 0, negatives, NaN).
+- **Inventory adjustments (`inventory.js`)**: adjustments can no longer drive stock below zero; bulk stock-in validates `sellingPrice` and floors qty at 0.
+- **Marketplace shop-orders list (`marketplace.js`)**: customer phone removed from the list payload (PII minimisation); still available on the authorized order-detail endpoint. Order detail returns 404 instead of 403 for foreign orders so order IDs can't be probed.
+
 ## [2026-06-11] — Auth Flow Hardening: Interrupted-Signup Resume + Sign-in/Sign-up Separation
 
 ### Security / Auth Fixes
