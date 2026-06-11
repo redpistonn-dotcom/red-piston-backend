@@ -21,6 +21,7 @@ import fitmentRoutes from './routes/fitments.js';
 import shopProfileRoutes from './routes/shop.js';
 import workshopRoutes from './routes/workshop.js';
 import purchaseOrderRoutes from './routes/purchaseOrders.js';
+import uploadRoutes from './routes/upload.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authLimiter } from './middleware/rateLimiter.js';
 
@@ -92,6 +93,7 @@ app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
 app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
 app.use('/api/admin', adminRoutes);
 app.use('/api/fitments', fitmentRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
