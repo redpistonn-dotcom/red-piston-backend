@@ -111,9 +111,11 @@ describe('POST /api/auth/refresh', () => {
     expect(res.body.error.code).toBe('INVALID_REFRESH');
   });
 
-  it('returns 401 INVALID_REFRESH for already-revoked token', async () => {
+  it('returns 401 INVALID_REFRESH for already-revoked token (outside rotation grace)', async () => {
+    // Tokens revoked > 60s ago are replays and must be rejected. Tokens revoked
+    // within the 60s grace window are concurrent-tab rotation races and pass.
     prisma.refreshToken.findUnique.mockResolvedValue(
-      storedToken({ revokedAt: new Date(Date.now() - 1000) })
+      storedToken({ revokedAt: new Date(Date.now() - 5 * 60 * 1000) })
     );
     const res = await request(app)
       .post('/api/auth/refresh')

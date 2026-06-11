@@ -22,7 +22,15 @@ router.post('/refresh', async (req, res, next) => {
     // Find by hash, not by raw token. Also filter out revoked/expired rows.
     const stored = await prisma.refreshToken.findUnique({ where: { tokenHash } });
 
-    if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
+    // Rotation grace window: when two tabs refresh concurrently, the first one
+    // rotates (revokes) the token before the second one's request lands. A token
+    // revoked < 60s ago is a race, not a replay — allow it so the losing tab
+    // isn't force-logged-out. Genuinely old revoked tokens are still rejected.
+    const ROTATION_GRACE_MS = 60 * 1000;
+    const revokedOutsideGrace = stored?.revokedAt
+      && (Date.now() - new Date(stored.revokedAt).getTime()) > ROTATION_GRACE_MS;
+
+    if (!stored || revokedOutsideGrace || stored.expiresAt < new Date()) {
       res.clearCookie(REFRESH_COOKIE_NAME, { ...REFRESH_COOKIE_OPTIONS, maxAge: 0 });
       return res.status(401).json({
         success: false,
