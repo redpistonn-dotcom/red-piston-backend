@@ -30,6 +30,9 @@ router.get('/browse', async (req, res, next) => {
       lat, lng,
       limit = 40,
       offset = 0,
+      price_max,        // max selling price filter (applied to best shop price)
+      part_type,        // "OEM" | "OES" | undefined = all
+      shop_id,          // filter to a single shop's inventory
     } = req.query;
 
     // ── Step 1: Resolve vehicle_id from make/model/year if not provided directly ──
@@ -52,10 +55,27 @@ router.get('/browse', async (req, res, next) => {
     }
 
     // ── Step 2: Build master_parts WHERE clause ───────────────────────────────
+    // Build the base inventory condition (reused in both partWhere and include)
+    const inventoryBase = { isMarketplaceListed: true, stockQty: { gt: 0 } };
+    // Price filter: only count a part as "available" if at least one shop sells it within budget
+    if (price_max && !isNaN(parseFloat(price_max))) {
+      inventoryBase.sellingPrice = { lte: parseFloat(price_max) };
+    }
+    // Shop filter: only show parts carried by this specific shop
+    if (shop_id && !isNaN(parseInt(shop_id))) {
+      inventoryBase.shopId = parseInt(shop_id);
+    }
+
     const partWhere = {
-      // Only show parts that have at least one marketplace-listed inventory item in stock
-      inventory: { some: { isMarketplaceListed: true, stockQty: { gt: 0 } } },
+      // Only show parts that have at least one marketplace-listed, in-stock listing (within price budget if set)
+      inventory: { some: inventoryBase },
     };
+
+    // Part type filter (OEM / OES)
+    const upperPartType = (part_type || '').toUpperCase();
+    if (upperPartType === 'OEM' || upperPartType === 'OES') {
+      partWhere.partType = upperPartType;
+    }
 
     // Category filter
     if (category && category !== 'All') {
@@ -90,7 +110,7 @@ router.get('/browse', async (req, res, next) => {
       where: partWhere,
       include: {
         inventory: {
-          where: { isMarketplaceListed: true, stockQty: { gt: 0 } },
+          where: inventoryBase,   // same condition as partWhere — filters by price too
           include: { shop: true },
         },
         fitments: resolvedVehicleId
@@ -162,13 +182,14 @@ router.get('/browse', async (req, res, next) => {
         categoryL2:      part.categoryL2,
         imageUrl:        part.imageUrl,
         images:          part.images,
-        primaryOemNumber: part.primaryOemNumber,
-        oemNumbers:      part.oemNumbers,
+        // OEM/part numbers are confidential — NOT exposed in marketplace API.
+        // Use masterPartId as the public item reference number instead.
         hsnCode:         part.hsnCode,
         gstRate:         Number(part.gstRate),
         unitOfSale:      part.unitOfSale,
         description:     part.description,
         specifications:  part.specifications,
+        partType:        part.partType,  // "OEM" | "OES"
         isUniversal:     part.isUniversal,
         requiresFitment: part.requiresFitment,
         fitmentType,      // "exact" | "compatible" | "universal" | null
@@ -917,7 +938,7 @@ router.get('/shops', async (req, res, next) => {
       select: {
         shopId: true, name: true, address: true, city: true,
         phone: true, latitude: true, longitude: true,
-        logoUrl: true, isVerified: true, deliveryRadius: true,
+        logoUrl: true, isVerified: true, deliveryRadiusKm: true,
         _count: { select: { inventory: true } },
       },
     });
@@ -930,7 +951,7 @@ router.get('/shops', async (req, res, next) => {
       phone:           s.phone,
       logo:            s.logoUrl,
       is_verified:     s.isVerified,
-      delivery_radius: s.deliveryRadius,
+      delivery_radius: s.deliveryRadiusKm,
       rating:          4.2,
       reviews:         s._count.inventory * 3,
       parts_count:     s._count.inventory,

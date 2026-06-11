@@ -493,6 +493,8 @@ model MasterPart {
   specifications     Json?
   imageUrl           String?   @map("image_url")
   images             String?
+  // OEM = Original Equipment Manufacturer part; OES = Original Equipment Supplier (aftermarket)
+  partType           String    @default("OEM") @map("part_type")
   isUniversal        Boolean   @default(false) @map("is_universal")
   requiresFitment    Boolean   @default(true) @map("requires_fitment")
   status             String    @default("PENDING")

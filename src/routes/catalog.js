@@ -389,11 +389,17 @@ router.post('/contribute', authenticate, async (req, res, next) => {
       hsnCode, gstRate, unitOfSale, weightGrams, description,
       primaryOemNumber, oemNumber,
       oemNumbers, barcodes, images, specifications,
+      partType,
     } = req.body;
 
     if (!partName || !partName.trim()) {
       return res.status(400).json({ error: 'Part name is required' });
     }
+
+    const VALID_PART_TYPES = ['OEM', 'OES'];
+    const resolvedPartType = VALID_PART_TYPES.includes((partType || '').toUpperCase())
+      ? (partType || '').toUpperCase()
+      : 'OEM';
 
     const allOems = Array.isArray(oemNumbers) ? oemNumbers : [];
     const primaryOem = primaryOemNumber || oemNumber || null;
@@ -418,6 +424,7 @@ router.post('/contribute', authenticate, async (req, res, next) => {
         weightGrams:         weightGrams      ? parseInt(weightGrams) : null,
         description:         description      || null,
         imageUrl:            cleanImages[0]   || null,
+        partType:            resolvedPartType,
         status:              'PENDING',
         source:              'CONTRIBUTED',
         contributedByShopId: shopId,
@@ -500,6 +507,7 @@ router.put('/parts/:masterPartId', authenticate, async (req, res, next) => {
       partName, brand, categoryL1, categoryL2, categoryL3,
       hsnCode, gstRate, unitOfSale, weightGrams, description,
       primaryOemNumber, imageUrl, isUniversal, requiresFitment,
+      partType,
       status, // admin only
     } = req.body;
 
@@ -518,6 +526,11 @@ router.put('/parts/:masterPartId', authenticate, async (req, res, next) => {
     if (imageUrl           !== undefined) data.imageUrl          = imageUrl || null;
     if (isUniversal        !== undefined) data.isUniversal       = Boolean(isUniversal);
     if (requiresFitment    !== undefined) data.requiresFitment   = Boolean(requiresFitment);
+    if (partType           !== undefined) {
+      const VALID_PART_TYPES = ['OEM', 'OES'];
+      const pt = (partType || '').toUpperCase();
+      if (VALID_PART_TYPES.includes(pt)) data.partType = pt;
+    }
 
     // Only admin can change status and set verifiedAt
     if (isAdmin && status !== undefined) {
