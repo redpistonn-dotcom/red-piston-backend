@@ -425,7 +425,7 @@ router.post('/contribute', authenticate, async (req, res, next) => {
         description:         description      || null,
         imageUrl:            cleanImages[0]   || null,
         partType:            resolvedPartType,
-        status:              'PENDING',
+        status:              'VERIFIED',
         source:              'CONTRIBUTED',
         contributedByShopId: shopId,
       },

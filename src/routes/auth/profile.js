@@ -17,7 +17,7 @@ router.get('/me', authenticate, async (req, res, next) => {
         userType: true,
         profile: true,
         settings: true,
-        providers: { select: { provider: true, providerId: true, linkedAt: true } },
+        authProviders: { select: { provider: true, providerId: true, linkedAt: true } },
       },
     });
 
@@ -25,7 +25,7 @@ router.get('/me', authenticate, async (req, res, next) => {
       ...formatUserResponse(user),
       profile: user.profile,
       settings: user.settings,
-      providers: user.providers,
+      providers: user.authProviders,
     };
 
     // ── Role-specific enrichment ──────────────────────────────────────────────
@@ -50,14 +50,23 @@ router.get('/me', authenticate, async (req, res, next) => {
     }
 
     if (user.role === 'SHOP_OWNER' && user.shopId) {
-      const shopStaff = await prisma.shopUser.findMany({
-        where: { shopId: user.shopId },
-        include: {
-          user: { select: { userId: true, name: true, phone: true, email: true, avatarUrl: true, lastLoginAt: true } },
-        },
-        orderBy: [{ isActive: 'desc' }, { joinedAt: 'asc' }],
-      });
+      const [shopStaff, inventoryCount, invoiceCount] = await Promise.all([
+        prisma.shopUser.findMany({
+          where: { shopId: user.shopId },
+          include: {
+            user: { select: { userId: true, name: true, phone: true, email: true, avatarUrl: true, lastLoginAt: true } },
+          },
+          orderBy: [{ isActive: 'desc' }, { joinedAt: 'asc' }],
+        }),
+        prisma.shopInventory.count({ where: { shopId: user.shopId } }),
+        prisma.invoice.count({ where: { shopId: user.shopId } }),
+      ]);
       base.shopStaff = shopStaff;
+      base.shopMetrics = {
+        inventoryCount,
+        invoiceCount,
+        activeStaffCount: shopStaff.filter(s => s.isActive).length,
+      };
     }
 
     if (user.role === 'PLATFORM_ADMIN') {
