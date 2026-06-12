@@ -547,7 +547,7 @@ router.get('/orders/shop', authenticate, async (req, res, next) => {
 router.get('/orders/:id', authenticate, async (req, res, next) => {
   try {
     const order = await prisma.marketplaceOrder.findUnique({
-      where:   { orderId: req.params.id },
+      where:   { orderId: parseInt(req.params.id, 10) },
       include: {
         items:          { include: { inventory: { include: { masterPart: true } } } },
         shop:           { select: { name: true, phone: true, address: true, city: true, logoUrl: true } },
@@ -604,11 +604,13 @@ router.post('/orders', authenticate, async (req, res, next) => {
         const shopSubtotal = shopItems.reduce((sum, i) => sum + i.unitPrice * i.qty, 0);
         const order = await prisma.marketplaceOrder.create({
           data: {
-            orderNumber:       `${orderNumber}-${shopId.slice(0, 6)}`,
+            // Object.entries keys are STRINGS — schema shopId is Int; the old
+            // `shopId.slice(0,6)` orderNumber suffix was leftover cuid-era code.
+            orderNumber:       `${orderNumber}-S${shopId}`,
             customerId:        req.user.userId,
             customerPhone:     req.user.phone || '',
             customerName:      customerName || req.user.name || null,
-            shopId,
+            shopId:            Number(shopId),
             subtotal:          shopSubtotal,
             total:             shopSubtotal,
             deliveryAddress:   deliveryAddress   || null,
@@ -675,7 +677,7 @@ router.put('/orders/:id/status', authenticate, async (req, res, next) => {
     }
 
     const order = await prisma.marketplaceOrder.findUnique({
-      where:   { orderId: req.params.id },
+      where:   { orderId: parseInt(req.params.id, 10) },
       include: { items: true },
     });
     if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -708,7 +710,7 @@ router.put('/orders/:id/status', authenticate, async (req, res, next) => {
         const payoutAmount = Number(order.total) * (1 - commission / 100);
 
         await tx.marketplaceOrder.update({
-          where: { orderId: req.params.id },
+          where: { orderId: parseInt(req.params.id, 10) },
           data:  {
             ...data,
             payoutAmount,
@@ -725,10 +727,10 @@ router.put('/orders/:id/status', authenticate, async (req, res, next) => {
             data:  { reservedQty: { decrement: item.qty } },
           });
         }
-        await tx.marketplaceOrder.update({ where: { orderId: req.params.id }, data });
+        await tx.marketplaceOrder.update({ where: { orderId: parseInt(req.params.id, 10) }, data });
       });
     } else {
-      await prisma.marketplaceOrder.update({ where: { orderId: req.params.id }, data });
+      await prisma.marketplaceOrder.update({ where: { orderId: parseInt(req.params.id, 10) }, data });
     }
 
     res.json({ success: true, status });
@@ -775,7 +777,7 @@ router.put('/orders/:id/payment', authenticate, async (req, res, next) => {
       }
     }
 
-    const order = await prisma.marketplaceOrder.findUnique({ where: { orderId: req.params.id } });
+    const order = await prisma.marketplaceOrder.findUnique({ where: { orderId: parseInt(req.params.id, 10) } });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     // Allow: the customer themselves, the shop, or admin
@@ -789,7 +791,7 @@ router.put('/orders/:id/payment', authenticate, async (req, res, next) => {
     if (razorpayPaymentId) data.razorpayPaymentId = razorpayPaymentId;
     if (paymentStatus === 'PAID') data.status = 'CONFIRMED';
 
-    await prisma.marketplaceOrder.update({ where: { orderId: req.params.id }, data });
+    await prisma.marketplaceOrder.update({ where: { orderId: parseInt(req.params.id, 10) }, data });
     res.json({ success: true, paymentStatus });
   } catch (err) { next(err); }
 });
@@ -923,7 +925,7 @@ router.post('/catalog/:masterPartId/review', authenticate, async (req, res, next
 router.get('/orders/:id/track', async (req, res, next) => {
   try {
     const order = await prisma.marketplaceOrder.findUnique({
-      where: { orderId: req.params.id },
+      where: { orderId: parseInt(req.params.id, 10) },
       include: { items: true },
     });
     if (!order) return res.status(404).json({ error: 'Order not found' });
