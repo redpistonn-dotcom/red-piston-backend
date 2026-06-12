@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import prisma from '../../db/prisma.js';
 import { authenticate } from '../../middleware/auth.js';
-import { sendShopOwnerVerificationAlert } from '../../services/email.js';
+import { sendShopOwnerVerificationAlert, sendShopOwnerUnderReviewEmail } from '../../services/email.js';
 import { findUserByEmailInsensitive } from './helpers.js';
 
 const router = Router();
@@ -170,6 +170,10 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
       { ...updatedUser, shop },
       admins.map(a => a.email)
     ).catch(e => console.error('[EMAIL] Admin alert failed:', e));
+
+    // Acknowledge the applicant: "your profile is under review"
+    sendShopOwnerUnderReviewEmail(user.email || email?.trim() || null, ownerName.trim())
+      .catch(e => console.error('[EMAIL] Under-review email failed:', e));
 
     res.json({
       success: true,

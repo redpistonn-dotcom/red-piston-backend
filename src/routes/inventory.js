@@ -142,7 +142,7 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
       sellingPrice, buyingPrice, rackLocation,
       minStockAlert, maxStockLevel,
       customPartName, barcode,
-      shopSpecificNotes, isMarketplaceListed,
+      shopSpecificNotes, isMarketplaceListed, imageUrl,
     } = req.body;
 
     const inventoryId = parseInt(req.params.id);
@@ -161,6 +161,7 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
         ...(barcode            !== undefined && { barcode:            barcode || null }),
         ...(shopSpecificNotes  !== undefined && { shopSpecificNotes:  shopSpecificNotes || null }),
         ...(isMarketplaceListed !== undefined && { isMarketplaceListed }),
+        ...(imageUrl           !== undefined && { imageUrl:           imageUrl || null }),
       },
       include: { masterPart: true },
     });
@@ -431,6 +432,11 @@ router.patch('/:id/marketplace', authenticate, requireShopOwner, async (req, res
 
     const { listed } = req.body; // explicit boolean, or toggle if omitted
     const newValue = listed !== undefined ? Boolean(listed) : !item.isMarketplaceListed;
+
+    // Going live requires a real price — previously only the frontend checked
+    if (newValue && !(Number(item.sellingPrice) > 0)) {
+      return res.status(400).json({ error: 'Set a selling price before listing this item on the marketplace' });
+    }
 
     const updated = await prisma.shopInventory.update({
       where: { inventoryId },

@@ -639,6 +639,8 @@ model ShopInventory {
   // Shop-specific barcode (sticker/label printed in-store)
   barcode               String?
   shopSpecificNotes     String?   @map("shop_specific_notes")
+  // Shop's own product photo (Cloudinary) — falls back to MasterPart.imageUrl
+  imageUrl              String?   @map("image_url")
   isMarketplaceListed   Boolean   @default(false) @map("is_marketplace_listed")
   lastPurchasedAt       DateTime? @map("last_purchased_at")
   lastSoldAt            DateTime? @map("last_sold_at")

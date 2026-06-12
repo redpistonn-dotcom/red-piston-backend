@@ -19,7 +19,7 @@ function getResendClient() {
       try {
         const resend = getResendClient();
         const senderEmail = process.env.RESEND_SENDER_EMAIL;
-        const senderName = process.env.RESEND_SENDER_NAME || 'AutoSpace';
+        const senderName = process.env.RESEND_SENDER_NAME || 'RedPiston';
         if (!senderEmail) {
           throw new Error('Missing RESEND_SENDER_EMAIL in backend environment');
         }
@@ -47,7 +47,7 @@ function baseTemplate(content) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AutoSpace</title>
+  <title>RedPiston</title>
 </head>
 <body style="margin:0;padding:0;background:#0A0F1D;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0A0F1D;padding:40px 20px;">
@@ -63,7 +63,7 @@ function baseTemplate(content) {
                     &#9881;
                   </td>
                   <td style="padding-left:12px;font-size:20px;font-weight:800;color:#F3F4F6;letter-spacing:-0.5px;">
-                    AutoSpace
+                    RedPiston
                   </td>
                 </tr>
               </table>
@@ -79,10 +79,10 @@ function baseTemplate(content) {
           <tr>
             <td style="padding:20px 40px;border-top:1px solid #1F2937;">
               <p style="margin:0;font-size:12px;color:#6B7280;line-height:1.5;">
-                This email was sent by AutoSpace. If you didn't request this, you can safely ignore it.
+                This email was sent by RedPiston. If you didn't request this, you can safely ignore it.
               </p>
               <p style="margin:8px 0 0;font-size:11px;color:#4B5563;">
-                &copy; ${new Date().getFullYear()} AutoSpace &mdash; India's Auto Parts Platform
+                &copy; ${new Date().getFullYear()} RedPiston &mdash; India's Auto Parts Platform
               </p>
             </td>
           </tr>
@@ -178,7 +178,7 @@ function welcomeEmailHtml(name) {
   const displayName = name || 'there';
   return baseTemplate(`
     <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">
-      Welcome to AutoSpace!
+      Welcome to RedPiston!
     </h1>
     <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
       Hey ${displayName}, your account is all set. Here's what you can do:
@@ -261,9 +261,9 @@ export async function sendEmailOtp(email) {
 
   await sendMail({
     to: email,
-    subject: `${code} — Verify your AutoSpace email`,
+    subject: `${code} — Verify your RedPiston email`,
     html: otpEmailHtml(code),
-    text: `Your AutoSpace verification code is: ${code}\n\nThis code expires in 10 minutes. If you didn't request this, ignore this email.`,
+    text: `Your RedPiston verification code is: ${code}\n\nThis code expires in 10 minutes. If you didn't request this, ignore this email.`,
   });
 
   return code;
@@ -308,10 +308,10 @@ export async function sendPasswordResetEmail(email, token, isFirstPassword = fal
   const resetUrl = `${resetPath}?token=${token}`;
 
   const subject = isFirstPassword
-    ? 'Set a password for your AutoSpace account'
-    : 'Reset your AutoSpace password';
+    ? 'Set a password for your RedPiston account'
+    : 'Reset your RedPiston password';
   const plainText = isFirstPassword
-    ? `Add a password to your AutoSpace account by visiting: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`
+    ? `Add a password to your RedPiston account by visiting: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`
     : `Reset your password by visiting: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`;
 
   await sendMail({
@@ -328,9 +328,9 @@ export async function sendPasswordResetEmail(email, token, isFirstPassword = fal
 export async function sendWelcomeEmail(email, name) {
   await sendMail({
     to: email,
-    subject: `Welcome to AutoSpace${name ? `, ${name}` : ''}!`,
+    subject: `Welcome to RedPiston${name ? `, ${name}` : ''}!`,
     html: welcomeEmailHtml(name),
-    text: `Welcome to AutoSpace${name ? `, ${name}` : ''}! Your account is ready. Browse parts, compare shops, and order online.`,
+    text: `Welcome to RedPiston${name ? `, ${name}` : ''}! Your account is ready. Browse parts, compare shops, and order online.`,
   });
 }
 
@@ -340,9 +340,9 @@ export async function sendWelcomeEmail(email, name) {
 export async function sendPasswordChangedEmail(email) {
   await sendMail({
     to: email,
-    subject: 'Your AutoSpace password was changed',
+    subject: 'Your RedPiston password was changed',
     html: passwordChangedHtml(),
-    text: `Your AutoSpace password was successfully changed. If you didn't do this, your account may be compromised. Reset your password immediately.`,
+    text: `Your RedPiston password was successfully changed. If you didn't do this, your account may be compromised. Reset your password immediately.`,
   });
 }
 
@@ -379,7 +379,7 @@ export async function sendShopOwnerVerificationAlert(shopOwner, adminEmails) {
   `);
   // Send to all admins (concurrently, don't fail if one bounces)
   await Promise.allSettled(adminEmails.map(email =>
-    sendMail({ to: email, subject: `[AutoSpace] New Shop Owner Pending Verification — ${shopOwner.name || shopOwner.email}`, html,
+    sendMail({ to: email, subject: `[RedPiston] New Shop Owner Pending Verification — ${shopOwner.name || shopOwner.email}`, html,
       text: `New shop owner awaiting verification:\nName: ${shopOwner.name || '—'}\nEmail: ${shopOwner.email || '—'}\nPhone: ${shopOwner.phone || '—'}\n\nReview at: ${appUrl}/admin` })
   ));
 }
@@ -396,7 +396,7 @@ export async function sendShopOwnerApprovedEmail(shopOwner) {
     </div>
     <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">Your Shop is Approved!</h1>
     <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      Hey ${shopOwner.name || 'there'}, great news! Your shop owner account on AutoSpace has been verified and approved. You can now log in and start managing your shop.
+      Hey ${shopOwner.name || 'there'}, great news! Your shop owner account on RedPiston has been verified and approved. You can now log in and start managing your shop.
     </p>
     <div style="text-align:center;margin-bottom:28px;">
       <a href="${appUrl}/login"
@@ -410,9 +410,9 @@ export async function sendShopOwnerApprovedEmail(shopOwner) {
   `);
   await sendMail({
     to: shopOwner.email,
-    subject: '🎉 Your AutoSpace Shop Account is Approved!',
+    subject: '🎉 Your RedPiston Shop Account is Approved!',
     html,
-    text: `Great news! Your AutoSpace shop owner account has been approved. Log in at: ${appUrl}/login`,
+    text: `Great news! Your RedPiston shop owner account has been approved. Log in at: ${appUrl}/login`,
   });
 }
 
@@ -439,8 +439,68 @@ export async function sendShopOwnerRejectedEmail(shopOwner, reason) {
   `);
   await sendMail({
     to: shopOwner.email,
-    subject: 'Update on your AutoSpace Shop Owner Application',
+    subject: 'Update on your RedPiston Shop Owner Application',
     html,
-    text: `Your AutoSpace shop owner application was not approved.\n\nReason: ${reason || 'Your application did not meet our current requirements.'}\n\nContact support by replying to this email.`,
+    text: `Your RedPiston shop owner application was not approved.\n\nReason: ${reason || 'Your application did not meet our current requirements.'}\n\nContact support by replying to this email.`,
+  });
+}
+
+/**
+ * Acknowledge the APPLICANT right after they submit shop details —
+ * "your profile is under review". (The admin alert is a separate email.)
+ */
+export async function sendShopOwnerUnderReviewEmail(email, ownerName) {
+  if (!email) return;
+  const html = baseTemplate(`
+    <div style="background:#1A1200;border:1px solid #D97706;border-radius:10px;padding:14px 18px;margin-bottom:20px;">
+      <p style="margin:0;font-size:12px;font-weight:700;color:#D97706;text-transform:uppercase;letter-spacing:0.06em;">Profile Under Review</p>
+    </div>
+    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">Thanks for registering${ownerName ? `, ${ownerName}` : ''}!</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#9CA3AF;line-height:1.6;">
+      Your shop profile has been submitted and is currently under review by our team.
+    </p>
+    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
+      You will receive another email once your account is approved — usually within 24 hours. No action is needed from you right now.
+    </p>
+    <p style="margin:0;font-size:13px;color:#6B7280;">
+      Questions? Just reply to this email and our team will help.
+    </p>
+  `);
+  await sendMail({
+    to: email,
+    subject: 'Profile Under Review — RedPiston',
+    html,
+    text: `Thank you for registering. Your shop profile is currently under review. You will receive another email once approved — usually within 24 hours.`,
+  });
+}
+
+/**
+ * Order confirmation to the customer right after a marketplace order is placed.
+ */
+export async function sendOrderConfirmationEmail(email, { customerName, orderNumber, shopName, itemCount, totalAmount }) {
+  if (!email) return;
+  const html = baseTemplate(`
+    <div style="background:#0A2E1A;border:1px solid #16A34A;border-radius:10px;padding:14px 18px;margin-bottom:20px;">
+      <p style="margin:0;font-size:12px;font-weight:700;color:#4ADE80;text-transform:uppercase;letter-spacing:0.06em;">✓ Order Placed</p>
+    </div>
+    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">Thanks for your order${customerName ? `, ${customerName}` : ''}!</h1>
+    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
+      Your order has been placed and the shop has been notified.
+    </p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0A0F1D;border-radius:10px;padding:20px;margin-bottom:24px;">
+      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Order</td><td style="padding:6px 0;font-size:14px;font-weight:600;color:#F3F4F6;">#${orderNumber}</td></tr>
+      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Shop</td><td style="padding:6px 0;font-size:14px;color:#F3F4F6;">${shopName || '—'}</td></tr>
+      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Items</td><td style="padding:6px 0;font-size:14px;color:#F3F4F6;">${itemCount}</td></tr>
+      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Total</td><td style="padding:6px 0;font-size:14px;font-weight:700;color:#4ADE80;">₹${Number(totalAmount).toFixed(2)}</td></tr>
+    </table>
+    <p style="margin:0;font-size:13px;color:#6B7280;">
+      Track your order anytime from the Orders section of your account.
+    </p>
+  `);
+  await sendMail({
+    to: email,
+    subject: `Order #${orderNumber} confirmed — RedPiston`,
+    html,
+    text: `Your order #${orderNumber} from ${shopName || 'the shop'} (${itemCount} items, ₹${Number(totalAmount).toFixed(2)}) has been placed. Track it from the Orders section.`,
   });
 }

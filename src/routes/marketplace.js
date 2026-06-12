@@ -3,6 +3,7 @@ import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate } from '../middleware/auth.js';
 import { pageBounds } from '../lib/pagination.js';
+import { sendOrderConfirmationEmail } from '../services/email.js';
 
 const router = Router();
 
@@ -642,6 +643,23 @@ router.post('/orders', authenticate, async (req, res, next) => {
         return order;
       })
     );
+
+    // Order confirmation email to the customer (fire-and-forget; phone-only
+    // accounts have no email — skipped silently inside the helper)
+    if (req.user.email) {
+      const itemCount = items.reduce((s, i) => s + i.qty, 0);
+      const grand = orders.reduce((s, o) => s + Number(o.total), 0);
+      const shopRow = orders.length === 1
+        ? await prisma.shop.findUnique({ where: { shopId: orders[0].shopId }, select: { name: true } }).catch(() => null)
+        : null;
+      sendOrderConfirmationEmail(req.user.email, {
+        customerName: req.user.name,
+        orderNumber,
+        shopName: shopRow?.name || (orders.length > 1 ? `${orders.length} shops` : null),
+        itemCount,
+        totalAmount: grand,
+      }).catch((e) => console.error('[EMAIL] Order confirmation failed:', e?.message));
+    }
 
     res.json({ success: true, orders, orderNumber });
   } catch (err) { next(err); }

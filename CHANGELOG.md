@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026-06-12] — Product Audit round 2: emails, order wiring, image persistence
+
+### Fixes / New
+
+- **Email rebrand**: all 21 hardcoded "AutoSpace" strings in `src/services/email.js` → "RedPiston" (subjects, headers, footers, sender-name default).
+- **New email — "Profile Under Review"** (`sendShopOwnerUnderReviewEmail`): the APPLICANT now gets an acknowledgment right after `POST /api/auth/shop-setup` (previously only admins were alerted).
+- **New email — Order confirmation** (`sendOrderConfirmationEmail`): customers with an email get a confirmation when a marketplace order is created (fire-and-forget; phone-only accounts skipped).
+- **`shop_inventory.image_url` column** (migration `add_inventory_image.sql`): shop product photos uploaded from the ProductModal previously went to Cloudinary but had nowhere to persist. `PUT /api/shop/inventory/:id` now accepts `imageUrl`; the frontend sync sends it.
+- **Go-live validation**: `PATCH /api/shop/inventory/:id/marketplace` now rejects listing items with no selling price (was frontend-only).
+
 ## [2026-06-12] — Purchase Bill OCR: supplier invoice → review → inventory
 
 ### New Features
