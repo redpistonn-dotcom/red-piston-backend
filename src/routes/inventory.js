@@ -284,23 +284,62 @@ router.get('/low-stock', authenticate, requireShopOwner, async (req, res, next) 
   } catch (err) { next(err); }
 });
 
-// GET /api/shop/movements — all movements for this shop with product + party names
+// GET /api/shop/movements — paginated movement ledger with filters
+// Query params: limit (max 500), offset, type, from (ISO date), to (ISO date),
+//               search (product/party name / invoice no), partyId
+const ADJUSTMENT_TYPES = ['RETURN_IN','RETURN_OUT','CREDIT_NOTE','DEBIT_NOTE','DAMAGE','THEFT','AUDIT','OPENING','TRANSFER_IN','TRANSFER_OUT','ADJUST'];
+
 router.get('/movements', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const movements = await prisma.movement.findMany({
-      where: { shopId: req.shopId },
-      orderBy: { createdAt: 'desc' },
-      include: {
-        inventory: {
-          select: {
-            customPartName: true,
-            masterPart: { select: { partName: true } },
+    const { limit = 500, offset = 0, type, from, to, search, partyId } = req.query;
+    const parsedLimit  = Math.min(Math.max(parseInt(limit)  || 500, 1), 500);
+    const parsedOffset = Math.max(parseInt(offset) || 0, 0);
+
+    const where = { shopId: req.shopId };
+
+    if (type && type !== 'ALL') {
+      if (type === 'ADJUSTMENTS') {
+        where.type = { in: ADJUSTMENT_TYPES };
+      } else {
+        where.type = type;
+      }
+    }
+    if (from || to) {
+      where.createdAt = {};
+      if (from) where.createdAt.gte = new Date(from);
+      if (to)   where.createdAt.lte = new Date(new Date(to).setHours(23, 59, 59, 999));
+    }
+    if (partyId) where.partyId = partyId;
+    if (search) {
+      const s = search.trim();
+      where.OR = [
+        { referenceNumber: { contains: s, mode: 'insensitive' } },
+        { party:     { name: { contains: s, mode: 'insensitive' } } },
+        { inventory: { customPartName: { contains: s, mode: 'insensitive' } } },
+        { inventory: { masterPart: { partName: { contains: s, mode: 'insensitive' } } } },
+      ];
+    }
+
+    const [movements, total] = await Promise.all([
+      prisma.movement.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take:    parsedLimit,
+        skip:    parsedOffset,
+        include: {
+          inventory: {
+            select: {
+              customPartName: true,
+              masterPart: { select: { partName: true } },
+            },
           },
+          party: { select: { name: true, type: true } },
         },
-        party: { select: { name: true, type: true } },
-      },
-    });
-    res.json({ success: true, movements });
+      }),
+      prisma.movement.count({ where }),
+    ]);
+
+    res.json({ success: true, movements, total, limit: parsedLimit, offset: parsedOffset });
   } catch (err) {
     console.error('[GET /shop/movements]', err);
     next(err);

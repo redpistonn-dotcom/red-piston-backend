@@ -290,19 +290,68 @@ router.get('/invoice/:id', authenticate, requireShopOwner, async (req, res, next
 });
 
 // ─── GET /api/billing/invoice/:id/pdf ────────────────────────────────────────
-router.get('/invoice/:id/pdf', authenticate, requireShopOwner, async (req, res, next) => {
+// Accessible by the shop owner OR the marketplace customer linked to this invoice.
+router.get('/invoice/:id/pdf', authenticate, async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
       where:   { invoiceId: req.params.id },
       include: { items: true, shop: true },
     });
-    if (!invoice || invoice.shopId !== req.shopId) return res.status(404).json({ error: 'Invoice not found' });
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+
+    const isShopOwner = req.user.shopId === invoice.shopId;
+    let isLinkedCustomer = false;
+    if (!isShopOwner && invoice.marketplaceOrderId) {
+      const order = await prisma.marketplaceOrder.findFirst({
+        where: { orderId: invoice.marketplaceOrderId, customerId: req.user.userId },
+        select: { orderId: true },
+      });
+      isLinkedCustomer = !!order;
+    }
+    if (!isShopOwner && !isLinkedCustomer) return res.status(404).json({ error: 'Invoice not found' });
 
     const pdfBuffer = await generateInvoicePdf(invoice);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="invoice-${invoice.invoiceNumber}.pdf"`);
     res.send(pdfBuffer);
   } catch (err) { next(err); }
+});
+
+// ─── GET /api/billing/customer/invoices — customer's own invoice history ──────
+// Returns invoices linked to marketplace orders placed by the authenticated user.
+router.get('/customer/invoices', authenticate, async (req, res, next) => {
+  try {
+    const { limit = 20, offset = 0 } = req.query;
+    const parsedLimit  = Math.min(Math.max(parseInt(limit)  || 20, 1), 100);
+    const parsedOffset = Math.max(parseInt(offset) || 0, 0);
+
+    const orders = await prisma.marketplaceOrder.findMany({
+      where:  { customerId: req.user.userId },
+      select: { orderId: true },
+    });
+
+    if (orders.length === 0) return res.json({ success: true, invoices: [], total: 0 });
+
+    const orderIds = orders.map(o => o.orderId);
+    const [invoices, total] = await Promise.all([
+      prisma.invoice.findMany({
+        where:   { marketplaceOrderId: { in: orderIds } },
+        include: {
+          items: true,
+          shop:  { select: { shopName: true, address: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take:    parsedLimit,
+        skip:    parsedOffset,
+      }),
+      prisma.invoice.count({ where: { marketplaceOrderId: { in: orderIds } } }),
+    ]);
+
+    res.json({ success: true, invoices, total });
+  } catch (err) {
+    console.error('[GET /billing/customer/invoices]', err);
+    next(err);
+  }
 });
 
 // ─── POST /api/billing/invoice/:id/send-whatsapp ─────────────────────────────
