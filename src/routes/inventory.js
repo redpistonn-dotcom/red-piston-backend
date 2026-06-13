@@ -284,6 +284,29 @@ router.get('/low-stock', authenticate, requireShopOwner, async (req, res, next) 
   } catch (err) { next(err); }
 });
 
+// GET /api/shop/movements — all movements for this shop with product + party names
+router.get('/movements', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const movements = await prisma.movement.findMany({
+      where: { shopId: req.shopId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        inventory: {
+          select: {
+            customPartName: true,
+            masterPart: { select: { partName: true } },
+          },
+        },
+        party: { select: { name: true, type: true } },
+      },
+    });
+    res.json({ success: true, movements });
+  } catch (err) {
+    console.error('[GET /shop/movements]', err);
+    next(err);
+  }
+});
+
 // POST /api/shop/inventory/bulk-stock-in
 // Cart/bucket procurement — receives entire purchase session in one call.
 // Body: {
@@ -433,9 +456,12 @@ router.patch('/:id/marketplace', authenticate, requireShopOwner, async (req, res
     const { listed } = req.body; // explicit boolean, or toggle if omitted
     const newValue = listed !== undefined ? Boolean(listed) : !item.isMarketplaceListed;
 
-    // Going live requires a real price — previously only the frontend checked
+    // Going live requires a real price and a product image
     if (newValue && !(Number(item.sellingPrice) > 0)) {
       return res.status(400).json({ error: 'Set a selling price before listing this item on the marketplace' });
+    }
+    if (newValue && !item.imageUrl) {
+      return res.status(400).json({ error: 'Upload a product image before listing this item on the marketplace' });
     }
 
     const updated = await prisma.shopInventory.update({
