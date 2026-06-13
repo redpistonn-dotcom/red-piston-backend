@@ -634,11 +634,11 @@ router.post('/orders', authenticate, async (req, res, next) => {
           include: { items: true },
         });
 
-        // Reserve stock
+        // Deduct stock immediately on order placement
         for (const item of shopItems) {
           await prisma.shopInventory.update({
             where: { inventoryId: item.inventoryId },
-            data:  { reservedQty: { increment: item.qty } },
+            data:  { stockQty: { decrement: item.qty } },
           });
         }
 
@@ -691,17 +691,13 @@ router.put('/orders/:id/status', authenticate, async (req, res, next) => {
     if (estimatedDeliveryAt)            data.estimatedDeliveryAt = new Date(estimatedDeliveryAt);
     if (cancelReason && status === 'CANCELLED') data.cancelReason = cancelReason;
 
-    // When delivered: deduct reserved stock, update payoutAmount
+    // When delivered: stock was already deducted at order placement — just stamp lastSoldAt
     if (status === 'DELIVERED') {
       await prisma.$transaction(async (tx) => {
         for (const item of order.items) {
           await tx.shopInventory.update({
             where: { inventoryId: item.inventoryId },
-            data:  {
-              stockQty:    { decrement: item.qty },
-              reservedQty: { decrement: item.qty },
-              lastSoldAt:  new Date(),
-            },
+            data:  { lastSoldAt: new Date() },
           });
         }
 
@@ -719,12 +715,12 @@ router.put('/orders/:id/status', authenticate, async (req, res, next) => {
         });
       });
     } else if (status === 'CANCELLED') {
-      // Release reserved stock on cancel
+      // Restore stock on cancel (stock was decremented at order placement)
       await prisma.$transaction(async (tx) => {
         for (const item of order.items) {
           await tx.shopInventory.update({
             where: { inventoryId: item.inventoryId },
-            data:  { reservedQty: { decrement: item.qty } },
+            data:  { stockQty: { increment: item.qty } },
           });
         }
         await tx.marketplaceOrder.update({ where: { orderId: parseInt(req.params.id, 10) }, data });
