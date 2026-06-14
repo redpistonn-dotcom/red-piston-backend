@@ -167,7 +167,7 @@ describe('POST /api/auth/refresh', () => {
     expect(res.body.error.code).toBe('USER_INACTIVE');
   });
 
-  it('happy path: returns 200 with new accessToken and rotated refreshToken', async () => {
+  it('happy path: returns 200 with new accessToken; refreshToken NOT in body (SEC-001)', async () => {
     const rawToken = makeRefreshToken();
     prisma.refreshToken.findUnique.mockResolvedValue(storedToken());
     prisma.user.findUnique.mockResolvedValue(DB_USER);
@@ -180,13 +180,10 @@ describe('POST /api/auth/refresh', () => {
 
     expect(res.status).toBe(200);
     expect(typeof res.body.accessToken).toBe('string');
-    expect(typeof res.body.refreshToken).toBe('string');
-    // Verify the new refresh token is a valid JWT with the correct userId.
-    // We avoid asserting res.body.refreshToken !== rawToken because JWTs with
-    // identical payload issued within the same second are identical (iat has
-    // 1-second precision) — that would make the test flaky in fast CI runs.
-    const decoded = jwt.decode(res.body.refreshToken);
-    expect(decoded.userId).toBe(1);
+    // SEC-001 FIX: refreshToken must NOT be in the JSON body — it lives only
+    // in the httpOnly cookie. Exposing it in the body allows XSS to steal
+    // the 30-day session token.
+    expect(res.body.refreshToken).toBeUndefined();
   });
 
   it('happy path: sets a new refresh_token cookie', async () => {

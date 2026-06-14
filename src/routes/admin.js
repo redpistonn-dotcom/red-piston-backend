@@ -546,4 +546,53 @@ router.get('/catalog/stats', authenticate, requireAdmin, async (req, res, next) 
   } catch (err) { next(err); }
 });
 
+// GET /api/admin/catalog/parts?status=PENDING&q=&limit=50&offset=0
+router.get('/catalog/parts', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const { status, q, limit = 50, offset = 0 } = req.query;
+    const where = {};
+    if (status && status !== 'ALL') where.status = status;
+    if (q) where.partName = { contains: q, mode: 'insensitive' };
+    const [parts, total] = await Promise.all([
+      prisma.masterPart.findMany({
+        where,
+        include: {
+          contributedByShop: { select: { name: true, city: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+      }),
+      prisma.masterPart.count({ where }),
+    ]);
+    res.json({ success: true, parts, total });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/admin/catalog/parts/:id/approve
+router.patch('/catalog/parts/:id/approve', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, error: { message: 'Invalid part id' } });
+    const part = await prisma.masterPart.update({
+      where: { masterPartId: id },
+      data: { status: 'VERIFIED' },
+    });
+    res.json({ success: true, part });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/admin/catalog/parts/:id/reject
+router.patch('/catalog/parts/:id/reject', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, error: { message: 'Invalid part id' } });
+    const part = await prisma.masterPart.update({
+      where: { masterPartId: id },
+      data: { status: 'INACTIVE' },
+    });
+    res.json({ success: true, part });
+  } catch (err) { next(err); }
+});
+
 export default router;

@@ -130,7 +130,8 @@ router.post('/:id/import', authenticate, requireShopOwner, async (req, res, next
     for (const item of items) {
       const partName = String(item.partName || '').trim();
       const qty = parseInt(item.qty, 10);
-      const rate = parseFloat(item.rate);
+      // Accept rateExclGst (new name) or rate (backward-compat)
+      const rate = parseFloat(item.rateExclGst ?? item.rate);
       const sellingPrice = parseFloat(item.sellingPrice);
       if (!partName || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(rate) || rate <= 0
         || !Number.isFinite(sellingPrice) || sellingPrice <= 0) {

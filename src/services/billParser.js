@@ -105,8 +105,8 @@ export async function parseTallyInvoice(buffer) {
     if (current.hsnCode && current.amount != null && current.qty != null) {
       current.partName = current.nameParts.join(' ').replace(/\s+/g, ' ').trim();
       delete current.nameParts;
-      current.mathOk = current.rate != null
-        ? Math.abs(current.amount - current.rate * current.qty) < 0.05
+      current.mathOk = current.rateExclGst != null
+        ? Math.abs(current.amount - current.rateExclGst * current.qty) < 0.05
         : true;
       if (!current.mathOk) result.warnings.push(`qty×rate ≠ amount for item ${current.serial}`);
       result.items.push(current);
@@ -141,7 +141,7 @@ export async function parseTallyInvoice(buffer) {
       const serialCell = row.cells.find((c) => c.x < 50 && /^\d{1,3}$/.test(c.str));
       if (serialCell) {
         pushCurrent();
-        current = { serial: parseInt(serialCell.str, 10), nameParts: [], hsnCode: null, qty: null, unit: null, rate: null, rateInclTax: null, discountPct: 0, amount: null };
+        current = { serial: parseInt(serialCell.str, 10), nameParts: [], hsnCode: null, qty: null, unit: null, rateExclGst: null, rateInclGst: null, discountPct: 0, amount: null };
       }
       if (!current) continue;
 
@@ -153,10 +153,10 @@ export async function parseTallyInvoice(buffer) {
         const qm = s.match(/^([\d,]+)\s*([A-Z]{2,4})$/);
         if (qm && c.x < 271) { current.qty = parseInt(qm[1].replace(/,/g, ''), 10); current.unit = qm[2]; continue; } // Quantity
         if (isMoney(s)) {
-          if (c.x >= 448) current.amount = num(s);                           // Amount
-          else if (c.x >= 330 && c.x < 370) current.rate = num(s);           // Rate
-          else if (c.x >= 271 && c.x < 330) current.rateInclTax = num(s);    // Rate (incl. tax)
-          else if (c.x >= 392 && c.x < 448) current.discountPct = num(s);    // Disc %
+          if (c.x >= 448) current.amount = num(s);                              // Amount (taxable)
+          else if (c.x >= 330 && c.x < 370) current.rateExclGst = num(s);      // Rate excl. GST
+          else if (c.x >= 271 && c.x < 330) current.rateInclGst = num(s);      // Rate incl. GST
+          else if (c.x >= 392 && c.x < 448) current.discountPct = num(s);      // Disc %
           continue;
         }
         if (/^[A-Z]{2,4}$/.test(s) && c.x >= 370 && c.x < 392) continue;     // per-unit label
@@ -294,7 +294,10 @@ export async function parseGenericInvoice(buffer) {
       }
       const name = descParts.join(' ').replace(/^\d{1,3}[).\s]+/, '').replace(/\s{2,}/g, ' ').trim();
       if (name && /[A-Za-z]{2,}/.test(name) && amount != null && amount > 0) {
-        result.items.push({ serial: ++serial, partName: name, hsnCode: hsn, qty: qty ?? 1, unit: null, rate, rateInclTax: null, discountPct: 0, amount });
+        // rateExclGst: from rate column; rateInclGst: calculated from amount/qty if rate present
+        const rateExclGst = rate;
+        const rateInclGst = null; // generic invoices rarely have a separate incl-GST column
+        result.items.push({ serial: ++serial, partName: name, hsnCode: hsn, qty: qty ?? 1, unit: null, rateExclGst, rateInclGst, discountPct: 0, amount });
       }
     }
   }
