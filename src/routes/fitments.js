@@ -54,6 +54,38 @@ function fitmentResponse(f) {
   };
 }
 
+// ─── GET /api/fitments/vehicles/makes — distinct makes for autocomplete ───────
+router.get('/vehicles/makes', async (req, res, next) => {
+  try {
+    const makes = await prisma.vehicle.findMany({
+      select:   { make: true },
+      distinct: ['make'],
+      orderBy:  { make: 'asc' },
+    });
+    res.json({ success: true, makes: makes.map(m => m.make) });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/fitments/vehicles/search?make=&q= — vehicle lookup ─────────────
+router.get('/vehicles/search', async (req, res, next) => {
+  try {
+    const { make, q, limit = 30 } = req.query;
+    const where = {};
+    if (make) where.make = { equals: make, mode: 'insensitive' };
+    if (q)    where.OR   = [
+      { make:  { contains: q, mode: 'insensitive' } },
+      { model: { contains: q, mode: 'insensitive' } },
+    ];
+    const vehicles = await prisma.vehicle.findMany({
+      where,
+      select: { vehicleId: true, make: true, model: true, yearFrom: true, yearTo: true, fuelType: true },
+      orderBy: [{ make: 'asc' }, { model: 'asc' }],
+      take: parseInt(limit),
+    });
+    res.json({ success: true, vehicles });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/fitments ────────────────────────────────────────────────────────
 // Query: ?masterPartId=X  OR  ?vehicleId=Y  OR  ?make=&model=&year=
 router.get('/', async (req, res, next) => {

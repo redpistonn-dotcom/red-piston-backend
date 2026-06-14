@@ -390,6 +390,7 @@ router.post('/contribute', authenticate, async (req, res, next) => {
       primaryOemNumber, oemNumber,
       oemNumbers, barcodes, images, specifications,
       partType,
+      fitments, // [{ make, model, yearFrom?, yearTo?, fitType? }]
     } = req.body;
 
     if (!partName || !partName.trim()) {
@@ -425,7 +426,7 @@ router.post('/contribute', authenticate, async (req, res, next) => {
         description:         description      || null,
         imageUrl:            cleanImages[0]   || null,
         partType:            resolvedPartType,
-        status:              'VERIFIED',
+        status:              'PENDING',   // admin must approve before it goes live
         source:              'CONTRIBUTED',
         contributedByShopId: shopId,
       },
@@ -448,7 +449,49 @@ router.post('/contribute', authenticate, async (req, res, next) => {
       }
     }
 
-    res.json({ success: true, part });
+    // Save fitments if provided: each entry is { make, model, yearFrom?, yearTo?, fitType? }
+    const fitmentResults = [];
+    if (Array.isArray(fitments) && fitments.length > 0) {
+      for (const f of fitments) {
+        const make  = String(f.make  || '').trim();
+        const model = String(f.model || '').trim();
+        if (!make || !model) continue;
+        try {
+          // Find or create the Vehicle row
+          let vehicle = await prisma.vehicle.findFirst({
+            where: { make: { equals: make, mode: 'insensitive' }, model: { equals: model, mode: 'insensitive' } },
+          });
+          if (!vehicle) {
+            vehicle = await prisma.vehicle.create({
+              data: {
+                make,
+                model,
+                yearFrom: f.yearFrom ? parseInt(f.yearFrom) : 2000,
+                yearTo:   f.yearTo   ? parseInt(f.yearTo)   : null,
+                fuelType: f.fuelType || null,
+              },
+            });
+          }
+          // Upsert fitment (unique on masterPartId + vehicleId)
+          const fitment = await prisma.partFitment.upsert({
+            where:  { masterPartId_vehicleId: { masterPartId: part.masterPartId, vehicleId: vehicle.vehicleId } },
+            create: {
+              masterPartId: part.masterPartId,
+              vehicleId:    vehicle.vehicleId,
+              fitType:      f.fitType || 'COMPATIBLE',
+              confidence:   'shop_confirmed',
+              source:       'SHOP_CONFIRMED',
+            },
+            update: { fitType: f.fitType || 'COMPATIBLE', confidence: 'shop_confirmed' },
+          });
+          fitmentResults.push({ vehicleId: vehicle.vehicleId, make, model, fitmentId: fitment.fitmentId });
+        } catch (fitErr) {
+          console.error('[catalog/contribute] fitment save failed:', fitErr?.message);
+        }
+      }
+    }
+
+    res.json({ success: true, part, fitments: fitmentResults });
   } catch (err) { next(err); }
 });
 
