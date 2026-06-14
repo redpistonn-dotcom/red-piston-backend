@@ -206,3 +206,87 @@ export async function parseTallyInvoice(buffer) {
 
   return result;
 }
+
+// ─── Generic heuristic parser (any DIGITAL/text-layer invoice) ─────────────────
+// Layout-agnostic fallback for non-Tally invoices: reads the PDF's text and finds
+// fields by PATTERN (not fixed column x-positions), so it works across most
+// digital invoice formats. Cannot read scanned-image PDFs (no text layer). Output
+// is the same shape as parseTallyInvoice and is always validated via sumMatches —
+// the review screen lets the owner fix anything the heuristics miss.
+const GSTIN_RE = /\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/;
+const DATE_RE = /\b(\d{1,2}[-\/.](?:\d{1,2}|[A-Za-z]{3,9})[-\/.]\d{2,4})\b/;
+const MONEY_RE = /[\d,]+\.\d{2}/;
+const SKIP_ROW_RE = /\b(total|sub\s*total|taxable|cgst|sgst|igst|gst|tax|round|discount|amount\s*(?:in\s*words|chargeable|payable)|declaration|bank|terms|signature|e\.?\s*&\s*o\.?e|jurisdiction|hsn\s*summary|continued)\b/i;
+
+export async function parseGenericInvoice(buffer) {
+  const data = await pdfParse(buffer);
+  const text = (data.text || '').replace(/\r/g, '');
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const upper = text.toUpperCase();
+
+  const result = {
+    format: 'generic',
+    supplierName: null, supplierGstin: null, invoiceNumber: null, invoiceDate: null,
+    items: [], taxableTotal: null, grandTotal: null, sumOfItems: 0, sumMatches: false,
+    warnings: [], pages: data.numpages || 1,
+  };
+
+  // ── Header fields by pattern ──────────────────────────────────────────────
+  const gstinMatch = upper.match(GSTIN_RE);
+  if (gstinMatch) result.supplierGstin = gstinMatch[0]; // first GSTIN ≈ the seller's (top of doc)
+
+  for (const ln of lines) {
+    if (!result.invoiceNumber) {
+      const m = ln.match(/(?:invoice|bill|inv)\.?\s*(?:no|number|num|#)?\.?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-]{1,30})/i);
+      if (m && !/date/i.test(ln) && !DATE_RE.test(m[1])) result.invoiceNumber = m[1].trim();
+    }
+    if (!result.invoiceDate) {
+      const m = ln.match(/(?:invoice\s*date|dated|date)\s*[:#-]?\s*(\d{1,2}[-\/.](?:\d{1,2}|[A-Za-z]{3,9})[-\/.]\d{2,4})/i) || ln.match(DATE_RE);
+      if (m) result.invoiceDate = m[1];
+    }
+  }
+  // Supplier name: first substantive line near the top that isn't a generic header.
+  for (const ln of lines.slice(0, 8)) {
+    if (/[A-Za-z]{3,}/.test(ln) && !/^(tax\s*invoice|invoice|bill|gstin|original|duplicate|proforma)/i.test(ln) && ln.length <= 60) {
+      result.supplierName = ln.replace(/\s{2,}/g, ' ').trim();
+      break;
+    }
+  }
+
+  // ── Line items: rows shaped like "<desc> [hsn] <qty> [unit] <rate> <amount>" ─
+  let serial = 0;
+  for (const ln of lines) {
+    if (SKIP_ROW_RE.test(ln)) continue;
+    // Trailing two money values = rate + amount; an integer qty before them.
+    const m = ln.match(/^(.+?)\s+(\d{1,6}(?:\.\d{1,3})?)\s+(?:[A-Za-z]{1,5}\s+)?(?:₹|rs\.?)?\s*([\d,]+\.\d{2})\s+(?:₹|rs\.?)?\s*([\d,]+\.\d{2})$/i);
+    if (!m) continue;
+    let name = m[1].replace(/^\d{1,3}[).\s]+/, '').trim();   // strip a leading serial
+    if (!/[A-Za-z]{2,}/.test(name)) continue;                // need a real description
+    let hsnCode = null;
+    const hsn = name.match(/\b(\d{4,8})\b\s*$/);             // trailing HSN/SAC on the name
+    if (hsn) { hsnCode = hsn[1]; name = name.replace(/\b\d{4,8}\b\s*$/, '').trim(); }
+    const qty = Math.round(num(m[2]));
+    const rate = num(m[3]);
+    const amount = num(m[4]);
+    if (!(qty > 0) || !(amount > 0)) continue;
+    result.items.push({ serial: ++serial, partName: name.replace(/\s{2,}/g, ' '), hsnCode, qty, unit: null, rate, rateInclTax: null, discountPct: 0, amount });
+  }
+
+  // ── Totals + validation ───────────────────────────────────────────────────
+  result.sumOfItems = +result.items.reduce((s, it) => s + it.amount, 0).toFixed(2);
+  const moneyOnLabel = (re) => {
+    const vals = [];
+    for (const ln of lines) { if (re.test(ln)) { const mm = ln.match(MONEY_RE); if (mm) vals.push(num(mm[0])); } }
+    return vals;
+  };
+  const grandVals = moneyOnLabel(/\b(grand\s*total|total\s*amount|invoice\s*total|amount\s*payable|net\s*payable|bill\s*total)\b/i);
+  if (grandVals.length) result.grandTotal = Math.max(...grandVals);
+  const taxableVals = moneyOnLabel(/\b(taxable|sub\s*total|subtotal|total\s*value|total\s*before\s*tax)\b/i);
+  const taxMatch = taxableVals.find((v) => Math.abs(v - result.sumOfItems) <= 1.0);
+  result.taxableTotal = taxMatch != null ? taxMatch : (taxableVals.length ? Math.max(...taxableVals) : result.grandTotal);
+  result.sumMatches = result.taxableTotal != null && Math.abs(result.sumOfItems - result.taxableTotal) <= 1.0;
+  if (!result.items.length) result.warnings.push('No line items detected — this invoice layout could not be read automatically. Add the items manually.');
+  else if (!result.sumMatches) result.warnings.push(`Line items sum to ₹${result.sumOfItems} but the invoice total appears different — review for missing/misread rows.`);
+
+  return result;
+}

@@ -19,7 +19,7 @@ import express from 'express';
 import { v2 as cloudinary } from 'cloudinary';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
-import { parseTallyInvoice } from '../services/billParser.js';
+import { parseTallyInvoice, parseGenericInvoice } from '../services/billParser.js';
 import { writeAudit, ET, ACT } from '../lib/audit.js';
 
 const router = Router();
@@ -48,15 +48,26 @@ router.post('/extract', express.json({ limit: '18mb' }), authenticate, requireSh
       return res.status(400).json({ success: false, error: { message: 'Only PDF invoices are supported right now. For photos/scans, support is coming.' } });
     }
 
+    // Try the precise Tally parser first (best accuracy for that format), then
+    // fall back to the generic heuristic parser for any other DIGITAL invoice.
     let extracted;
     try {
       extracted = await parseTallyInvoice(buffer);
+      if (!extracted.items.length) {
+        const generic = await parseGenericInvoice(buffer).catch(() => null);
+        if (generic && (generic.items.length || generic.supplierGstin || generic.invoiceNumber)) extracted = generic;
+      }
     } catch (err) {
-      console.error('[purchase-bills/extract] parse failed:', err);
-      return res.status(422).json({ success: false, error: { message: 'Could not read this PDF. It may be a scanned image or an unsupported format.' } });
+      console.error('[purchase-bills/extract] tally parse failed, trying generic:', err?.message);
+      try {
+        extracted = await parseGenericInvoice(buffer);
+      } catch (e2) {
+        console.error('[purchase-bills/extract] generic parse failed:', e2);
+        return res.status(422).json({ success: false, error: { message: 'Could not read this PDF. It may be a scanned image or an unsupported format.' } });
+      }
     }
     if (!extracted.items.length) {
-      return res.status(422).json({ success: false, error: { message: 'No line items found — this invoice format is not recognised yet.' } });
+      return res.status(422).json({ success: false, error: { message: 'No line items could be read automatically. If this is a scanned/photo invoice (no text layer) it can\'t be parsed — add the items manually.' } });
     }
 
     // Archive the original PDF (best-effort — extraction result is not blocked on it)
