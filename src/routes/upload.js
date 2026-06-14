@@ -26,6 +26,15 @@ cloudinary.config({
  */
 router.get('/signature', authenticate, (req, res) => {
   try {
+    // Fail loudly (and diagnosably) if Cloudinary isn't configured, instead of
+    // returning a signature signed with `undefined` that Cloudinary later rejects
+    // as "Invalid Signature" — which looks like a silently broken uploader.
+    if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+      console.error('[upload/signature] Cloudinary env vars missing — uploads disabled');
+      return res.status(503).json({
+        error: 'Image upload is not configured on the server (missing CLOUDINARY_* env vars).',
+      });
+    }
     const folder    = req.query.folder || 'redpiston';
     const timestamp = Math.round(Date.now() / 1000);
     const params    = { timestamp, folder };

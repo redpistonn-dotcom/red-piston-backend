@@ -72,37 +72,54 @@ router.post('/jobs', authenticate, requireShopOwner, async (req, res, next) => {
       });
     }
 
-    // Generate job number and create the job card in one atomic transaction.
-    // nextSeq uses INSERT ON CONFLICT DO UPDATE which takes a row-level lock on
-    // (shop_id, counter_key), serialising concurrent requests on the same key.
-    const job = await prisma.$transaction(async (tx) => {
-      const yyyymm = currentYYYYMM();
-      const seq = await nextSeq(tx, req.shopId, `JOB-${yyyymm}`);
-      const jobNumber = `JOB-${yyyymm}-${String(seq).padStart(4, '0')}`;
+    // Generate a unique job number, retrying on collision.
+    // IMPORTANT: nextSeq must run OUTSIDE the create's transaction. The counter
+    // (`number_counters`) can drift BEHIND existing job_number rows (e.g. jobs
+    // created under the older client-side numbering scheme), so the first
+    // generated number may already exist → P2002. If nextSeq were inside the
+    // create transaction, a P2002 rollback would also undo the counter bump and
+    // the retry would get the SAME number forever. By incrementing the counter
+    // in its own committed statement each attempt, every retry climbs past the
+    // collision until it surpasses the max existing number — self-healing.
+    const yyyymm = currentYYYYMM();
+    const jobData = {
+      shopId: req.shopId,
+      createdBy: req.user.userId,
+      assignedTo: assignedTo || null,
+      customerName,
+      customerPhone: customerPhone || null,
+      vehicleMake,
+      vehicleModel,
+      vehicleYear: vehicleYear ? parseInt(vehicleYear) : null,
+      vehicleReg: vehicleReg || null,
+      vehicleFuel: vehicleFuel || null,
+      odometerIn: odometerIn ? parseInt(odometerIn) : null,
+      complaint: complaint || null,
+      priority: priority || 'NORMAL',
+      estimatedAt: estimatedAt ? new Date(estimatedAt) : null,
+      labourCharge: labourCharge ? parseFloat(labourCharge) : 0,
+      notes: notes || null,
+    };
 
-      return tx.jobCard.create({
-        data: {
-          jobNumber,
-          shopId: req.shopId,
-          createdBy: req.user.userId,
-          assignedTo: assignedTo || null,
-          customerName,
-          customerPhone: customerPhone || null,
-          vehicleMake,
-          vehicleModel,
-          vehicleYear: vehicleYear ? parseInt(vehicleYear) : null,
-          vehicleReg: vehicleReg || null,
-          vehicleFuel: vehicleFuel || null,
-          odometerIn: odometerIn ? parseInt(odometerIn) : null,
-          complaint: complaint || null,
-          priority: priority || 'NORMAL',
-          estimatedAt: estimatedAt ? new Date(estimatedAt) : null,
-          labourCharge: labourCharge ? parseFloat(labourCharge) : 0,
-          notes: notes || null,
-        },
-        include: { items: true },
-      });
-    });
+    let job;
+    const MAX_ATTEMPTS = 25;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const seq = await nextSeq(prisma, req.shopId, `JOB-${yyyymm}`);
+      const jobNumber = `JOB-${yyyymm}-${String(seq).padStart(4, '0')}`;
+      try {
+        job = await prisma.jobCard.create({
+          data: { ...jobData, jobNumber },
+          include: { items: true },
+        });
+        break;
+      } catch (e) {
+        // Only swallow the job_number uniqueness collision; rethrow anything else.
+        const isDupJobNumber = e?.code === 'P2002'
+          && (e?.meta?.target?.includes?.('job_number') || String(e?.meta?.target || '').includes('job_number'));
+        if (isDupJobNumber && attempt < MAX_ATTEMPTS) continue;
+        throw e;
+      }
+    }
 
     writeAudit(req, { entityType: ET.ORDER, entityId: job.jobId, action: ACT.CREATE, newValue: { jobNumber: job.jobNumber, customerName, vehicleMake, vehicleModel, priority: job.priority } });
     res.status(201).json({ success: true, data: job });

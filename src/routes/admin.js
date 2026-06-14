@@ -81,11 +81,15 @@ router.post('/impersonate/:userId', authenticate, requireAdmin, async (req, res,
       return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot impersonate another admin' } });
     }
 
-    // Short-lived access token with impersonation claim (no refresh token)
+    // Impersonation access token (no refresh token of its own). Match the normal
+    // session length (8h) so it survives a full working session — at 2h it expired
+    // mid-use, and since there's no impersonation refresh token the client would
+    // fall back to the ADMIN's refresh token (admin has no shop) and every
+    // shop-scoped endpoint started returning empty while still "logged in".
     const accessToken = jwt.sign(
       { userId: target.userId, shopId: target.shopId || null, role: target.role, impersonatedBy: req.user.userId },
       process.env.JWT_SECRET,
-      { expiresIn: '2h' }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
     );
 
     res.json({
