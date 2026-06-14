@@ -16,7 +16,7 @@
 
 import express from 'express';
 import prisma from '../db/prisma.js';
-import { authenticate, authorize } from '../middleware/auth.js';
+import { authenticate, requireShopOwner, requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -98,7 +98,7 @@ router.get('/', async (req, res, next) => {
 
 // ─── POST /api/fitments ───────────────────────────────────────────────────────
 // Add a single fitment (shop owner or admin)
-router.post('/', authenticate, authorize(['SHOP_OWNER', 'SHOP_STAFF', 'PLATFORM_ADMIN']), async (req, res, next) => {
+router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { masterPartId, vehicleId, fitType, confidence, position, notes, source } = req.body;
 
@@ -146,7 +146,7 @@ router.post('/', authenticate, authorize(['SHOP_OWNER', 'SHOP_STAFF', 'PLATFORM_
 });
 
 // ─── PUT /api/fitments/:fitmentId ─────────────────────────────────────────────
-router.put('/:fitmentId', authenticate, authorize(['SHOP_OWNER', 'SHOP_STAFF', 'PLATFORM_ADMIN']), async (req, res, next) => {
+router.put('/:fitmentId', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { fitmentId } = req.params;
     const { fitType, confidence, position, notes, source } = req.body;
@@ -178,7 +178,7 @@ router.put('/:fitmentId', authenticate, authorize(['SHOP_OWNER', 'SHOP_STAFF', '
 });
 
 // ─── DELETE /api/fitments/:fitmentId ─────────────────────────────────────────
-router.delete('/:fitmentId', authenticate, authorize(['SHOP_OWNER', 'PLATFORM_ADMIN']), async (req, res, next) => {
+router.delete('/:fitmentId', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { fitmentId } = req.params;
     const existing = await prisma.partFitment.findUnique({ where: { fitmentId } });
@@ -191,7 +191,7 @@ router.delete('/:fitmentId', authenticate, authorize(['SHOP_OWNER', 'PLATFORM_AD
 
 // ─── POST /api/fitments/bulk ─────────────────────────────────────────────────
 // Bulk import: [{ masterPartId, vehicleId, fitType, confidence, notes }]
-router.post('/bulk', authenticate, authorize(['SHOP_OWNER', 'PLATFORM_ADMIN']), async (req, res, next) => {
+router.post('/bulk', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { fitments } = req.body;
     if (!Array.isArray(fitments) || !fitments.length) {
@@ -392,7 +392,7 @@ router.post('/confirm-request', authenticate, async (req, res, next) => {
 });
 
 // GET /api/fitments/confirm-requests — shop sees pending requests
-router.get('/confirm-requests', authenticate, authorize(['SHOP_OWNER', 'SHOP_STAFF', 'PLATFORM_ADMIN']), async (req, res, next) => {
+router.get('/confirm-requests', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { status = 'PENDING', limit = 20, offset = 0 } = req.query;
 
@@ -425,7 +425,7 @@ router.get('/confirm-requests', authenticate, authorize(['SHOP_OWNER', 'SHOP_STA
 });
 
 // PUT /api/fitments/confirm-requests/:id — shop resolves: CONFIRMED or REJECTED
-router.put('/confirm-requests/:id', authenticate, authorize(['SHOP_OWNER', 'SHOP_STAFF', 'PLATFORM_ADMIN']), async (req, res, next) => {
+router.put('/confirm-requests/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { id } = req.params;
     const { status, shopNote, fitType, confidence, notes: fitNotes } = req.body;

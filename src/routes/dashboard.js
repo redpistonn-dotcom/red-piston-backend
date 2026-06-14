@@ -43,7 +43,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
              si.selling_price, si.buying_price, si.stock_qty,
              si.min_stock_alert, si.rack_location, si.is_marketplace_listed,
              mp.part_name, mp.brand, mp.category_l1, mp.hsn_code, mp.gst_rate,
-             mp.oem_number, mp.unit_of_sale, mp.image_url
+             mp.oem_numbers, mp.unit_of_sale, mp.image_url
       FROM   shop_inventory si
       JOIN   master_parts mp ON mp.master_part_id = si.master_part_id
       WHERE  si.shop_id = ${shopId}
@@ -68,7 +68,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
         categoryL1: r.category_l1,
         hsnCode: r.hsn_code,
         gstRate: r.gst_rate,
-        oemNumber: r.oem_number,
+        oemNumbers: r.oem_numbers,
         unitOfSale: r.unit_of_sale,
         imageUrl: r.image_url,
       },
