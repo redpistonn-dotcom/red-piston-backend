@@ -37,6 +37,19 @@ export const passwordResetLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// OTP verify: max 10 attempts per phone per 10 minutes — layers over the DB attempt counter
+export const verifyOtpLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.body?.phone || req.ip,
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many OTP verification attempts. Please wait 10 minutes before trying again.' },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // General auth endpoints (login, refresh, firebase): 20 req / 15 min per IP
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
