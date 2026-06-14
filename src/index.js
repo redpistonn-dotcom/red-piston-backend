@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
+import prisma from './db/prisma.js';
 import authRoutes from './routes/auth/index.js';
 import catalogRoutes from './routes/catalog.js';
 import inventoryRoutes from './routes/inventory.js';
@@ -110,7 +111,22 @@ app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 // Error handler
 app.use(errorHandler);
 
+// One-time, idempotent schema fixes applied on boot (the platform has no manual
+// migration step). `chk_movement_qty_positive` was a too-strict manual constraint
+// that forbade negative qty, but the app's design stores SIGNED qty for ADJUSTMENT/
+// AUDIT (downward stock corrections) — so reducing stock 500'd with a 23514 error.
+// Dropping it matches the documented model (computeStock sums signed ADJUSTMENT qty).
+async function ensureSchemaFixes() {
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE movements DROP CONSTRAINT IF EXISTS chk_movement_qty_positive');
+    console.log('[schema] ensured movements qty constraint allows signed adjustments');
+  } catch (err) {
+    console.error('[schema] ensureSchemaFixes failed (non-fatal):', err?.message);
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`AutoSpace backend running on http://localhost:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  ensureSchemaFixes();
 });

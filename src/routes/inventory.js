@@ -92,6 +92,10 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
     if (!masterPartId || !sellingPrice) {
       return res.status(400).json({ error: 'masterPartId and sellingPrice required' });
     }
+    // Buying price, when provided, must be a positive amount (0 is not valid).
+    if (buyingPrice !== undefined && buyingPrice !== null && buyingPrice !== '' && parseFloat(buyingPrice) <= 0) {
+      return res.status(400).json({ error: 'Buying price must be greater than 0' });
+    }
 
     const existing = await prisma.shopInventory.findUnique({
       where: { shopId_masterPartId: { shopId: req.shopId, masterPartId } },
@@ -613,6 +617,36 @@ router.post('/adjust', authenticate, requireShopOwner, async (req, res, next) =>
     const newStock = await computeStock(inventoryId);
     res.json({ success: true, newStock });
   } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/shop/inventory/:id — remove a product from this shop's inventory.
+// Also clears its stock-movement ledger rows (in one transaction). Blocks with a
+// clear message if the product is still referenced by orders / job cards (FK).
+router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const inventoryId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(inventoryId)) return res.status(400).json({ error: 'Invalid id' });
+
+    const item = await prisma.shopInventory.findUnique({ where: { inventoryId } });
+    if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
+
+    try {
+      await prisma.$transaction([
+        prisma.movement.deleteMany({ where: { inventoryId } }),
+        prisma.shopInventory.delete({ where: { inventoryId } }),
+      ]);
+    } catch (e) {
+      // Foreign-key violation: still referenced elsewhere (e.g. order/job-card items).
+      if (e?.code === 'P2003') {
+        return res.status(409).json({ error: 'Cannot delete — this product is used by existing orders or job cards.' });
+      }
+      throw e;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[inventory DELETE]', err);
     next(err);
   }
 });
