@@ -20,6 +20,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
 import { parseTallyInvoice } from '../services/billParser.js';
+import { writeAudit, ET, ACT } from '../lib/audit.js';
 
 const router = Router();
 
@@ -117,8 +118,8 @@ router.post('/:id/import', authenticate, requireShopOwner, async (req, res, next
       const qty = parseInt(item.qty, 10);
       const rate = parseFloat(item.rate);
       const sellingPrice = parseFloat(item.sellingPrice);
-      if (!partName || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(rate) || rate < 0
-        || !Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      if (!partName || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(rate) || rate <= 0
+        || !Number.isFinite(sellingPrice) || sellingPrice <= 0) {
         errors.push({ partName: partName || '(blank)', error: 'invalid name/qty/rate/sellingPrice' });
         continue;
       }
@@ -197,6 +198,19 @@ router.post('/:id/import', authenticate, requireShopOwner, async (req, res, next
         data: { status: 'IMPORTED', importedAt: new Date() },
       });
     }
+
+    writeAudit(req, {
+      entityType: ET.BILL,
+      entityId:   billId,
+      action:     ACT.IMPORT,
+      newValue: {
+        billId,
+        supplierName: bill.supplierName,
+        invoiceNumber: bill.invoiceNumber,
+        imported: results.length,
+        errorCount: errors.length,
+      },
+    });
 
     res.json({ success: true, imported: results.length, errorCount: errors.length, results, errors });
   } catch (err) { next(err); }

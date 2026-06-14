@@ -4,6 +4,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { hashPassword, verifyPassword, validatePasswordStrength } from '../../services/password.js';
 import { sendPasswordChangedEmail } from '../../services/email.js';
 import { findUserByEmailInsensitive, formatUserResponse, normalizeEmail } from './helpers.js';
+import { writeAudit, ET, ACT } from '../../lib/audit.js';
 
 const router = Router();
 
@@ -149,6 +150,14 @@ router.patch('/me', authenticate, async (req, res, next) => {
         : Promise.resolve(),
     ]);
 
+    writeAudit(req, {
+      entityType: ET.PROFILE,
+      entityId:   req.user.userId,
+      action:     ACT.UPDATE,
+      oldValue: { name: req.user.name, email: req.user.email },
+      newValue: updateData,
+    });
+
     res.json({ success: true, data: formatUserResponse(updated) });
   } catch (err) {
     next(err);
@@ -178,7 +187,7 @@ router.post('/register-shop', authenticate, async (req, res, next) => {
         ownerName: ownerName || req.user.name,
         // Use the user's phone if available; otherwise generate a unique placeholder so the
         // unique constraint on Shop.phone never collides for email-only accounts.
-        phone: req.user.phone || `nophone-${req.user.userId.slice(0, 16)}`,
+        phone: req.user.phone || `nophone-${String(req.user.userId).slice(0, 16)}`,
         gstin,
         address,
         city,
@@ -319,6 +328,13 @@ router.patch('/me/shop', authenticate, async (req, res, next) => {
     const shop = await prisma.shop.update({
       where: { shopId: req.user.shopId },
       data,
+    });
+
+    writeAudit(req, {
+      entityType: ET.SHOP,
+      entityId:   req.user.shopId,
+      action:     ACT.UPDATE,
+      newValue:   data,
     });
 
     res.json({ success: true, data: shop });

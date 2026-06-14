@@ -21,6 +21,7 @@
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
+import { writeAudit, ET, ACT } from '../lib/audit.js';
 
 const router = Router();
 
@@ -131,6 +132,7 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       return p;
     });
 
+    writeAudit(req, { entityType: ET.PARTY, entityId: party.partyId, action: ACT.CREATE, newValue: { name: party.name, type: party.type, creditLimit: String(party.creditLimit) } });
     res.status(201).json({ success: true, party });
   } catch (err) { next(err); }
 });
@@ -167,6 +169,7 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
     if (notes       !== undefined) data.notes       = notes || null;
 
     const updated = await prisma.party.update({ where: { partyId: req.params.id }, data });
+    writeAudit(req, { entityType: ET.PARTY, entityId: req.params.id, action: ACT.UPDATE, oldValue: { name: party.name }, newValue: data });
     res.json({ success: true, party: updated });
   } catch (err) { next(err); }
 });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../../db/prisma.js';
 import { generateTokens, hashToken, REFRESH_COOKIE_NAME, REFRESH_COOKIE_OPTIONS } from './helpers.js';
+import { writeAudit, ET, ACT } from '../../lib/audit.js';
 
 const router = Router();
 
@@ -120,7 +121,6 @@ router.post('/refresh', async (req, res, next) => {
       success: true,
       data: { accessToken, expiresIn: 28800 },
       accessToken,
-      refreshToken: newRawRT,
       user: {
         userId: user.userId,
         role: user.role,
@@ -138,6 +138,7 @@ router.post('/logout', async (req, res, next) => {
   try {
     const rawToken = req.cookies?.[REFRESH_COOKIE_NAME] || req.body?.refreshToken;
 
+    let logoutUserId = null;
     if (rawToken) {
       const tokenHash = hashToken(rawToken);
       // Soft-revoke: set revokedAt so we keep an audit trail
@@ -145,7 +146,15 @@ router.post('/logout', async (req, res, next) => {
         where: { tokenHash, revokedAt: null },
         data: { revokedAt: new Date() },
       }).catch(() => {});
+      // Best-effort: decode userId for the audit log (no signature check needed here)
+      try { logoutUserId = jwt.decode(rawToken)?.userId || null; } catch {}
     }
+
+    writeAudit(req, {
+      entityType: ET.AUTH,
+      entityId:   logoutUserId,
+      action:     ACT.LOGOUT,
+    });
 
     res.clearCookie(REFRESH_COOKIE_NAME, { ...REFRESH_COOKIE_OPTIONS, maxAge: 0 });
     res.json({ success: true });

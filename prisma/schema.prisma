@@ -1063,3 +1063,34 @@ model MarketplaceReview {
   @@index([masterPartId])
   @@map("marketplace_reviews")
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIT LOG
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Immutable server-side audit trail — INSERT ONLY, never UPDATE or DELETE.
+// Records who did what, from where, and what changed for every mutating action.
+model AuditLog {
+  auditId    Int      @id @default(autoincrement()) @map("audit_id")
+  userId     Int?     @map("user_id")
+  shopId     Int?     @map("shop_id")
+  // PRODUCT | INVOICE | PARTY | ORDER | AUTH | BILL | STOCK | PROFILE | SHOP | ADMIN
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  // CREATE | UPDATE | DELETE | EXPORT | LOGIN | LOGOUT | IMPORT | ADJUST | SALE | PURCHASE | APPROVE | REJECT
+  action     String
+  oldValue   Json?    @map("old_value")
+  newValue   Json?    @map("new_value")
+  ipAddress  String?  @map("ip_address")
+  // { userAgent, referer, origin }
+  deviceInfo Json     @default("{}") @map("device_info")
+  sessionId  String?  @map("session_id")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([entityType, entityId])
+  @@index([shopId, entityType])
+  @@map("audit_logs")
+}

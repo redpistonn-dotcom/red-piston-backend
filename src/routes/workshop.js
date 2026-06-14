@@ -17,6 +17,7 @@ import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
 import { nextSeq, currentYYYYMM } from '../lib/sequence.js';
+import { writeAudit, ET, ACT } from '../lib/audit.js';
 
 const router = Router();
 
@@ -103,6 +104,7 @@ router.post('/jobs', authenticate, requireShopOwner, async (req, res, next) => {
       });
     });
 
+    writeAudit(req, { entityType: ET.ORDER, entityId: job.jobId, action: ACT.CREATE, newValue: { jobNumber: job.jobNumber, customerName, vehicleMake, vehicleModel, priority: job.priority } });
     res.status(201).json({ success: true, data: job });
   } catch (err) {
     next(err);
@@ -194,6 +196,7 @@ router.patch('/jobs/:id/status', authenticate, requireShopOwner, async (req, res
       data,
       include: { items: true },
     });
+    writeAudit(req, { entityType: ET.ORDER, entityId: req.params.id, action: ACT.UPDATE, oldValue: { status: existing.status }, newValue: { status } });
     res.json({ success: true, data: updated });
   } catch (err) {
     next(err);

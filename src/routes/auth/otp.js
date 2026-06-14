@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import prisma from '../../db/prisma.js';
 import { sendOtp, verifyOtp } from '../../services/otp.js';
-import { otpSendLimiter } from '../../middleware/rateLimiter.js';
+import { otpSendLimiter, verifyOtpLimiter } from '../../middleware/rateLimiter.js';
 import { createSession, ensureAuthProvider, checkShopOwnerVerification, getUserTypeId, needsShopSetup, shopSetupResponse } from './helpers.js';
 import { sendShopOwnerVerificationAlert } from '../../services/email.js';
+import { writeAudit, ET, ACT } from '../../lib/audit.js';
 
 const router = Router();
 
@@ -54,7 +55,7 @@ router.post('/request-otp', otpSendLimiter, async (req, res, next) => {
 });
 
 // POST /api/auth/verify-otp
-router.post('/verify-otp', async (req, res, next) => {
+router.post('/verify-otp', verifyOtpLimiter, async (req, res, next) => {
   try {
     // mode = "signin" → never create a new user; return NO_ACCOUNT if not found
     const { phone, otp, role, name, vehicle, mode } = req.body;
@@ -172,6 +173,14 @@ router.post('/verify-otp', async (req, res, next) => {
     if (!checkShopOwnerVerification(user, res)) return;
 
     const payload = await createSession(res, user, { isNewUser, req });
+
+    writeAudit(req, {
+      entityType: ET.AUTH,
+      entityId:   user.userId,
+      action:     ACT.LOGIN,
+      newValue: { userId: user.userId, role: user.role, shopId: user.shopId, isNewUser },
+    });
+
     res.json(payload);
   } catch (err) {
     next(err);

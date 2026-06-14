@@ -52,11 +52,35 @@ router.get('/signature', authenticate, (req, res) => {
  * DELETE /api/upload/:publicId
  * Deletes an asset from Cloudinary. publicId may contain slashes (e.g. "redpiston/abc123").
  * Pass it URL-encoded in the path.
+ *
+ * Authorization: the publicId MUST start with a shop-scoped prefix
+ * ("shop-<shopId>/", "bills/shop-<shopId>/", or "redpiston/") owned by the caller,
+ * or the caller must be a PLATFORM_ADMIN.  This prevents authenticated users from
+ * deleting assets belonging to other shops.
  */
 router.delete('/:publicId(*)', authenticate, async (req, res) => {
   try {
     const publicId = req.params.publicId;
-    const result   = await cloudinary.uploader.destroy(publicId);
+    const role = req.user.userType?.slug || req.user.role;
+    const shopId = req.user.shopId;
+
+    // Authorization: verify the publicId belongs to the caller's shop
+    if (role !== 'PLATFORM_ADMIN') {
+      // Allowed prefixes for a shop owner
+      const allowedPrefixes = [
+        `shop-${shopId}/`,
+        `bills/shop-${shopId}/`,
+        `redpiston/shop-${shopId}/`,
+        // avatars are stored per-user: "redpiston/users/<userId>/"
+        `redpiston/users/${req.user.userId}/`,
+      ];
+      const isAllowed = allowedPrefixes.some(prefix => publicId.startsWith(prefix));
+      if (!isAllowed) {
+        return res.status(403).json({ error: 'You do not have permission to delete this asset' });
+      }
+    }
+
+    const result = await cloudinary.uploader.destroy(publicId);
 
     if (result.result !== 'ok' && result.result !== 'not found') {
       return res.status(400).json({ error: 'Cloudinary deletion failed', detail: result });

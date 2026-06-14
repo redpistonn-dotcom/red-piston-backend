@@ -15,6 +15,7 @@ import { authenticate, requireShopOwner } from '../middleware/auth.js';
 import { generateInvoicePdf } from '../services/pdf.js';
 import { sendInvoiceWhatsApp } from '../services/whatsapp.js';
 import { nextSeq, currentYYYYMM } from '../lib/sequence.js';
+import { writeAudit, ET, ACT } from '../lib/audit.js';
 
 const router = Router();
 
@@ -231,6 +232,22 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
       }
 
       return inv;
+    });
+
+    // Audit: record sale/invoice creation (fire & forget — never blocks the response)
+    writeAudit(req, {
+      entityType: ET.INVOICE,
+      entityId:   invoice.invoiceId,
+      action:     invType === 'RETURN' ? ACT.CREATE : ACT.SALE,
+      newValue: {
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceType:   invType,
+        totalAmount:   String(totalAmount),
+        paymentMode:   paymentMode || 'CASH',
+        itemCount:     processedItems.length,
+        isCreditSale,
+        partyId:       partyId || null,
+      },
     });
 
     res.json({ success: true, invoice });

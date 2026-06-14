@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
+import { writeAudit, ET, ACT } from '../lib/audit.js';
 
 const router = Router();
 
@@ -129,6 +130,13 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       });
     }
 
+    writeAudit(req, {
+      entityType: ET.PRODUCT,
+      entityId:   item.inventoryId,
+      action:     ACT.CREATE,
+      newValue: { masterPartId, sellingPrice, buyingPrice, stockQty: stockQty || 0 },
+    });
+
     res.json({ success: true, item });
   } catch (err) {
     next(err);
@@ -165,6 +173,19 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
       },
       include: { masterPart: true },
     });
+
+    writeAudit(req, {
+      entityType: ET.PRODUCT,
+      entityId:   inventoryId,
+      action:     ACT.UPDATE,
+      oldValue: {
+        sellingPrice: String(item.sellingPrice),
+        buyingPrice:  item.buyingPrice ? String(item.buyingPrice) : null,
+        isMarketplaceListed: item.isMarketplaceListed,
+      },
+      newValue: req.body,
+    });
+
     res.json({ success: true, item: updated });
   } catch (err) {
     next(err);
@@ -249,6 +270,14 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
     });
 
     const newStock = await computeStock(inventoryId);
+
+    writeAudit(req, {
+      entityType: ET.STOCK,
+      entityId:   inventoryId,
+      action:     ACT.PURCHASE,
+      newValue: { qty, unitPrice: parsedUnit, partyId: partyId || null, referenceNumber: referenceNumber || null, newStock },
+    });
+
     res.json({ success: true, newStock });
   } catch (err) { next(err); }
 });

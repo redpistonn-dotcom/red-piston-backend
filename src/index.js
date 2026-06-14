@@ -23,6 +23,7 @@ import workshopRoutes from './routes/workshop.js';
 import purchaseOrderRoutes from './routes/purchaseOrders.js';
 import uploadRoutes from './routes/upload.js';
 import purchaseBillRoutes from './routes/purchaseBills.js';
+import auditRoutes from './routes/audit.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authLimiter } from './middleware/rateLimiter.js';
 
@@ -99,6 +100,7 @@ app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
 app.use('/api/admin', adminRoutes);
 app.use('/api/fitments', fitmentRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/audit', auditRoutes);
 
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
