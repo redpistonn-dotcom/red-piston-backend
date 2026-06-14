@@ -115,7 +115,7 @@ router.post('/jobs', authenticate, requireShopOwner, async (req, res, next) => {
 router.get('/jobs/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const job = await prisma.jobCard.findFirst({
-      where: { jobId: req.params.id, shopId: req.shopId },
+      where: { jobId: parseInt(req.params.id, 10), shopId: req.shopId },
       include: { items: { include: { inventory: { include: { masterPart: true } } } } },
     });
     if (!job) {
@@ -131,7 +131,7 @@ router.get('/jobs/:id', authenticate, requireShopOwner, async (req, res, next) =
 router.patch('/jobs/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const existing = await prisma.jobCard.findFirst({
-      where: { jobId: req.params.id, shopId: req.shopId },
+      where: { jobId: parseInt(req.params.id, 10), shopId: req.shopId },
     });
     if (!existing) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job card not found' } });
@@ -159,7 +159,7 @@ router.patch('/jobs/:id', authenticate, requireShopOwner, async (req, res, next)
     }
 
     const updated = await prisma.jobCard.update({
-      where: { jobId: req.params.id },
+      where: { jobId: parseInt(req.params.id, 10) },
       data,
       include: { items: true },
     });
@@ -181,7 +181,7 @@ router.patch('/jobs/:id/status', authenticate, requireShopOwner, async (req, res
     }
 
     const existing = await prisma.jobCard.findFirst({
-      where: { jobId: req.params.id, shopId: req.shopId },
+      where: { jobId: parseInt(req.params.id, 10), shopId: req.shopId },
     });
     if (!existing) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job card not found' } });
@@ -192,7 +192,7 @@ router.patch('/jobs/:id/status', authenticate, requireShopOwner, async (req, res
     if (status === 'READY' && !existing.completedAt) data.completedAt = new Date();
 
     const updated = await prisma.jobCard.update({
-      where: { jobId: req.params.id },
+      where: { jobId: parseInt(req.params.id, 10) },
       data,
       include: { items: true },
     });
@@ -207,7 +207,7 @@ router.patch('/jobs/:id/status', authenticate, requireShopOwner, async (req, res
 router.post('/jobs/:id/items', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const existing = await prisma.jobCard.findFirst({
-      where: { jobId: req.params.id, shopId: req.shopId },
+      where: { jobId: parseInt(req.params.id, 10), shopId: req.shopId },
     });
     if (!existing) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job card not found' } });
@@ -233,7 +233,7 @@ router.post('/jobs/:id/items', authenticate, requireShopOwner, async (req, res, 
 
     const item = await prisma.jobCardItem.create({
       data: {
-        jobId: req.params.id,
+        jobId: parseInt(req.params.id, 10),
         inventoryId: inventoryId || null,
         description,
         qty: parsedQty,
@@ -244,12 +244,12 @@ router.post('/jobs/:id/items', authenticate, requireShopOwner, async (req, res, 
     });
 
     // Recalculate partsTotal and totalAmount
-    const allItems = await prisma.jobCardItem.findMany({ where: { jobId: req.params.id } });
+    const allItems = await prisma.jobCardItem.findMany({ where: { jobId: parseInt(req.params.id, 10) } });
     const partsTotal = allItems.filter(i => i.type === 'PART').reduce((s, i) => s + parseFloat(i.total), 0);
     const totalAmount = partsTotal + parseFloat(existing.labourCharge);
 
     await prisma.jobCard.update({
-      where: { jobId: req.params.id },
+      where: { jobId: parseInt(req.params.id, 10) },
       data: { partsTotal, totalAmount },
     });
 
@@ -263,21 +263,21 @@ router.post('/jobs/:id/items', authenticate, requireShopOwner, async (req, res, 
 router.delete('/jobs/:id/items/:itemId', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const job = await prisma.jobCard.findFirst({
-      where: { jobId: req.params.id, shopId: req.shopId },
+      where: { jobId: parseInt(req.params.id, 10), shopId: req.shopId },
     });
     if (!job) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job card not found' } });
     }
 
-    await prisma.jobCardItem.delete({ where: { id: req.params.itemId } });
+    await prisma.jobCardItem.delete({ where: { id: parseInt(req.params.itemId, 10) } });
 
     // Recalculate totals
-    const allItems = await prisma.jobCardItem.findMany({ where: { jobId: req.params.id } });
+    const allItems = await prisma.jobCardItem.findMany({ where: { jobId: parseInt(req.params.id, 10) } });
     const partsTotal = allItems.filter(i => i.type === 'PART').reduce((s, i) => s + parseFloat(i.total), 0);
     const totalAmount = partsTotal + parseFloat(job.labourCharge);
 
     await prisma.jobCard.update({
-      where: { jobId: req.params.id },
+      where: { jobId: parseInt(req.params.id, 10) },
       data: { partsTotal, totalAmount },
     });
 
