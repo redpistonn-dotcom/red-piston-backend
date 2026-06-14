@@ -31,20 +31,24 @@ router.get('/me', authenticate, async (req, res, next) => {
 
     // ── Role-specific enrichment ──────────────────────────────────────────────
     if (user.role === 'CUSTOMER') {
-      // Ensure CustomerProfile exists (created on first login)
-      const customerProfile = await prisma.customerProfile.upsert({
-        where: { userId: user.userId },
-        update: {},
-        create: { userId: user.userId },
-      });
-      const addresses = await prisma.customerAddress.findMany({
-        where: { userId: user.userId },
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
-      });
-      const garageVehicles = await prisma.customerVehicle.findMany({
-        where: { userId: user.userId },
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
-      });
+      // Ensure CustomerProfile exists (created on first login). These three are
+      // independent (the findMany queries key on userId, not the upsert result),
+      // so run them in parallel — /me is hit on every app load.
+      const [customerProfile, addresses, garageVehicles] = await Promise.all([
+        prisma.customerProfile.upsert({
+          where: { userId: user.userId },
+          update: {},
+          create: { userId: user.userId },
+        }),
+        prisma.customerAddress.findMany({
+          where: { userId: user.userId },
+          orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+        }),
+        prisma.customerVehicle.findMany({
+          where: { userId: user.userId },
+          orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+        }),
+      ]);
       base.customerProfile = customerProfile;
       base.addresses = addresses;
       base.garageVehicles = garageVehicles;

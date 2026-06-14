@@ -22,35 +22,52 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
       startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     }
 
-    // Sales aggregates
-    const salesAgg = await prisma.movement.aggregate({
-      where: { shopId, type: 'SALE', createdAt: { gte: startDate } },
-      _sum: { totalAmount: true, profit: true },
-      _count: true,
-    });
+    // These five reads are independent — run them in parallel so the dashboard
+    // pays ONE round-trip's latency, not five stacked serially (matters most on
+    // a cold/cross-AZ Supabase connection).
+    const [salesAgg, purchaseAgg, lowStockRows, topProducts, totalOutstanding] = await Promise.all([
+      // Sales aggregates
+      prisma.movement.aggregate({
+        where: { shopId, type: 'SALE', createdAt: { gte: startDate } },
+        _sum: { totalAmount: true, profit: true },
+        _count: true,
+      }),
+      // Purchase aggregates
+      prisma.movement.aggregate({
+        where: { shopId, type: 'PURCHASE', createdAt: { gte: startDate } },
+        _sum: { totalAmount: true },
+        _count: true,
+      }),
+      // Low stock items — cross-column comparison requires raw SQL
+      // (Prisma does not support WHERE column_a <= column_b in its query builder)
+      prisma.$queryRaw`
+        SELECT si.inventory_id, si.shop_id, si.master_part_id,
+               si.selling_price, si.buying_price, si.stock_qty,
+               si.min_stock_alert, si.rack_location, si.is_marketplace_listed,
+               mp.part_name, mp.brand, mp.category_l1, mp.hsn_code, mp.gst_rate,
+               mp.oem_numbers, mp.unit_of_sale, mp.image_url
+        FROM   shop_inventory si
+        JOIN   master_parts mp ON mp.master_part_id = si.master_part_id
+        WHERE  si.shop_id = ${shopId}
+          AND  si.stock_qty <= si.min_stock_alert
+        ORDER  BY si.stock_qty ASC
+        LIMIT  10
+      `,
+      // Top selling products
+      prisma.movement.groupBy({
+        by: ['inventoryId'],
+        where: { shopId, type: 'SALE', createdAt: { gte: startDate } },
+        _sum: { qty: true, totalAmount: true },
+        orderBy: { _sum: { totalAmount: 'desc' } },
+        take: 5,
+      }),
+      // Outstanding dues
+      prisma.party.aggregate({
+        where: { shopId, type: { in: ['CUSTOMER', 'BOTH'] } },
+        _sum: { outstanding: true },
+      }),
+    ]);
 
-    // Purchase aggregates
-    const purchaseAgg = await prisma.movement.aggregate({
-      where: { shopId, type: 'PURCHASE', createdAt: { gte: startDate } },
-      _sum: { totalAmount: true },
-      _count: true,
-    });
-
-    // Low stock items — cross-column comparison requires raw SQL
-    // Prisma does not support WHERE column_a <= column_b in its query builder
-    const lowStockRows = await prisma.$queryRaw`
-      SELECT si.inventory_id, si.shop_id, si.master_part_id,
-             si.selling_price, si.buying_price, si.stock_qty,
-             si.min_stock_alert, si.rack_location, si.is_marketplace_listed,
-             mp.part_name, mp.brand, mp.category_l1, mp.hsn_code, mp.gst_rate,
-             mp.oem_numbers, mp.unit_of_sale, mp.image_url
-      FROM   shop_inventory si
-      JOIN   master_parts mp ON mp.master_part_id = si.master_part_id
-      WHERE  si.shop_id = ${shopId}
-        AND  si.stock_qty <= si.min_stock_alert
-      ORDER  BY si.stock_qty ASC
-      LIMIT  10
-    `;
     const lowStockItems = lowStockRows.map(r => ({
       inventoryId: r.inventory_id,
       shopId: r.shop_id,
@@ -73,21 +90,6 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
         imageUrl: r.image_url,
       },
     }));
-
-    // Top selling products
-    const topProducts = await prisma.movement.groupBy({
-      by: ['inventoryId'],
-      where: { shopId, type: 'SALE', createdAt: { gte: startDate } },
-      _sum: { qty: true, totalAmount: true },
-      orderBy: { _sum: { totalAmount: 'desc' } },
-      take: 5,
-    });
-
-    // Outstanding dues
-    const totalOutstanding = await prisma.party.aggregate({
-      where: { shopId, type: { in: ['CUSTOMER', 'BOTH'] } },
-      _sum: { outstanding: true },
-    });
 
     res.json({
       period,

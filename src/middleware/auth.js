@@ -14,7 +14,11 @@ export const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await prisma.user.findUnique({
       where: { userId: decoded.userId },
-      include: { shop: true, userType: true },
+      // Drop the full `shop` JOIN (no handler reads req.user.shop — confirmed) and
+      // trim userType to the columns the role gate needs. Default User scalars
+      // (name/phone/email/avatarUrl/firebaseUid, which handlers DO use) are still
+      // returned. One fewer JOIN + less data on every authenticated request.
+      include: { userType: { select: { id: true, name: true, slug: true } } },
     });
     if (!user || !user.isActive) {
       return res.status(401).json({
@@ -68,14 +72,3 @@ export const requireAdmin = (req, res, next) => {
   next();
 };
 
-// Generic role gate: authorize(['SHOP_OWNER', 'PLATFORM_ADMIN'])
-// Must be used after authenticate()
-export const authorize = (roles) => (req, res, next) => {
-  if (!roles.includes(req.user.role)) {
-    return res.status(403).json({
-      success: false,
-      error: { code: 'FORBIDDEN', message: `Access restricted to: ${roles.join(', ')}` },
-    });
-  }
-  next();
-};
