@@ -88,6 +88,7 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       rackLocation, minStockAlert, maxStockLevel,
       customPartName, barcode,
       shopSpecificNotes, isMarketplaceListed, supplierName, images,
+      supplierGstin, supplierPhone, supplierInvoiceNo,
     } = req.body;
     if (!masterPartId || !sellingPrice) {
       return res.status(400).json({ error: 'masterPartId and sellingPrice required' });
@@ -123,8 +124,15 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       include: { masterPart: true },
     });
 
-    // If opening stock provided, create an OPENING movement
+    // If opening stock provided, create an OPENING movement, recording the full
+    // supplier details (name / GSTIN / phone / invoice no) on the note.
     if (stockQty && stockQty > 0) {
+      const supplierBits = [
+        supplierName && `Supplier: ${supplierName}`,
+        supplierGstin && `GSTIN: ${supplierGstin}`,
+        supplierPhone && `Ph: ${supplierPhone}`,
+        supplierInvoiceNo && `Invoice: ${supplierInvoiceNo}`,
+      ].filter(Boolean);
       await prisma.movement.create({
         data: {
           shopId: req.shopId,
@@ -132,7 +140,10 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
           type: 'OPENING',
           qty: parseInt(stockQty),
           unitPrice: buyingPrice ? parseFloat(buyingPrice) : null,
-          notes: supplierName ? `Opening stock · Supplier: ${supplierName}` : 'Opening stock',
+          // Movement has no invoiceNo/supplierName columns — the bill number goes in
+          // referenceNumber; the rest of the supplier details live in notes.
+          referenceNumber: supplierInvoiceNo || null,
+          notes: supplierBits.length ? `Opening stock · ${supplierBits.join(' · ')}` : 'Opening stock',
         },
       });
     }
