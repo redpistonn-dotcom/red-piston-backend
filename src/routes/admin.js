@@ -556,16 +556,25 @@ router.get('/catalog/parts', authenticate, requireAdmin, async (req, res, next) 
     const [parts, total] = await Promise.all([
       prisma.masterPart.findMany({
         where,
-        include: {
-          contributedByShop: { select: { name: true, city: true } },
-        },
         orderBy: { createdAt: 'desc' },
         take: parseInt(limit),
         skip: parseInt(offset),
       }),
       prisma.masterPart.count({ where }),
     ]);
-    res.json({ success: true, parts, total });
+
+    // Attach shop name manually (contributedByShopId has no Prisma @relation)
+    const shopIds = [...new Set(parts.map(p => p.contributedByShopId).filter(Boolean))];
+    const shops = shopIds.length
+      ? await prisma.shop.findMany({ where: { shopId: { in: shopIds } }, select: { shopId: true, name: true, city: true } })
+      : [];
+    const shopMap = Object.fromEntries(shops.map(s => [s.shopId, s]));
+    const partsWithShop = parts.map(p => ({
+      ...p,
+      contributedByShop: p.contributedByShopId ? (shopMap[p.contributedByShopId] ?? null) : null,
+    }));
+
+    res.json({ success: true, parts: partsWithShop, total });
   } catch (err) { next(err); }
 });
 
