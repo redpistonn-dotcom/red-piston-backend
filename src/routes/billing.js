@@ -81,7 +81,7 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
         throw { status: 400, message: `Invalid quantity for ${inv.masterPart.partName}` };
       }
       const unitPrice  = parseFloat(item.unitPrice || inv.sellingPrice);
-      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
         throw { status: 400, message: `Invalid unit price for ${inv.masterPart.partName}` };
       }
       // Negative discount would silently become a price increase
