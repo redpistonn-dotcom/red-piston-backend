@@ -117,10 +117,16 @@ router.post('/refresh', async (req, res, next) => {
 
     res.cookie(REFRESH_COOKIE_NAME, newRawRT, REFRESH_COOKIE_OPTIONS);
 
+    // Also return the rotated refresh token in the body. The httpOnly cookie is a
+    // THIRD-PARTY cookie in production (Vercel frontend ↔ Render backend are
+    // different sites), so Safari/modern-Chrome block it — the cookie can't be
+    // relied on for the next refresh. Returning it here lets the client persist
+    // the fresh token in its localStorage fallback so the session self-heals.
     res.json({
       success: true,
-      data: { accessToken, expiresIn: 28800 },
+      data: { accessToken, refreshToken: newRawRT, expiresIn: 28800 },
       accessToken,
+      refreshToken: newRawRT,
       user: {
         userId: user.userId,
         role: user.role,
