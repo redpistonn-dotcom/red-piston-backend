@@ -87,7 +87,7 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       masterPartId, sellingPrice, buyingPrice, stockQty,
       rackLocation, minStockAlert, maxStockLevel,
       customPartName, barcode,
-      shopSpecificNotes, isMarketplaceListed, supplierName,
+      shopSpecificNotes, isMarketplaceListed, supplierName, images,
     } = req.body;
     if (!masterPartId || !sellingPrice) {
       return res.status(400).json({ error: 'masterPartId and sellingPrice required' });
@@ -114,6 +114,7 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
         // New inventory is NOT auto-listed on the marketplace — going live is an
         // explicit action from Parts Listing (which also requires a product image).
         isMarketplaceListed: isMarketplaceListed ?? false,
+        ...(images && { images }),
       },
       include: { masterPart: true },
     });
@@ -152,7 +153,7 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
       sellingPrice, buyingPrice, rackLocation,
       minStockAlert, maxStockLevel,
       customPartName, barcode,
-      shopSpecificNotes, isMarketplaceListed, imageUrl,
+      shopSpecificNotes, isMarketplaceListed, imageUrl, images,
     } = req.body;
 
     const inventoryId = parseInt(req.params.id);
@@ -172,6 +173,8 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
         ...(shopSpecificNotes  !== undefined && { shopSpecificNotes:  shopSpecificNotes || null }),
         ...(isMarketplaceListed !== undefined && { isMarketplaceListed }),
         ...(imageUrl           !== undefined && { imageUrl:           imageUrl || null }),
+        // images: JSON string array of up to 3 photo URLs (caller serializes)
+        ...(images             !== undefined && { images:             images || null }),
       },
       include: { masterPart: true },
     });
