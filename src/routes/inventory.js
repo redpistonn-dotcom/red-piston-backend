@@ -111,7 +111,9 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
         customPartName:      customPartName  || null,
         barcode:             barcode         || null,
         shopSpecificNotes:   shopSpecificNotes || null,
-        isMarketplaceListed: isMarketplaceListed ?? true,
+        // New inventory is NOT auto-listed on the marketplace — going live is an
+        // explicit action from Parts Listing (which also requires a product image).
+        isMarketplaceListed: isMarketplaceListed ?? false,
       },
       include: { masterPart: true },
     });
