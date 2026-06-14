@@ -293,7 +293,7 @@ router.get('/invoices', authenticate, requireShopOwner, async (req, res, next) =
 router.get('/invoice/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findFirst({
-      where:   { invoiceId: req.params.id, shopId: req.shopId },
+      where:   { invoiceId: parseInt(req.params.id, 10), shopId: req.shopId },
       include: {
         items:    { include: { inventory: { include: { masterPart: true } } } },
         party:    { select: { name: true, phone: true, gstin: true, creditDays: true } },
@@ -311,7 +311,7 @@ router.get('/invoice/:id', authenticate, requireShopOwner, async (req, res, next
 router.get('/invoice/:id/pdf', authenticate, async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
-      where:   { invoiceId: req.params.id },
+      where:   { invoiceId: parseInt(req.params.id, 10) },
       include: { items: true, shop: true },
     });
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
@@ -375,7 +375,7 @@ router.get('/customer/invoices', authenticate, async (req, res, next) => {
 router.post('/invoice/:id/send-whatsapp', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
-      where:   { invoiceId: req.params.id },
+      where:   { invoiceId: parseInt(req.params.id, 10) },
       include: { items: true, shop: true },
     });
     if (!invoice || invoice.shopId !== req.shopId) return res.status(404).json({ error: 'Invoice not found' });
@@ -412,7 +412,7 @@ router.post('/invoice/:id/payment', authenticate, requireShopOwner, async (req, 
     }
 
     const invoice = await prisma.invoice.findFirst({
-      where: { invoiceId: req.params.id, shopId: req.shopId },
+      where: { invoiceId: parseInt(req.params.id, 10), shopId: req.shopId },
     });
     if (!invoice) return res.status(404).json({ success: false, error: { message: 'Invoice not found' } });
 

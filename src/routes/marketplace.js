@@ -613,7 +613,7 @@ router.post('/orders', authenticate, async (req, res, next) => {
             shopId:            Number(shopId),
             subtotal:          shopSubtotal,
             total:             shopSubtotal,
-            deliveryAddress:   deliveryAddress   || null,
+            deliveryAddress:   deliveryAddress ? (typeof deliveryAddress === 'string' ? deliveryAddress : JSON.stringify(deliveryAddress)) : null,
             deliveryAddressId: deliveryAddressId || null,
             paymentMode:       paymentMode       || null,
             customerVehicleId: customerVehicleId || null,

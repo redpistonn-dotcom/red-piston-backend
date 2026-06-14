@@ -1094,3 +1094,13 @@ model AuditLog {
   @@index([shopId, entityType])
   @@map("audit_logs")
 }
+
+model NumberCounter {
+  shopId     Int      @map("shop_id")
+  counterKey String   @map("counter_key")
+  lastValue  Int      @default(0) @map("last_value")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@id([shopId, counterKey])
+  @@map("number_counters")
+}
