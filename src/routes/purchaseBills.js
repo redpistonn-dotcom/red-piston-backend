@@ -75,7 +75,10 @@ router.post('/extract', express.json({ limit: '18mb' }), authenticate, requireSh
     try {
       const up = await cloudinary.uploader.upload(
         `data:application/pdf;base64,${buffer.toString('base64')}`,
-        { folder: `bills/shop-${req.shopId}`, resource_type: 'image', use_filename: true, filename_override: fileName || 'bill.pdf' }
+        // resource_type 'raw' (not 'image') — Cloudinary blocks PDF *delivery* for
+        // image-type uploads by default, which made "View PDF" return 401. Raw files
+        // are delivered directly so the link opens.
+        { folder: `bills/shop-${req.shopId}`, resource_type: 'raw', use_filename: true, filename_override: fileName || 'bill.pdf' }
       );
       fileUrl = up.secure_url;
     } catch (err) {

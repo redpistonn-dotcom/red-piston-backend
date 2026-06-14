@@ -207,85 +207,112 @@ export async function parseTallyInvoice(buffer) {
   return result;
 }
 
-// ─── Generic heuristic parser (any DIGITAL/text-layer invoice) ─────────────────
-// Layout-agnostic fallback for non-Tally invoices: reads the PDF's text and finds
-// fields by PATTERN (not fixed column x-positions), so it works across most
-// digital invoice formats. Cannot read scanned-image PDFs (no text layer). Output
-// is the same shape as parseTallyInvoice and is always validated via sumMatches —
-// the review screen lets the owner fix anything the heuristics miss.
-const GSTIN_RE = /\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/;
-const DATE_RE = /\b(\d{1,2}[-\/.](?:\d{1,2}|[A-Za-z]{3,9})[-\/.]\d{2,4})\b/;
-const MONEY_RE = /[\d,]+\.\d{2}/;
-const SKIP_ROW_RE = /\b(total|sub\s*total|taxable|cgst|sgst|igst|gst|tax|round|discount|amount\s*(?:in\s*words|chargeable|payable)|declaration|bank|terms|signature|e\.?\s*&\s*o\.?e|jurisdiction|hsn\s*summary|continued)\b/i;
+// ─── Generic parser (any DIGITAL/text-layer invoice, any layout) ───────────────
+// Unlike the Tally parser (hardcoded column x-positions), this DETECTS the table's
+// header row and reads each column's actual x-position FROM THAT INVOICE, then
+// classifies every data row's cells by which column they fall under. So it adapts
+// to differently-organised invoices. Cannot read scanned-image PDFs (no text layer).
+// Output matches parseTallyInvoice and is validated via sumMatches.
+const moneyRe = (s) => /^[₹]?\s*[\d,]+(?:\.\d{1,2})?$/.test(String(s).trim());
+const cleanMoney = (s) => num(String(s).replace(/[₹\s]/g, ''));
 
 export async function parseGenericInvoice(buffer) {
-  const data = await pdfParse(buffer);
-  const text = (data.text || '').replace(/\r/g, '');
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  const upper = text.toUpperCase();
+  const allRows = [];
+  await pdfParse(buffer, {
+    pagerender: async (pageData) => { const tc = await pageData.getTextContent(); allRows.push(pageToRows(tc)); return ''; },
+  });
+  const flat = allRows.flat();
 
   const result = {
-    format: 'generic',
-    supplierName: null, supplierGstin: null, invoiceNumber: null, invoiceDate: null,
+    format: 'generic', supplierName: null, supplierGstin: null, invoiceNumber: null, invoiceDate: null,
     items: [], taxableTotal: null, grandTotal: null, sumOfItems: 0, sumMatches: false,
-    warnings: [], pages: data.numpages || 1,
+    warnings: [], pages: allRows.length,
   };
 
-  // ── Header fields by pattern ──────────────────────────────────────────────
-  const gstinMatch = upper.match(GSTIN_RE);
-  if (gstinMatch) result.supplierGstin = gstinMatch[0]; // first GSTIN ≈ the seller's (top of doc)
-
-  for (const ln of lines) {
+  // ── Header metadata (by pattern, anywhere on the page) ─────────────────────
+  for (const row of flat) {
+    const text = row.cells.map((c) => c.str).join(' ');
+    if (!result.supplierGstin) { const g = text.match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/i); if (g) result.supplierGstin = g[0].toUpperCase(); }
+    if (!result.invoiceDate) { const d = text.match(/\b(\d{1,2}[-/.](?:\d{1,2}|[A-Za-z]{3,9})[-/.]\d{2,4})\b/); if (d) result.invoiceDate = d[1]; }
     if (!result.invoiceNumber) {
-      const m = ln.match(/(?:invoice|bill|inv)\.?\s*(?:no|number|num|#)?\.?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-]{1,30})/i);
-      if (m && !/date/i.test(ln) && !DATE_RE.test(m[1])) result.invoiceNumber = m[1].trim();
-    }
-    if (!result.invoiceDate) {
-      const m = ln.match(/(?:invoice\s*date|dated|date)\s*[:#-]?\s*(\d{1,2}[-\/.](?:\d{1,2}|[A-Za-z]{3,9})[-\/.]\d{2,4})/i) || ln.match(DATE_RE);
-      if (m) result.invoiceDate = m[1];
+      const m = text.match(/(?:invoice|bill|inv)\.?\s*(?:no|number|num|#)?\.?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9/-]{1,30})/i);
+      if (m && !/^\d{1,2}[-/.]/.test(m[1]) && !/^date$/i.test(m[1])) result.invoiceNumber = m[1].trim();
     }
   }
-  // Supplier name: first substantive line near the top that isn't a generic header.
-  for (const ln of lines.slice(0, 8)) {
-    if (/[A-Za-z]{3,}/.test(ln) && !/^(tax\s*invoice|invoice|bill|gstin|original|duplicate|proforma)/i.test(ln) && ln.length <= 60) {
-      result.supplierName = ln.replace(/\s{2,}/g, ' ').trim();
-      break;
+  for (const row of flat.slice(0, 12)) {
+    const t = row.cells.map((c) => c.str).join(' ').trim();
+    if (/[A-Za-z]{3,}/.test(t) && !/^(tax\s*invoice|invoice|gstin|original|duplicate|triplicate|proforma|bill\s*of|credit\s*note|debit\s*note)\b/i.test(t) && t.length <= 60) {
+      result.supplierName = t.replace(/\s{2,}/g, ' '); break;
     }
   }
 
-  // ── Line items: rows shaped like "<desc> [hsn] <qty> [unit] <rate> <amount>" ─
-  let serial = 0;
-  for (const ln of lines) {
-    if (SKIP_ROW_RE.test(ln)) continue;
-    // Trailing two money values = rate + amount; an integer qty before them.
-    const m = ln.match(/^(.+?)\s+(\d{1,6}(?:\.\d{1,3})?)\s+(?:[A-Za-z]{1,5}\s+)?(?:₹|rs\.?)?\s*([\d,]+\.\d{2})\s+(?:₹|rs\.?)?\s*([\d,]+\.\d{2})$/i);
-    if (!m) continue;
-    let name = m[1].replace(/^\d{1,3}[).\s]+/, '').trim();   // strip a leading serial
-    if (!/[A-Za-z]{2,}/.test(name)) continue;                // need a real description
-    let hsnCode = null;
-    const hsn = name.match(/\b(\d{4,8})\b\s*$/);             // trailing HSN/SAC on the name
-    if (hsn) { hsnCode = hsn[1]; name = name.replace(/\b\d{4,8}\b\s*$/, '').trim(); }
-    const qty = Math.round(num(m[2]));
-    const rate = num(m[3]);
-    const amount = num(m[4]);
-    if (!(qty > 0) || !(amount > 0)) continue;
-    result.items.push({ serial: ++serial, partName: name.replace(/\s{2,}/g, ' '), hsnCode, qty, unit: null, rate, rateInclTax: null, discountPct: 0, amount });
+  // ── Detect the table header row + each column's x-position ─────────────────
+  const COL_RE = {
+    description: /desc|particular|item|product|goods|^name$/i,
+    hsn: /hsn|sac/i,
+    qty: /qty|quantity/i,
+    rate: /rate|price|mrp/i,
+    amount: /amount|value|^total$/i,
+  };
+  let headerIdx = -1, cols = null;
+  for (let i = 0; i < flat.length; i++) {
+    const joined = flat[i].cells.map((c) => c.str).join(' ').toLowerCase();
+    const hasDesc = /desc|particular|item|goods|product|\bname\b/.test(joined);
+    const hasNum = /qty|quantity|rate|price|amount|value/.test(joined);
+    if (!(hasDesc && hasNum)) continue;
+    const cmap = {};
+    for (const c of flat[i].cells) {
+      const s = c.str.trim().toLowerCase();
+      for (const [role, re] of Object.entries(COL_RE)) { if (re.test(s) && cmap[role] == null) cmap[role] = c.x; }
+    }
+    if (cmap.description != null && (cmap.amount != null || cmap.qty != null)) { headerIdx = i; cols = cmap; break; }
+  }
+
+  if (cols) {
+    const ordered = Object.entries(cols).filter(([, x]) => x != null).sort((a, b) => a[1] - b[1]);
+    const roleAtX = (x) => { let best = null, bd = Infinity; for (const [r, cx] of ordered) { const d = Math.abs(x - cx); if (d < bd) { bd = d; best = r; } } return best; };
+    const firstNumX = Math.min(...[cols.hsn, cols.qty, cols.rate, cols.amount].filter((v) => v != null));
+    let serial = 0;
+    for (let i = headerIdx + 1; i < flat.length; i++) {
+      const row = flat[i];
+      const joined = row.cells.map((c) => c.str).join(' ');
+      // Hard stop at the totals/footer block.
+      if (/\b(grand\s*total|taxable|cgst|sgst|igst|round\s*off|amount\s*chargeable|amount\s*in\s*words|declaration|bank\s*details|jurisdiction|e\.?\s*&\s*o\.?e|hsn\s*summary)\b/i.test(joined)) break;
+      if (/^\s*(total|sub\s*total)\b/i.test(joined.trim())) continue;
+
+      let descParts = [], qty = null, rate = null, amount = null, hsn = null;
+      for (const c of row.cells) {
+        const s = c.str.trim();
+        if (!s) continue;
+        if (c.x < firstNumX - 5) { descParts.push(s); continue; }
+        const role = roleAtX(c.x);
+        if (role === 'hsn' && /^\d{4,8}$/.test(s)) { hsn = s; continue; }
+        if (role === 'qty') { const q = s.match(/(\d[\d,]*)/); if (q) qty = parseInt(q[1].replace(/,/g, ''), 10); continue; }
+        if (role === 'rate' && moneyRe(s)) { rate = cleanMoney(s); continue; }
+        if (role === 'amount' && moneyRe(s)) { amount = cleanMoney(s); continue; }
+        if (moneyRe(s) && amount == null && c.x >= (cols.amount ?? firstNumX)) amount = cleanMoney(s);
+      }
+      const name = descParts.join(' ').replace(/^\d{1,3}[).\s]+/, '').replace(/\s{2,}/g, ' ').trim();
+      if (name && /[A-Za-z]{2,}/.test(name) && amount != null && amount > 0) {
+        result.items.push({ serial: ++serial, partName: name, hsnCode: hsn, qty: qty ?? 1, unit: null, rate, rateInclTax: null, discountPct: 0, amount });
+      }
+    }
   }
 
   // ── Totals + validation ───────────────────────────────────────────────────
-  result.sumOfItems = +result.items.reduce((s, it) => s + it.amount, 0).toFixed(2);
-  const moneyOnLabel = (re) => {
+  result.sumOfItems = +result.items.reduce((s, it) => s + (it.amount || 0), 0).toFixed(2);
+  const labelMoney = (re) => {
     const vals = [];
-    for (const ln of lines) { if (re.test(ln)) { const mm = ln.match(MONEY_RE); if (mm) vals.push(num(mm[0])); } }
+    for (const row of flat) { const t = row.cells.map((c) => c.str).join(' '); if (re.test(t)) for (const c of row.cells) { const s = c.str.trim(); if (/^[\d,]+\.\d{2}$/.test(s)) vals.push(num(s)); } }
     return vals;
   };
-  const grandVals = moneyOnLabel(/\b(grand\s*total|total\s*amount|invoice\s*total|amount\s*payable|net\s*payable|bill\s*total)\b/i);
+  const grandVals = labelMoney(/\b(grand\s*total|total\s*amount|invoice\s*total|amount\s*payable|net\s*payable|bill\s*total)\b/i);
   if (grandVals.length) result.grandTotal = Math.max(...grandVals);
-  const taxableVals = moneyOnLabel(/\b(taxable|sub\s*total|subtotal|total\s*value|total\s*before\s*tax)\b/i);
+  const taxableVals = labelMoney(/\b(taxable|sub\s*total|subtotal|total\s*value|total\s*before\s*tax)\b/i);
   const taxMatch = taxableVals.find((v) => Math.abs(v - result.sumOfItems) <= 1.0);
   result.taxableTotal = taxMatch != null ? taxMatch : (taxableVals.length ? Math.max(...taxableVals) : result.grandTotal);
   result.sumMatches = result.taxableTotal != null && Math.abs(result.sumOfItems - result.taxableTotal) <= 1.0;
-  if (!result.items.length) result.warnings.push('No line items detected — this invoice layout could not be read automatically. Add the items manually.');
+  if (!result.items.length) result.warnings.push('No line items detected — the table layout was not recognised. Add items manually.');
   else if (!result.sumMatches) result.warnings.push(`Line items sum to ₹${result.sumOfItems} but the invoice total appears different — review for missing/misread rows.`);
 
   return result;
