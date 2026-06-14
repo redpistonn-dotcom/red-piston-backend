@@ -666,6 +666,29 @@ model ShopInventory {
   @@map("shop_inventory")
 }
 
+// Vehicles a shop registers (customers' cars it services). Scoped to the shop;
+// ownerId references a Party (the customer). Used to create job cards.
+model ShopVehicle {
+  vehicleId          Int      @id @default(autoincrement()) @map("vehicle_id")
+  shopId             Int      @map("shop_id")
+  ownerId            Int?     @map("owner_id")          // -> Party.partyId (customer)
+  make               String
+  model              String
+  variant            String?
+  year               Int?
+  fuelType           String?  @map("fuel_type")
+  registrationNumber String?  @map("registration_number")
+  engineType         String?  @map("engine_type")
+  odometer           Int?
+  vin                String?
+  notes              String?
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([shopId])
+  @@map("shop_vehicles")
+}
+
 // Immutable stock ledger — INSERT ONLY, never UPDATE or DELETE rows.
 model Movement {
   movementId    Int      @id @default(autoincrement()) @map("movement_id")

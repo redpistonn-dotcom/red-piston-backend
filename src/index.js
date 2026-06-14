@@ -20,6 +20,7 @@ import adminRoutes from './routes/admin.js';
 import fitmentRoutes from './routes/fitments.js';
 import shopProfileRoutes from './routes/shop.js';
 import workshopRoutes from './routes/workshop.js';
+import shopVehicleRoutes from './routes/shopVehicles.js';
 import purchaseOrderRoutes from './routes/purchaseOrders.js';
 import uploadRoutes from './routes/upload.js';
 import purchaseBillRoutes from './routes/purchaseBills.js';
@@ -93,6 +94,7 @@ app.use('/api/customer', customerRoutes);
 app.use('/api/shop/staff', staffRoutes);
 app.use('/api/shop/profile', shopProfileRoutes);
 app.use('/api/shop/workshop', workshopRoutes);
+app.use('/api/shop/vehicles', shopVehicleRoutes);
 app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
 app.use('/api/shop/purchase-bills', purchaseBillRoutes);
 // Bulk import needs a larger body — only applied to this path
