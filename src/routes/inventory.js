@@ -124,8 +124,46 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       include: { masterPart: true },
     });
 
-    // If opening stock provided, create an OPENING movement, recording the full
-    // supplier details (name / GSTIN / phone / invoice no) on the note.
+    // Upsert the supplier into the parties table so it becomes a REUSABLE supplier
+    // record (Parties → Suppliers) with GSTIN/phone in real columns — matched by
+    // GSTIN when present, else by name (within this shop). Best-effort.
+    let supplierPartyId = null;
+    if (supplierName || supplierGstin) {
+      try {
+        const existing = await prisma.party.findFirst({
+          where: {
+            shopId: req.shopId,
+            type: { in: ['SUPPLIER', 'BOTH'] },
+            ...(supplierGstin ? { gstin: supplierGstin } : { name: supplierName }),
+          },
+        });
+        if (existing) {
+          supplierPartyId = existing.partyId;
+          const patch = {};
+          if (supplierGstin && !existing.gstin) patch.gstin = supplierGstin;
+          if (supplierPhone && !existing.phone) patch.phone = supplierPhone;
+          if (Object.keys(patch).length) {
+            await prisma.party.update({ where: { partyId: existing.partyId }, data: patch });
+          }
+        } else {
+          const created = await prisma.party.create({
+            data: {
+              shopId: req.shopId,
+              name: supplierName || supplierGstin,
+              gstin: supplierGstin || null,
+              phone: supplierPhone || null,
+              type: 'SUPPLIER',
+            },
+          });
+          supplierPartyId = created.partyId;
+        }
+      } catch (e) {
+        console.error('[inventory POST] supplier party upsert failed:', e?.message);
+      }
+    }
+
+    // If opening stock provided, create an OPENING movement, linked to the supplier
+    // party and recording the full supplier details (name / GSTIN / phone / invoice).
     if (stockQty && stockQty > 0) {
       const supplierBits = [
         supplierName && `Supplier: ${supplierName}`,
@@ -141,8 +179,9 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
           qty: parseInt(stockQty),
           unitPrice: buyingPrice ? parseFloat(buyingPrice) : null,
           // Movement has no invoiceNo/supplierName columns — the bill number goes in
-          // referenceNumber; the rest of the supplier details live in notes.
+          // referenceNumber; the supplier link goes in partyId; rest into notes.
           referenceNumber: supplierInvoiceNo || null,
+          partyId: supplierPartyId,
           notes: supplierBits.length ? `Opening stock · ${supplierBits.join(' · ')}` : 'Opening stock',
         },
       });
