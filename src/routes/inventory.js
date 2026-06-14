@@ -578,9 +578,15 @@ router.post('/adjust', authenticate, requireShopOwner, async (req, res, next) =>
     }
 
     // Never let an adjustment drive stock below zero (phantom negative stock
-    // is unrecoverable through the UI)
-    if (qtyChange < 0 && item.stockQty + qtyChange < 0) {
-      return res.status(400).json({ error: `Adjustment would make stock negative (current: ${item.stockQty})` });
+    // is unrecoverable through the UI). Guard against the LEDGER-computed stock
+    // (the value the UI shows) rather than the stored stockQty column — the two
+    // can drift, which would otherwise reject a reduction that looks valid to
+    // the user ("current: 7" on screen but the stored column says 1).
+    if (qtyChange < 0) {
+      const liveStock = await computeStock(inventoryId);
+      if (liveStock + qtyChange < 0) {
+        return res.status(400).json({ error: `Adjustment would make stock negative (current: ${liveStock})` });
+      }
     }
 
     await prisma.$transaction(async (tx) => {
