@@ -87,7 +87,7 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       masterPartId, sellingPrice, buyingPrice, stockQty,
       rackLocation, minStockAlert, maxStockLevel,
       customPartName, barcode,
-      shopSpecificNotes, isMarketplaceListed,
+      shopSpecificNotes, isMarketplaceListed, supplierName,
     } = req.body;
     if (!masterPartId || !sellingPrice) {
       return res.status(400).json({ error: 'masterPartId and sellingPrice required' });
@@ -127,7 +127,7 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
           type: 'OPENING',
           qty: parseInt(stockQty),
           unitPrice: buyingPrice ? parseFloat(buyingPrice) : null,
-          notes: 'Opening stock',
+          notes: supplierName ? `Opening stock · Supplier: ${supplierName}` : 'Opening stock',
         },
       });
     }
