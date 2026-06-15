@@ -20,6 +20,10 @@ const pdfParse = require('pdf-parse/lib/pdf-parse.js');
 const num = (s) => parseFloat(String(s).replace(/,/g, ''));
 const isMoney = (s) => /^[\d,]+\.\d{2}$/.test(s);
 
+// Service/charge items that appear on invoices but aren't auto parts.
+// These should not be imported into inventory — they are one-time charges.
+const SERVICE_ITEM_RE = /^(labour|labor|cartage|freight|handling|packing|courier|delivery\s*charg|loading|unloading|transportation|installation|service\s*charg|logistics|insurance|gate\s*pass|octroi|toll|misc(?:ellaneous)?|charges?)\b/i;
+
 /** Group a page's text items into visual rows by Y, cells sorted by X. */
 function pageToRows(textContent) {
   const rows = new Map();
@@ -105,6 +109,12 @@ export async function parseTallyInvoice(buffer) {
     if (current.hsnCode && current.amount != null && current.qty != null) {
       current.partName = current.nameParts.join(' ').replace(/\s+/g, ' ').trim();
       delete current.nameParts;
+      // Skip service/charge line items — they are one-time fees, not inventory parts.
+      if (SERVICE_ITEM_RE.test(current.partName)) {
+        result.warnings.push(`Service charge excluded from import: "${current.partName}" (₹${current.amount}) — add manually if needed`);
+        current = null;
+        return;
+      }
       current.mathOk = current.rateExclGst != null
         ? Math.abs(current.amount - current.rateExclGst * current.qty) < 0.05
         : true;
@@ -294,7 +304,11 @@ export async function parseGenericInvoice(buffer) {
       }
       const name = descParts.join(' ').replace(/^\d{1,3}[).\s]+/, '').replace(/\s{2,}/g, ' ').trim();
       if (name && /[A-Za-z]{2,}/.test(name) && amount != null && amount > 0) {
-        // rateExclGst: from rate column; rateInclGst: calculated from amount/qty if rate present
+        // Skip service/charge line items — they are one-time fees, not inventory parts.
+        if (SERVICE_ITEM_RE.test(name)) {
+          result.warnings.push(`Service charge excluded from import: "${name}" (₹${amount}) — add manually if needed`);
+          continue;
+        }
         const rateExclGst = rate;
         const rateInclGst = null; // generic invoices rarely have a separate incl-GST column
         result.items.push({ serial: ++serial, partName: name, hsnCode: hsn, qty: qty ?? 1, unit: null, rateExclGst, rateInclGst, discountPct: 0, amount });

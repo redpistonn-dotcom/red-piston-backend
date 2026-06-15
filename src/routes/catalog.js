@@ -397,6 +397,22 @@ router.post('/contribute', authenticate, async (req, res, next) => {
       return res.status(400).json({ error: 'Part name is required' });
     }
 
+    // Prevent duplicate inventory entries: if this shop already has a part with
+    // the same name, return 409 so the frontend can show a friendly message.
+    const shopId = req.user?.shopId || null;
+    if (shopId) {
+      const dupCheck = await prisma.shopInventory.findFirst({
+        where: {
+          shopId,
+          masterPart: { partName: { equals: partName.trim(), mode: 'insensitive' } },
+        },
+        select: { inventoryId: true },
+      });
+      if (dupCheck) {
+        return res.status(409).json({ error: 'A part with this name is already in your inventory', inventoryId: dupCheck.inventoryId });
+      }
+    }
+
     const VALID_PART_TYPES = ['OEM', 'OES'];
     const resolvedPartType = VALID_PART_TYPES.includes((partType || '').toUpperCase())
       ? (partType || '').toUpperCase()
