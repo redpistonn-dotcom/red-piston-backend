@@ -9,17 +9,17 @@ SETUP (one time):
   pip install playwright psycopg2-binary
   playwright install chromium
 
-RUN:
-  python scrape_autodukan_local.py
+RUN — all categories, auto-resume, 10s between pages (recommended):
+  python scrape_autodukan_local.py --resume --delay 10
 
-  # Single category:
-  python scrape_autodukan_local.py --category "FILTERS"
+  Stop anytime with Ctrl+C. Restart with the same command — it picks up
+  from the exact page it stopped on.
 
-  # Resume after stop (skips already-scraped pages):
-  python scrape_autodukan_local.py --resume
+  # Single category (also resumes):
+  python scrape_autodukan_local.py --resume --delay 10 --category "FILTERS"
 
-  # Headless (no browser window):
-  python scrape_autodukan_local.py --headless
+  # Hide browser window:
+  python scrape_autodukan_local.py --resume --delay 10 --headless
 """
 
 import argparse
@@ -34,7 +34,7 @@ from datetime import datetime
 # CONFIGURATION — paste your Supabase connection string here
 # OR set the DATABASE_URL environment variable
 # ─────────────────────────────────────────────────────────────────────────────
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres.xxyjzmrcctpipvnxkojb:IIXTD6xbXW1IhDTX@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?pgbouncer=true")
 # Example:
 # DATABASE_URL = "postgresql://postgres.xxxx:PASSWORD@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
 
@@ -90,36 +90,9 @@ ALL_CATEGORIES = [
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DB setup
+# Note: autodukan_parts_staging already exists in Supabase — no DDL needed.
+# Only the progress-tracking table is created here (needed for --resume).
 # ─────────────────────────────────────────────────────────────────────────────
-
-DDL_STAGING = """
-CREATE TABLE IF NOT EXISTS autodukan_parts_staging (
-    id          SERIAL PRIMARY KEY,
-    name        TEXT,
-    part_number TEXT,
-    type        TEXT,
-    brand       TEXT,
-    category    TEXT,
-    price       NUMERIC(14,2),
-    mrp         NUMERIC(14,2),
-    image_url   TEXT,
-    source      TEXT DEFAULT 'autodukan',
-    scraped_at  TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(part_number, brand)
-);
-"""
-
-DDL_ADD_SOURCE_COL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'autodukan_parts_staging' AND column_name = 'source'
-    ) THEN
-        ALTER TABLE autodukan_parts_staging ADD COLUMN source TEXT DEFAULT 'autodukan';
-    END IF;
-END$$;
-"""
 
 DDL_PROGRESS = """
 CREATE TABLE IF NOT EXISTS autodukan_scrape_progress (
@@ -158,11 +131,9 @@ ON CONFLICT (category, page_num) DO UPDATE SET
 
 def setup_db(conn):
     with conn.cursor() as cur:
-        cur.execute(DDL_STAGING)
-        cur.execute(DDL_ADD_SOURCE_COL)   # adds source col if table already existed
         cur.execute(DDL_PROGRESS)
     conn.commit()
-    print("DB: tables ready", flush=True)
+    print("DB: progress table ready", flush=True)
 
 
 def get_completed_pages(conn, category):
@@ -304,23 +275,32 @@ def scrape_category(page, conn, category, delay_s, resume):
     # 1. Load page
     print(f"  Navigating to {BASE_URL} ...", flush=True)
     try:
-        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=45000)
+        page.goto(BASE_URL, wait_until="networkidle", timeout=60000)
     except Exception as e:
         print(f"  ERROR loading page: {e}", flush=True)
         return 0
 
-    time.sleep(6)   # let React hydrate
+    # Wait for the splash/loading animation to finish and real product cards to appear.
+    # The page shows a car animation on first load that can take 10-20s.
+    print(f"  Waiting for product cards to load (splash may take ~15s) ...", flush=True)
+    if not wait_for_cards(page, timeout_ms=45000):
+        print(f"  Page did not load products after 45s — skipping category.", flush=True)
+        return 0
+    print(f"  Products visible. Clicking filter '{category}' ...", flush=True)
 
     # 2. Click category filter
-    print(f"  Clicking filter '{category}' ...", flush=True)
     if click_filter(page, category):
-        print(f"  Filter clicked — waiting for products ...", flush=True)
+        print(f"  Filter clicked — waiting for filtered results ...", flush=True)
         time.sleep(4)
+        # Wait for cards to refresh after filter click
+        if not wait_for_cards(page, timeout_ms=15000):
+            print(f"  No products after filter click — skipping.", flush=True)
+            return 0
     else:
         print(f"  WARNING: filter not found — scraping unfiltered page", flush=True)
 
-    # 3. Wait for first card
-    if not wait_for_cards(page, timeout_ms=25000):
+    # 3. Confirm cards are present
+    if not wait_for_cards(page, timeout_ms=10000):
         print(f"  No products found — skipping category.", flush=True)
         return 0
 
@@ -404,8 +384,8 @@ def parse_args():
                    help="PostgreSQL connection URL (or set DATABASE_URL env var)")
     p.add_argument("--category", default=None,
                    help="Single category to scrape, e.g. 'FILTERS'")
-    p.add_argument("--delay", type=float, default=8.0,
-                   help="Seconds between pages (default 8)")
+    p.add_argument("--delay", type=float, default=10.0,
+                   help="Seconds between pages (default 10)")
     p.add_argument("--resume", action="store_true",
                    help="Skip already-completed pages")
     p.add_argument("--headless", action="store_true",
@@ -468,10 +448,6 @@ def main():
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-extensions",
-                "--disable-background-networking",
                 "--mute-audio",
             ],
         )
