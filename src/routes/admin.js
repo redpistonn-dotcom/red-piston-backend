@@ -806,6 +806,75 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
   } catch (err) { next(err); }
 });
 
+// GET /api/admin/autodukan/parts
+// Browse staging parts with search + brand/category filter + pagination.
+router.get('/autodukan/parts', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const limit    = Math.min(100, Math.max(1, parseInt(req.query.limit)  || 50));
+    const offset   = Math.max(0,               parseInt(req.query.offset) || 0);
+    const q        = (req.query.q        || '').trim();
+    const category = (req.query.category || '').trim();
+    const brand    = (req.query.brand    || '').trim();
+
+    // Build WHERE clauses dynamically
+    const conditions = [`source = 'autodukan'`];
+    const params     = [];
+    let   pIdx       = 1;
+
+    if (q) {
+      conditions.push(`(LOWER(name) LIKE $${pIdx} OR LOWER(part_number) LIKE $${pIdx} OR LOWER(brand) LIKE $${pIdx})`);
+      params.push(`%${q.toLowerCase()}%`);
+      pIdx++;
+    }
+    if (category) {
+      conditions.push(`LOWER(category) = $${pIdx}`);
+      params.push(category.toLowerCase());
+      pIdx++;
+    }
+    if (brand) {
+      conditions.push(`LOWER(brand) = $${pIdx}`);
+      params.push(brand.toLowerCase());
+      pIdx++;
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [partsRes, countRes] = await Promise.all([
+      prisma.$queryRawUnsafe(
+        `SELECT id, name, part_number, type, brand, category, price, mrp, image_url, scraped_at
+         FROM autodukan_parts_staging
+         ${where}
+         ORDER BY scraped_at DESC
+         LIMIT $${pIdx} OFFSET $${pIdx + 1}`,
+        ...params, limit, offset
+      ),
+      prisma.$queryRawUnsafe(
+        `SELECT COUNT(*)::int AS count FROM autodukan_parts_staging ${where}`,
+        ...params
+      ),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        parts: partsRes.map(r => ({
+          id:          r.id,
+          name:        r.name,
+          partNumber:  r.part_number,
+          type:        r.type,
+          brand:       r.brand,
+          category:    r.category,
+          price:       r.price ? Number(r.price) : null,
+          mrp:         r.mrp   ? Number(r.mrp)   : null,
+          imageUrl:    r.image_url,
+          scrapedAt:   r.scraped_at,
+        })),
+        total: countRes[0]?.count || 0,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
 // POST /api/admin/autodukan/import
 // Imports a batch of parts from autodukan_parts_staging into master_parts.
 // Body: { batchSize: 100–2000, categoryFilter?: "FILTERS" }
