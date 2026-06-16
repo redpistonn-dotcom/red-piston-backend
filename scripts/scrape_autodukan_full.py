@@ -519,7 +519,28 @@ def main():
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=args.headless,
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                # Required for running in containers/sandboxed environments
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                # Critical: use disk instead of /dev/shm (shared mem is tiny on Render free tier)
+                "--disable-dev-shm-usage",
+                # No GPU needed for scraping
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                # Reduce background work
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-sync",
+                "--no-first-run",
+                "--mute-audio",
+                # Reduce renderer memory
+                "--js-flags=--max-old-space-size=256",
+            ],
         )
         context = browser.new_context(
             user_agent=(
@@ -527,12 +548,13 @@ def main():
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
-            viewport={"width": 1280, "height": 900},
+            # Smaller viewport uses less memory than 1280x900
+            viewport={"width": 1024, "height": 768},
             locale="en-IN",
         )
-        # Block fonts and CSS to speed up loads (images loaded from card anyway)
+        # Block fonts, images (we only need text), and media to reduce memory/bandwidth
         context.route(
-            "**/*.{woff,woff2,ttf,eot,otf}",
+            "**/*.{woff,woff2,ttf,eot,otf,png,jpg,jpeg,gif,webp,svg,mp4,mp3,ogg}",
             lambda route: route.abort()
         )
 
