@@ -323,20 +323,25 @@ def scrape_subcategory(page, conn, category, delay_s, completed_pages, dry_run=F
 
     # ── Step 2: Click the subcategory filter ────────────────────────────────
     print(f"  Clicking filter: {category} ...", flush=True)
-    clicked = False
-    try:
-        # Use Playwright's built-in text selector — single IPC call, no span iteration
-        btn = page.get_by_role("listitem").filter(has_text=re.compile(f"^{re.escape(category)}$", re.IGNORECASE))
-        if btn.count() == 0:
-            # Fallback: any element whose exact text is the category name
-            btn = page.locator(f"text='{category}'").first
-        btn.first.click(timeout=8000)
-        clicked = True
-    except Exception as e:
-        print(f"  WARNING: could not click filter '{category}': {e}", flush=True)
+    # Use JS evaluate — single IPC call that searches the live DOM efficiently.
+    # Playwright locator-based approaches require knowing the exact element role/class
+    # which varies; JS can walk all leaf text nodes reliably.
+    clicked = page.evaluate("""
+        (cat) => {
+            const all = document.querySelectorAll('span, li, div, button, a');
+            for (const el of all) {
+                if (el.children.length === 0 &&
+                    el.textContent.trim().toUpperCase() === cat) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }
+    """, category.upper())
 
     if not clicked:
-        print(f"  WARNING: proceeding unfiltered", flush=True)
+        print(f"  WARNING: could not find filter '{category}' in DOM — scraping unfiltered", flush=True)
     else:
         print(f"  Filter clicked. Waiting for products to reload ...", flush=True)
         time.sleep(3)
