@@ -3,7 +3,7 @@ services:
     name: red-piston-backend
     runtime: node
     plan: free
-    buildCommand: npm install && npx prisma generate
+    buildCommand: npm install && npx prisma generate && pip install -r scripts/requirements_scraper.txt && python3 -m playwright install chromium --with-deps
     startCommand: npm start
     healthCheckPath: /health
     envVars:
