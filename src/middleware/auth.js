@@ -52,10 +52,12 @@ export const requireShopOwner = (req, res, next) => {
       error: { code: 'FORBIDDEN', message: 'Shop owner access required' },
     });
   }
-  if (slug === 'SHOP_OWNER' && !req.user.shopId) {
+  // Both SHOP_OWNER and PLATFORM_ADMIN need a non-null shopId to query shop-scoped data.
+  // Passing null to Prisma on a non-nullable Int field throws PrismaClientValidationError (500).
+  if (!req.shopId) {
     return res.status(403).json({
       success: false,
-      error: { code: 'FORBIDDEN', message: 'No shop associated with this account' },
+      error: { code: 'NO_SHOP', message: 'No shop associated with this account' },
     });
   }
   next();
