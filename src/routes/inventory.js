@@ -375,6 +375,7 @@ router.get('/low-stock', authenticate, requireShopOwner, async (req, res, next) 
       JOIN master_parts mp ON mp.master_part_id = si.master_part_id
       WHERE si.shop_id = ${req.shopId}
         AND si.stock_qty <= si.min_stock_alert
+        AND si.deleted_at IS NULL
       ORDER BY si.stock_qty ASC
     `;
 
@@ -412,6 +413,8 @@ router.get('/movements', authenticate, requireShopOwner, async (req, res, next) 
       const s = search.trim();
       where.OR = [
         { referenceNumber: { contains: s, mode: 'insensitive' } },
+        { invoiceNumber:   { contains: s, mode: 'insensitive' } },
+        { partyName:       { contains: s, mode: 'insensitive' } },
         { party:     { name: { contains: s, mode: 'insensitive' } } },
         { inventory: { customPartName: { contains: s, mode: 'insensitive' } } },
         { inventory: { masterPart: { partName: { contains: s, mode: 'insensitive' } } } },
