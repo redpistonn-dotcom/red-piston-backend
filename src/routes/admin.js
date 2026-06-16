@@ -1004,7 +1004,13 @@ router.post('/autodukan/scrape/start', authenticate, requireAdmin, async (req, r
 
     const child = spawn(pythonBin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH },
+      env: {
+        ...process.env,
+        PLAYWRIGHT_BROWSERS_PATH,
+        // Force Python to flush stdout immediately instead of buffering when piped.
+        // Without this, print() output never appears in the live log until process exits.
+        PYTHONUNBUFFERED: '1',
+      },
     });
 
     setScraperRunning(child.pid, category || 'ALL');

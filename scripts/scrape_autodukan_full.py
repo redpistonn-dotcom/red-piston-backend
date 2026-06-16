@@ -306,38 +306,39 @@ def scrape_subcategory(page, conn, category, delay_s, completed_pages, dry_run=F
     Scrape one subcategory end-to-end.
     Returns total number of products inserted for this category.
     """
-    print(f"\n{'='*62}")
-    print(f"  Subcategory: {category}")
-    print(f"{'='*62}")
+    print(f"\n{'='*62}", flush=True)
+    print(f"  Subcategory: {category}", flush=True)
+    print(f"{'='*62}", flush=True)
 
     # ── Step 1: Load the products listing page ──────────────────────────────
-    print(f"  Loading {BASE_URL} ...")
+    print(f"  Loading {BASE_URL} ...", flush=True)
     try:
         page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
-        print(f"  ERROR navigating to products page: {e}")
+        print(f"  ERROR navigating to products page: {e}", flush=True)
         return 0
 
     # Wait up to 12s for the page to hydrate (React needs to boot)
     time.sleep(5)
 
     # ── Step 2: Click the subcategory filter ────────────────────────────────
-    print(f"  Clicking filter: {category} ...")
+    print(f"  Clicking filter: {category} ...", flush=True)
     clicked = False
-    # Find the exact sidebar SPAN text element (MuiListItemText)
-    for el in page.locator("span").all():
-        try:
-            if el.inner_text().strip().upper() == category.upper():
-                el.click()
-                clicked = True
-                break
-        except Exception:
-            continue
+    try:
+        # Use Playwright's built-in text selector — single IPC call, no span iteration
+        btn = page.get_by_role("listitem").filter(has_text=re.compile(f"^{re.escape(category)}$", re.IGNORECASE))
+        if btn.count() == 0:
+            # Fallback: any element whose exact text is the category name
+            btn = page.locator(f"text='{category}'").first
+        btn.first.click(timeout=8000)
+        clicked = True
+    except Exception as e:
+        print(f"  WARNING: could not click filter '{category}': {e}", flush=True)
 
     if not clicked:
-        print(f"  WARNING: could not click filter '{category}' — will scrape unfiltered products")
+        print(f"  WARNING: proceeding unfiltered", flush=True)
     else:
-        print(f"  Filter clicked. Waiting for products to reload ...")
+        print(f"  Filter clicked. Waiting for products to reload ...", flush=True)
         time.sleep(3)
 
     # ── Step 3: Wait for first card ─────────────────────────────────────────
@@ -508,13 +509,13 @@ def main():
 
     setup_db(conn)
 
-    print(f"\nautodukan.com Full Catalog Scraper")
-    print(f"  Categories to scrape : {len(categories)}")
-    print(f"  Delay between pages  : {args.delay}s")
-    print(f"  Resume mode          : {'yes' if args.resume else 'no'}")
-    print(f"  Dry-run              : {'yes' if args.dry_run else 'no'}")
-    print(f"  Browser              : {'headless' if args.headless else 'visible (you can monitor)'}")
-    print()
+    print(f"\nautodukan.com Full Catalog Scraper", flush=True)
+    print(f"  Categories to scrape : {len(categories)}", flush=True)
+    print(f"  Delay between pages  : {args.delay}s", flush=True)
+    print(f"  Resume mode          : {'yes' if args.resume else 'no'}", flush=True)
+    print(f"  Dry-run              : {'yes' if args.dry_run else 'no'}", flush=True)
+    print(f"  Browser              : {'headless' if args.headless else 'visible (you can monitor)'}", flush=True)
+    print(flush=True)
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
