@@ -1,0 +1,6 @@
+# Python dependencies for the autodukan.com full-catalog scraper
+# Install with:  pip install -r scripts/requirements_scraper.txt
+# Then run:      playwright install chromium
+
+playwright>=1.44.0
+psycopg2-binary>=2.9.9

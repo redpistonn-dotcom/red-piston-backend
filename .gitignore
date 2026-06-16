@@ -33,3 +33,7 @@ Thumbs.db
 *.tgz
 repomix-output.xml
 
+# Scraper output — generated data, not source
+scripts/autodukan-enriched.json
+scripts/autodukan_checkpoint.json
+

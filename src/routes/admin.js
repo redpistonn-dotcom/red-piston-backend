@@ -1,9 +1,21 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
+import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import prisma from '../db/prisma.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { formatUserResponse } from './auth/helpers.js';
 import { sendShopOwnerApprovedEmail, sendShopOwnerRejectedEmail } from '../services/email.js';
+import {
+  getScraperState, setScraperRunning, setScraperStopped,
+  appendScraperLog, setScraperError,
+} from '../lib/scraper-state.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// Path to the Python scraper script (two levels up from src/routes → project root → scripts/)
+const SCRAPER_SCRIPT = resolve(__dirname, '../../scripts/scrape_autodukan_full.py');
 
 const router = Router();
 
@@ -601,6 +613,428 @@ router.patch('/catalog/parts/:id/reject', authenticate, requireAdmin, async (req
       data: { status: 'INACTIVE' },
     });
     res.json({ success: true, part });
+  } catch (err) { next(err); }
+});
+
+// ─── Autodukan Staging Import ─────────────────────────────────────────────────
+// Controlled import from autodukan_parts_staging → master_parts
+// Rate limit: 3 imports per UTC day, minimum 2 hours between each import
+
+const AUTODUKAN_MAX_PER_DAY = 3;
+const AUTODUKAN_MIN_HOURS_BETWEEN = 2;
+
+const ALL_AUTODUKAN_CATEGORIES = [
+  'AIR CONDITIONING','BELT & CHAIN DRIVE','BODY PARTS','BRAKE SYSTEM',
+  'CAR ACCESSORIES','CAR CARE','CLUTCH SYSTEM','COOLING SYSTEM',
+  'ELECTRICAL','ENGINE PARTS','EXHAUST SYSTEM','FASTENERS',
+  'FILTERS','FUEL SYSTEM','GASKET & SEALS','HYBRID & ELECTRIC DRIVE',
+  'INTERIORS COMFORT & SAFETY','LIGHTING','OILS & FLUIDS','SERVICE KIT',
+  'STEERING','SUSPENSION','TRANSMISSION','WHEELS & TYRE',
+  'WINDSCREEN CLEANING SYSTEM',
+];
+
+async function ensureImportLogTable() {
+  await prisma.$executeRaw`
+    CREATE TABLE IF NOT EXISTS autodukan_import_log (
+      id            SERIAL PRIMARY KEY,
+      admin_id      INTEGER NOT NULL,
+      admin_email   TEXT,
+      batch_size    INTEGER NOT NULL,
+      category_filter TEXT,
+      inserted_count INTEGER NOT NULL DEFAULT 0,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+}
+
+// GET /api/admin/autodukan/stats
+// Returns staging totals, import progress, today's usage and rate-limit state.
+router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    await ensureImportLogTable();
+
+    const [stagingRes, masterRes, todayRes, lastImportRes, recentLogs, recentImports] = await Promise.all([
+      // Total products scraped into staging
+      prisma.$queryRaw`SELECT COUNT(*)::int AS count FROM autodukan_parts_staging`.catch(() => [{ count: 0 }]),
+
+      // How many staging part_numbers already exist in master_parts
+      prisma.$queryRaw`
+        SELECT COUNT(*)::int AS count
+        FROM autodukan_parts_staging s
+        JOIN master_parts mp ON mp.primary_oem_number = s.part_number
+      `.catch(() => [{ count: 0 }]),
+
+      // How many imports done today (UTC day)
+      prisma.$queryRaw`
+        SELECT COUNT(*)::int AS count
+        FROM autodukan_import_log
+        WHERE created_at >= date_trunc('day', NOW())
+      `,
+
+      // When was the last import (for min-hours check)
+      prisma.$queryRaw`
+        SELECT created_at FROM autodukan_import_log ORDER BY created_at DESC LIMIT 1
+      `,
+
+      // Last 10 import log entries for display
+      prisma.$queryRaw`
+        SELECT id, admin_email, batch_size, category_filter, inserted_count, created_at
+        FROM autodukan_import_log
+        ORDER BY created_at DESC
+        LIMIT 10
+      `,
+
+      // Last 30 parts added to master from autodukan (for "recently added" section)
+      prisma.$queryRaw`
+        SELECT master_part_id, part_name, brand, category_l1, part_type, primary_oem_number, status, created_at
+        FROM master_parts
+        WHERE source = 'SUPPLIER_IMPORT'
+        ORDER BY created_at DESC
+        LIMIT 30
+      `.catch(() => []),
+    ]);
+
+    const stagingTotal   = stagingRes[0]?.count  || 0;
+    const alreadyInMaster = masterRes[0]?.count  || 0;
+    const todayCount     = todayRes[0]?.count     || 0;
+    const remaining      = Math.max(0, stagingTotal - alreadyInMaster);
+    const importsLeft    = Math.max(0, AUTODUKAN_MAX_PER_DAY - todayCount);
+
+    // Earliest next import time (cooldown)
+    let nextAvailableAt = null;
+    if (lastImportRes.length > 0) {
+      const cooldownEnds = new Date(
+        new Date(lastImportRes[0].created_at).getTime() +
+        AUTODUKAN_MIN_HOURS_BETWEEN * 60 * 60 * 1000
+      );
+      if (cooldownEnds > new Date()) nextAvailableAt = cooldownEnds.toISOString();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        stagingTotal,
+        alreadyInMaster,
+        remaining,
+        todayCount,
+        maxPerDay:       AUTODUKAN_MAX_PER_DAY,
+        importsLeft,
+        nextAvailableAt,
+        categories:      ALL_AUTODUKAN_CATEGORIES,
+        recentLogs:      recentLogs.map(r => ({
+          id:             r.id,
+          adminEmail:     r.admin_email,
+          batchSize:      r.batch_size,
+          categoryFilter: r.category_filter,
+          insertedCount:  r.inserted_count,
+          createdAt:      r.created_at,
+        })),
+        recentImports: recentImports.map(r => ({
+          id:             r.master_part_id,
+          partName:       r.part_name,
+          brand:          r.brand,
+          category:       r.category_l1,
+          partType:       r.part_type,
+          oemNumber:      r.primary_oem_number,
+          status:         r.status,
+          addedAt:        r.created_at,
+        })),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/autodukan/import
+// Imports a batch of parts from autodukan_parts_staging into master_parts.
+// Body: { batchSize: 100–2000, categoryFilter?: "FILTERS" }
+router.post('/autodukan/import', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    await ensureImportLogTable();
+
+    const { batchSize = 500, categoryFilter = null } = req.body;
+    const size = Math.min(2000, Math.max(1, parseInt(batchSize) || 500));
+
+    // ── Rate limit: max 3 per UTC day ──────────────────────────────────────
+    const todayRes = await prisma.$queryRaw`
+      SELECT COUNT(*)::int AS count
+      FROM autodukan_import_log
+      WHERE created_at >= date_trunc('day', NOW())
+    `;
+    if ((todayRes[0]?.count || 0) >= AUTODUKAN_MAX_PER_DAY) {
+      return res.status(429).json({
+        success: false,
+        error: {
+          code: 'DAILY_LIMIT',
+          message: `Limit of ${AUTODUKAN_MAX_PER_DAY} imports per day reached. Try again tomorrow.`,
+        },
+      });
+    }
+
+    // ── Rate limit: min 2 hours between imports ────────────────────────────
+    const lastRes = await prisma.$queryRaw`
+      SELECT created_at FROM autodukan_import_log ORDER BY created_at DESC LIMIT 1
+    `;
+    if (lastRes.length > 0) {
+      const elapsed = Date.now() - new Date(lastRes[0].created_at).getTime();
+      const minMs   = AUTODUKAN_MIN_HOURS_BETWEEN * 60 * 60 * 1000;
+      if (elapsed < minMs) {
+        const waitMin = Math.ceil((minMs - elapsed) / 60000);
+        const cooldownEnds = new Date(new Date(lastRes[0].created_at).getTime() + minMs);
+        return res.status(429).json({
+          success: false,
+          error: {
+            code: 'COOLDOWN',
+            message: `Please wait ${waitMin} more minute${waitMin !== 1 ? 's' : ''} before the next import.`,
+            nextAvailableAt: cooldownEnds.toISOString(),
+          },
+        });
+      }
+    }
+
+    // ── Fetch unimported rows from staging ─────────────────────────────────
+    const where = categoryFilter
+      ? `AND s.category = ${categoryFilter.replace(/'/g, "''")}`
+      : '';
+
+    const rows = await prisma.$queryRawUnsafe(`
+      SELECT s.id, s.name, s.part_number, s.type, s.brand, s.category, s.image_url
+      FROM autodukan_parts_staging s
+      LEFT JOIN master_parts mp ON mp.primary_oem_number = s.part_number
+      WHERE s.part_number IS NOT NULL
+        AND s.part_number <> ''
+        AND mp.master_part_id IS NULL
+        ${categoryFilter ? `AND s.category = '${categoryFilter.replace(/'/g, "''")}'` : ''}
+      ORDER BY s.id
+      LIMIT ${size}
+    `);
+
+    if (!rows.length) {
+      return res.json({
+        success: true,
+        data: { inserted: 0, message: 'No new parts to import (staging is empty or all already imported).' },
+      });
+    }
+
+    // ── Map to MasterPart shape ────────────────────────────────────────────
+    const parts = rows
+      .filter(r => r.part_number?.trim())
+      .map(r => ({
+        partName:         (r.name || r.part_number).trim().substring(0, 500),
+        brand:            (r.brand || 'UNKNOWN').trim().substring(0, 100),
+        primaryOemNumber: r.part_number.trim(),
+        oemNumbers:       [r.part_number.trim()],
+        categoryL1:       (r.category || 'General').trim(),
+        partType:         (r.type || '').toLowerCase().includes('oes') ? 'OES' : 'OEM',
+        imageUrl:         r.image_url || null,
+        status:           'PENDING',
+        source:           'SUPPLIER_IMPORT',
+        unitOfSale:       'Piece',
+        gstRate:          18,
+        isUniversal:      false,
+        requiresFitment:  true,
+      }));
+
+    const result = await prisma.masterPart.createMany({
+      data: parts,
+      skipDuplicates: true,
+    });
+
+    // Fetch the just-inserted parts for frontend preview (up to 50)
+    const oemNumbers = parts.map(p => p.primaryOemNumber);
+    const previewParts = await prisma.$queryRaw`
+      SELECT master_part_id, part_name, brand, category_l1, part_type, primary_oem_number, status, created_at
+      FROM master_parts
+      WHERE source = 'SUPPLIER_IMPORT'
+        AND primary_oem_number = ANY(${oemNumbers})
+      ORDER BY created_at DESC
+      LIMIT 50
+    `.catch(() => []);
+
+    // ── Log the import ─────────────────────────────────────────────────────
+    await prisma.$executeRaw`
+      INSERT INTO autodukan_import_log (admin_id, admin_email, batch_size, category_filter, inserted_count)
+      VALUES (${req.user.userId}, ${req.user.email}, ${size}, ${categoryFilter || null}, ${result.count})
+    `;
+
+    await writeAudit(req, {
+      entityType: ET.MASTER_PART,
+      action:     ACT.CREATE,
+      entityId:   null,
+      metadata:   { source: 'autodukan_import', inserted: result.count, batchSize: size, categoryFilter },
+    }).catch(() => {});
+
+    res.json({
+      success: true,
+      data: {
+        inserted:       result.count,
+        attempted:      parts.length,
+        batchSize:      size,
+        categoryFilter: categoryFilter || null,
+        message:        `Imported ${result.count} new parts into master catalog.`,
+        previewParts:   previewParts.map(r => ({
+          id:        r.master_part_id,
+          partName:  r.part_name,
+          brand:     r.brand,
+          category:  r.category_l1,
+          partType:  r.part_type,
+          oemNumber: r.primary_oem_number,
+          status:    r.status,
+          addedAt:   r.created_at,
+        })),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── Autodukan Scraper — Monitor + Control ────────────────────────────────────
+
+// GET /api/admin/autodukan/monitor
+// Returns live scraper state + per-category progress from DB.
+router.get('/autodukan/monitor', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const [catRows, lastActivityRow, stagingRow, brandRows] = await Promise.all([
+      // Pages completed per category
+      prisma.$queryRaw`
+        SELECT category,
+               COUNT(*)::int                     AS pages_done,
+               COALESCE(SUM(products_count),0)::int AS products_scraped,
+               MAX(completed_at)                 AS last_page_at
+        FROM   autodukan_scrape_progress
+        GROUP  BY category
+        ORDER  BY category
+      `.catch(() => []),
+
+      // Most recent page saved (tells us if scraper is active)
+      prisma.$queryRaw`
+        SELECT MAX(completed_at) AS last_at
+        FROM   autodukan_scrape_progress
+      `.catch(() => [{}]),
+
+      // Total rows in staging
+      prisma.$queryRaw`
+        SELECT COUNT(*)::int AS total FROM autodukan_parts_staging
+      `.catch(() => [{ total: 0 }]),
+
+      // Top 10 brands in staging (gives a feel for what's been scraped)
+      prisma.$queryRaw`
+        SELECT brand, COUNT(*)::int AS cnt
+        FROM   autodukan_parts_staging
+        WHERE  brand IS NOT NULL AND brand <> ''
+        GROUP  BY brand
+        ORDER  BY cnt DESC
+        LIMIT  10
+      `.catch(() => []),
+    ]);
+
+    const runtime = getScraperState();
+    const lastAt  = lastActivityRow[0]?.last_at || null;
+    // "Active" = either in-memory says running OR a page was saved in the last 30s
+    const recentSec = lastAt ? (Date.now() - new Date(lastAt).getTime()) / 1000 : Infinity;
+    const active = runtime.running || recentSec < 30;
+
+    res.json({
+      success: true,
+      data: {
+        runtime: {
+          running:         runtime.running,
+          pid:             runtime.pid,
+          startedAt:       runtime.startedAt,
+          stoppedAt:       runtime.stoppedAt,
+          currentCategory: runtime.currentCategory,
+          currentPage:     runtime.currentPage,
+          exitCode:        runtime.exitCode,
+          error:           runtime.error,
+          logs:            runtime.logs.slice(-30),
+          active,
+          lastActivityAt:  lastAt,
+          secondsSinceLastPage: lastAt ? Math.round(recentSec) : null,
+        },
+        stagingTotal: stagingRow[0]?.total || 0,
+        catProgress:  catRows,
+        topBrands:    brandRows,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/autodukan/scrape/start
+// Spawns the Python scraper as a child process.
+// Requires Python 3 + playwright installed on the same server.
+// Body: { category?: "FILTERS", delay?: 10, headless?: true }
+router.post('/autodukan/scrape/start', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const runtime = getScraperState();
+    if (runtime.running) {
+      return res.status(409).json({ success: false, error: { code: 'ALREADY_RUNNING', message: 'Scraper is already running.' } });
+    }
+
+    if (!existsSync(SCRAPER_SCRIPT)) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SCRIPT_NOT_FOUND', message: `Python script not found at ${SCRAPER_SCRIPT}` },
+      });
+    }
+
+    const { category = null, delay = 10, headless = true } = req.body;
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) {
+      return res.status(500).json({ success: false, error: { code: 'NO_DB_URL', message: 'DATABASE_URL env var not set on server.' } });
+    }
+
+    // Build args
+    const args = [SCRAPER_SCRIPT, '--db-url', dbUrl, `--delay=${delay}`, '--resume'];
+    if (category) args.push(`--category=${category}`);
+    if (headless) args.push('--headless');
+
+    // Try python3 first, fall back to python
+    const pythonBin = process.platform === 'win32' ? 'python' : 'python3';
+    const child = spawn(pythonBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    setScraperRunning(child.pid, category || 'ALL');
+    appendScraperLog(`Started PID ${child.pid}: ${pythonBin} ${args.slice(1).join(' ')}`);
+
+    child.stdout.on('data', (chunk) => {
+      chunk.toString().split('\n').filter(Boolean).forEach(appendScraperLog);
+    });
+    child.stderr.on('data', (chunk) => {
+      chunk.toString().split('\n').filter(Boolean).forEach(line => {
+        appendScraperLog(`[ERR] ${line}`);
+        setScraperError(line);
+      });
+    });
+    child.on('close', (code) => {
+      setScraperStopped(code);
+      appendScraperLog(`Process exited with code ${code}`);
+    });
+    child.on('error', (err) => {
+      setScraperStopped(-1);
+      setScraperError(err.message);
+      appendScraperLog(`Spawn error: ${err.message}`);
+    });
+
+    res.json({
+      success: true,
+      data: { pid: child.pid, message: `Scraper started (PID ${child.pid})`, category: category || 'ALL', delay, headless },
+    });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/autodukan/scrape/stop
+// Sends SIGTERM to the running scraper process.
+router.post('/autodukan/scrape/stop', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const runtime = getScraperState();
+    if (!runtime.running || !runtime.pid) {
+      return res.status(400).json({ success: false, error: { code: 'NOT_RUNNING', message: 'No scraper is currently running.' } });
+    }
+    try {
+      process.kill(runtime.pid, 'SIGTERM');
+      appendScraperLog(`SIGTERM sent to PID ${runtime.pid} by admin ${req.user.email}`);
+    } catch (e) {
+      // PID may already be gone
+      setScraperStopped(-1);
+    }
+    res.json({ success: true, data: { message: `Stop signal sent to PID ${runtime.pid}` } });
   } catch (err) { next(err); }
 });
 
