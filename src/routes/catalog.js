@@ -425,8 +425,6 @@ router.post('/contribute', authenticate, async (req, res, next) => {
     const cleanBarcodes = Array.isArray(barcodes) ? [...new Set(barcodes.filter(Boolean))] : [];
     const cleanImages   = Array.isArray(images)   ? images.filter(Boolean) : [];
 
-    const shopId = req.user?.shopId || null;
-
     const part = await prisma.masterPart.create({
       data: {
         partName:            partName.trim(),
