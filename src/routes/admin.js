@@ -653,15 +653,16 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
   try {
     await ensureImportLogTable();
 
-    const [stagingRes, masterRes, todayRes, lastImportRes, recentLogs, recentImports, brandStats, categoryStats] = await Promise.all([
-      // Total products scraped into staging
-      prisma.$queryRaw`SELECT COUNT(*)::int AS count FROM autodukan_parts_staging`.catch(() => [{ count: 0 }]),
+    const [stagingRes, masterRes, todayRes, lastImportRes, recentLogs, recentImports, brandStats, categoryStats, scrapeProgress] = await Promise.all([
+      // Total products scraped into staging (source = autodukan only)
+      prisma.$queryRaw`SELECT COUNT(*)::int AS count FROM autodukan_parts_staging WHERE source = 'autodukan'`.catch(() => [{ count: 0 }]),
 
       // How many staging part_numbers already exist in master_parts
       prisma.$queryRaw`
         SELECT COUNT(*)::int AS count
         FROM autodukan_parts_staging s
         JOIN master_parts mp ON mp.primary_oem_number = s.part_number
+        WHERE s.source = 'autodukan'
       `.catch(() => [{ count: 0 }]),
 
       // How many imports done today (UTC day)
@@ -684,7 +685,7 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
         LIMIT 10
       `,
 
-      // Last 30 parts added to master from autodukan (for "recently added" section)
+      // Last 30 parts added to master from autodukan
       prisma.$queryRaw`
         SELECT master_part_id, part_name, brand, category_l1, part_type, primary_oem_number, status, created_at
         FROM master_parts
@@ -693,7 +694,7 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
         LIMIT 30
       `.catch(() => []),
 
-      // OEM brand breakdown — total + OEM vs OES split
+      // OEM brand breakdown — source-filtered
       prisma.$queryRaw`
         SELECT
           COALESCE(NULLIF(TRIM(brand), ''), 'Unknown') AS brand,
@@ -702,12 +703,13 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
           COUNT(CASE WHEN LOWER(type) NOT LIKE '%oes%' OR type IS NULL THEN 1 END)::int AS oem_count,
           COUNT(DISTINCT category)::int AS category_count
         FROM autodukan_parts_staging
+        WHERE source = 'autodukan'
         GROUP BY COALESCE(NULLIF(TRIM(brand), ''), 'Unknown')
         ORDER BY COUNT(*) DESC
         LIMIT 50
       `.catch(() => []),
 
-      // Category breakdown — total + OEM vs OES split
+      // Category breakdown — source-filtered
       prisma.$queryRaw`
         SELECT
           COALESCE(NULLIF(TRIM(category), ''), 'Uncategorised') AS category,
@@ -715,8 +717,22 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
           COUNT(CASE WHEN LOWER(type) LIKE '%oes%' THEN 1 END)::int AS oes_count,
           COUNT(CASE WHEN LOWER(type) NOT LIKE '%oes%' OR type IS NULL THEN 1 END)::int AS oem_count
         FROM autodukan_parts_staging
+        WHERE source = 'autodukan'
         GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'Uncategorised')
         ORDER BY COUNT(*) DESC
+      `.catch(() => []),
+
+      // Per-category scrape progress (page_num > 0 = real pages; page_num = 0 = category fully done)
+      prisma.$queryRaw`
+        SELECT
+          category,
+          COUNT(CASE WHEN page_num > 0 THEN 1 END)::int AS pages_done,
+          SUM(CASE WHEN page_num > 0 THEN products_count ELSE 0 END)::int AS products_scraped,
+          MAX(completed_at) AS last_scraped_at,
+          BOOL_OR(page_num = 0) AS fully_done
+        FROM autodukan_scrape_progress
+        GROUP BY category
+        ORDER BY category
       `.catch(() => []),
     ]);
 
@@ -777,6 +793,13 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
           total:    r.total,
           oemCount: r.oem_count,
           oesCount: r.oes_count,
+        })),
+        scrapeProgress: scrapeProgress.map(r => ({
+          category:       r.category,
+          pagesDone:      r.pages_done,
+          productsScraped: r.products_scraped,
+          lastScrapedAt:  r.last_scraped_at,
+          fullyDone:      r.fully_done,
         })),
       },
     });

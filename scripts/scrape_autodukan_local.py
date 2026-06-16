@@ -139,10 +139,31 @@ def setup_db(conn):
 def get_completed_pages(conn, category):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT page_num FROM autodukan_scrape_progress WHERE category = %s",
+            "SELECT page_num FROM autodukan_scrape_progress WHERE category = %s AND page_num > 0",
             (category,)
         )
         return {row[0] for row in cur.fetchall()}
+
+
+def is_category_done(conn, category):
+    """Returns True if this category was fully scraped in a previous run."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM autodukan_scrape_progress WHERE category = %s AND page_num = 0",
+            (category,)
+        )
+        return cur.fetchone() is not None
+
+
+def mark_category_done(conn, category):
+    """Record that this category is 100% complete so future --resume runs skip it."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO autodukan_scrape_progress (category, page_num, products_count) "
+            "VALUES (%s, 0, -1) ON CONFLICT (category, page_num) DO NOTHING",
+            (category,)
+        )
+    conn.commit()
 
 
 def mark_page_done(conn, category, page_num, count):
@@ -354,10 +375,12 @@ def scrape_category(page, conn, category, delay_s, resume):
         # Last page?
         if cur_pg and tot_pg and tot_pg > 0 and cur_pg >= tot_pg:
             print(f"  Reached last page. Done with '{category}'.", flush=True)
+            mark_category_done(conn, category)
             break
 
         if not click_next(page):
             print(f"  NEXT button gone — done with '{category}'.", flush=True)
+            mark_category_done(conn, category)
             break
 
         page_num += 1
@@ -466,13 +489,18 @@ def main():
         page = context.new_page()
 
         for i, category in enumerate(categories, 1):
+            # Skip fully-finished categories immediately — no browser needed
+            if args.resume and is_category_done(conn, category):
+                print(f"\n[{i}/{len(categories)}] '{category}' — already fully scraped. Skipping.", flush=True)
+                continue
+
             print(f"\n[{i}/{len(categories)}] Starting '{category}' ...", flush=True)
             try:
                 n = scrape_category(page, conn, category, args.delay, args.resume)
                 session_total += n
                 print(f"  Category done. {n} products inserted.", flush=True)
             except KeyboardInterrupt:
-                print("\nInterrupted by user. Progress saved — run with --resume to continue.")
+                print("\nInterrupted by user. Progress saved — run with --resume to continue.", flush=True)
                 break
             except Exception as e:
                 print(f"  ERROR in category '{category}': {e}", flush=True)

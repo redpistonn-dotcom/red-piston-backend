@@ -64,8 +64,9 @@ export const requireShopOwner = (req, res, next) => {
 };
 
 export const requireAdmin = (req, res, next) => {
-  const slug = req.user.userType?.slug || req.user.role;
-  if (slug !== 'PLATFORM_ADMIN') {
+  const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();
+  const isAdmin = slug === 'PLATFORM_ADMIN' || slug === 'ADMIN';
+  if (!isAdmin) {
     return res.status(403).json({
       success: false,
       error: { code: 'FORBIDDEN', message: 'Admin access required' },
