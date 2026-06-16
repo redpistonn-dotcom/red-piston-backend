@@ -976,10 +976,12 @@ router.post('/autodukan/scrape/start', authenticate, requireAdmin, async (req, r
     }
 
     const { category = null, delay = 10, headless = true } = req.body;
-    const dbUrl = process.env.DATABASE_URL;
-    if (!dbUrl) {
+    const rawDbUrl = process.env.DATABASE_URL;
+    if (!rawDbUrl) {
       return res.status(500).json({ success: false, error: { code: 'NO_DB_URL', message: 'DATABASE_URL env var not set on server.' } });
     }
+    // psycopg2 rejects Supabase's pgbouncer=true query param — strip it before passing to Python.
+    const dbUrl = rawDbUrl.replace(/([?&])pgbouncer=true/i, '$1').replace(/[?&]$/, '');
 
     // Build args
     const args = [SCRAPER_SCRIPT, '--db-url', dbUrl, `--delay=${delay}`, '--resume'];

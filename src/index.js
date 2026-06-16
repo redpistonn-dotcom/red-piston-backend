@@ -31,6 +31,10 @@ import { authLimiter } from './middleware/rateLimiter.js';
 import { startCleanupJob } from './lib/cleanup.js';
 
 const app = express();
+// Render (and most cloud platforms) sit behind a reverse proxy.
+// Without this, express-rate-limit reads X-Forwarded-For as an untrusted header
+// and throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 // ── Security headers (helmet) ─────────────────────────────────────────────────
