@@ -988,8 +988,12 @@ router.post('/autodukan/scrape/start', authenticate, requireAdmin, async (req, r
     if (category) args.push(`--category=${category}`);
     if (headless) args.push('--headless');
 
-    // Try python3 first, fall back to python
-    const pythonBin = process.platform === 'win32' ? 'python' : 'python3';
+    // On Render, pip packages land in a virtualenv; use its Python so Playwright is importable.
+    // Fall back to plain python3 for local dev (where there's no venv at that path).
+    const RENDER_VENV_PYTHON = '/opt/render/project/src/.venv/bin/python3';
+    const pythonBin = process.platform === 'win32'
+      ? 'python'
+      : (existsSync(RENDER_VENV_PYTHON) ? RENDER_VENV_PYTHON : 'python3');
     const child = spawn(pythonBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
     setScraperRunning(child.pid, category || 'ALL');
