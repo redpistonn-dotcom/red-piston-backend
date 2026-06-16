@@ -245,13 +245,23 @@ export async function parseGenericInvoice(buffer) {
     if (!result.supplierGstin) { const g = text.match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/i); if (g) result.supplierGstin = g[0].toUpperCase(); }
     if (!result.invoiceDate) { const d = text.match(/\b(\d{1,2}[-/.](?:\d{1,2}|[A-Za-z]{3,9})[-/.]\d{2,4})\b/); if (d) result.invoiceDate = d[1]; }
     if (!result.invoiceNumber) {
-      const m = text.match(/(?:invoice|bill|inv)\.?\s*(?:no|number|num|#)?\.?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9/-]{1,30})/i);
-      if (m && !/^\d{1,2}[-/.]/.test(m[1]) && !/^date$/i.test(m[1])) result.invoiceNumber = m[1].trim();
+      // Require a qualifier (No, No., #, number, num) so we don't match the bare word
+      // "INVOICE" in document headers like "TAX INVOICE" and capture "OICE" as the number.
+      const m = text.match(/(?:invoice|bill|inv)\b\.?\s*(?:no\.?\s*|number\s*|num\.?\s*|#\s*)[:#-]?\s*([A-Za-z0-9][A-Za-z0-9/-]{1,30})/i);
+      if (m && !/^\d{1,2}[-/.]/.test(m[1]) && !/^(date|number|no|num)\b/i.test(m[1])) result.invoiceNumber = m[1].trim();
+      // Fallback: "Invoice : ABC123" style (colon immediately after keyword)
+      if (!result.invoiceNumber) {
+        const m2 = text.match(/(?:invoice|bill)\b\s*:\s*([A-Za-z0-9][A-Za-z0-9/-]{2,30})/i);
+        if (m2 && !/^(date|gst|gstin)\b/i.test(m2[1])) result.invoiceNumber = m2[1].trim();
+      }
     }
   }
   for (const row of flat.slice(0, 12)) {
     const t = row.cells.map((c) => c.str).join(' ').trim();
-    if (/[A-Za-z]{3,}/.test(t) && !/^(tax\s*invoice|invoice|gstin|original|duplicate|triplicate|proforma|bill\s*of|credit\s*note|debit\s*note)\b/i.test(t) && t.length <= 60) {
+    // Exclude document-type headers (any line containing "invoice", lines ending with "invoice",
+    // GSTIN labels, and standard copy/format labels).
+    const isDocHeader = /(?:(?:tax|gst)\s+invoice|\binvoice\b|\bbill\s+of\b|gstin|original\s+copy|duplicate|triplicate|proforma|credit\s+note|debit\s+note)/i.test(t);
+    if (/[A-Za-z]{3,}/.test(t) && !isDocHeader && t.length <= 60) {
       result.supplierName = t.replace(/\s{2,}/g, ' '); break;
     }
   }
@@ -310,7 +320,9 @@ export async function parseGenericInvoice(buffer) {
           continue;
         }
         const rateExclGst = rate;
-        const rateInclGst = null; // generic invoices rarely have a separate incl-GST column
+        // Derive incl-GST rate using 18% (most common for auto parts) when no
+        // separate column exists — the review UI lets the owner adjust before saving.
+        const rateInclGst = rateExclGst != null ? +(rateExclGst * 1.18).toFixed(2) : null;
         result.items.push({ serial: ++serial, partName: name, hsnCode: hsn, qty: qty ?? 1, unit: null, rateExclGst, rateInclGst, discountPct: 0, amount });
       }
     }
@@ -323,7 +335,12 @@ export async function parseGenericInvoice(buffer) {
     for (const row of flat) { const t = row.cells.map((c) => c.str).join(' '); if (re.test(t)) for (const c of row.cells) { const s = c.str.trim(); if (/^[\d,]+\.\d{2}$/.test(s)) vals.push(num(s)); } }
     return vals;
   };
-  const grandVals = labelMoney(/\b(grand\s*total|total\s*amount|invoice\s*total|amount\s*payable|net\s*payable|bill\s*total)\b/i);
+  const grandVals = labelMoney(/\b(grand\s*total|total\s*amount|invoice\s*total|amount\s*payable|net\s*payable|bill\s*total|net\s*total|final\s*total|total\s*invoice\s*value|invoice\s*value)\b/i);
+  // Fallback: last row containing "total" — its largest money value is the grand total.
+  if (!grandVals.length) {
+    const allTotalVals = labelMoney(/\btotal\b/i);
+    if (allTotalVals.length) grandVals.push(Math.max(...allTotalVals));
+  }
   if (grandVals.length) result.grandTotal = Math.max(...grandVals);
   const taxableVals = labelMoney(/\b(taxable|sub\s*total|subtotal|total\s*value|total\s*before\s*tax)\b/i);
   const taxMatch = taxableVals.find((v) => Math.abs(v - result.sumOfItems) <= 1.0);
