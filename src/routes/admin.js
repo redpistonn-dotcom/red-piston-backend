@@ -811,7 +811,7 @@ router.post('/autodukan/import', authenticate, requireAdmin, async (req, res, ne
     if (!rows.length) {
       return res.json({
         success: true,
-        data: { inserted: 0, message: 'No new parts to import (staging is empty or all already imported).' },
+        data: { inserted: 0, attempted: 0, message: 'No new parts to import (staging is empty or all already imported).' },
       });
     }
 
