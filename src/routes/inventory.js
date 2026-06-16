@@ -20,7 +20,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
     const shopId = req.shopId;
 
     const inventory = await prisma.shopInventory.findMany({
-      where:    { shopId },
+      where:    { shopId, deletedAt: null },
       include:  {
         masterPart: {
           select: {
@@ -272,7 +272,7 @@ router.get('/:id/movements', authenticate, requireShopOwner, async (req, res, ne
 // POST /api/shop/inventory/purchase
 router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const { inventoryId, partyId, notes, referenceNumber, gstRate } = req.body;
+    const { inventoryId, partyId, notes, referenceNumber, gstRate, invoiceNo, payment, supplier } = req.body;
     const unitPrice      = req.body.unitPrice      ?? req.body.buyingPrice ?? null;
     const newSellingPrice = req.body.newSellingPrice ?? null;
     const qty = parseInt(req.body.qty);
@@ -294,6 +294,13 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
     const totalAmount = taxableAmt ? taxableAmt + (gstAmt || 0) : null;
 
     await prisma.$transaction(async (tx) => {
+      // Resolve party name for denormalized display (best-effort inside transaction)
+      let purchasePartyName = supplier || null;
+      if (partyId && !purchasePartyName) {
+        const p = await tx.party.findUnique({ where: { partyId: parseInt(partyId) }, select: { name: true } });
+        purchasePartyName = p?.name || null;
+      }
+
       await tx.movement.create({
         data: {
           shopId:          req.shopId,
@@ -305,8 +312,11 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
           taxableAmount:   taxableAmt,
           gstAmount:       gstAmt,
           totalAmount,
-          partyId:         partyId         || null,
-          referenceNumber: referenceNumber || null,
+          partyId:         partyId         ? parseInt(partyId) : null,
+          referenceNumber: referenceNumber || invoiceNo || null,
+          invoiceNumber:   invoiceNo       || referenceNumber  || null,
+          partyName:       purchasePartyName,
+          paymentMode:     payment         || null,
           notes:           notes           || null,
           createdBy:       req.user.userId,
         },
@@ -682,18 +692,10 @@ router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => 
     const item = await prisma.shopInventory.findUnique({ where: { inventoryId } });
     if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
 
-    try {
-      await prisma.$transaction([
-        prisma.movement.deleteMany({ where: { inventoryId } }),
-        prisma.shopInventory.delete({ where: { inventoryId } }),
-      ]);
-    } catch (e) {
-      // Foreign-key violation: still referenced elsewhere (e.g. order/job-card items).
-      if (e?.code === 'P2003') {
-        return res.status(409).json({ error: 'Cannot delete — this product is used by existing orders or job cards.' });
-      }
-      throw e;
-    }
+    await prisma.shopInventory.update({
+      where: { inventoryId },
+      data:  { deletedAt: new Date(), isMarketplaceListed: false },
+    });
     res.json({ success: true });
   } catch (err) {
     console.error('[inventory DELETE]', err);

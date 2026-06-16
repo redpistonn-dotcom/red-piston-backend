@@ -51,6 +51,20 @@ function extractDeviceInfo(req) {
   };
 }
 
+const SENSITIVE_KEYS = new Set([
+  'phone', 'email', 'passwordHash', 'bankAccountNumber',
+  'bankIfsc', 'gstin', 'panNumber', 'partyPhone', 'tokenHash',
+]);
+
+function maskSensitive(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  return Object.fromEntries(
+    Object.entries(obj).map(([k, v]) =>
+      SENSITIVE_KEYS.has(k) ? [k, '***'] : [k, maskSensitive(v)]
+    )
+  );
+}
+
 /**
  * Write one immutable audit log row.
  * Non-blocking — errors are logged but never thrown to the caller.
@@ -68,8 +82,8 @@ export async function writeAudit(req, { entityType, entityId = null, action, old
         entityType,
         entityId:   entityId != null ? String(entityId) : null,
         action,
-        oldValue:   oldValue  ?? null,
-        newValue:   newValue  ?? null,
+        oldValue:   oldValue  ? maskSensitive(oldValue)  : null,
+        newValue:   newValue  ? maskSensitive(newValue)  : null,
         ipAddress:  req.ip || req.connection?.remoteAddress || null,
         deviceInfo: extractDeviceInfo(req),
         sessionId:  req.sessionId || null,

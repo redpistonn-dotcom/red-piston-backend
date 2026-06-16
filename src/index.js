@@ -28,6 +28,7 @@ import purchaseBillRoutes from './routes/purchaseBills.js';
 import auditRoutes from './routes/audit.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authLimiter } from './middleware/rateLimiter.js';
+import { startCleanupJob } from './lib/cleanup.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -125,6 +126,7 @@ async function ensureSchemaFixes() {
   }
 }
 
+startCleanupJob();
 app.listen(PORT, () => {
   console.log(`AutoSpace backend running on http://localhost:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);

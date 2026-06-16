@@ -117,6 +117,7 @@ model OtpCode {
 
   @@index([phone, expiresAt(sort: Desc)])
   @@index([email, expiresAt(sort: Desc)])
+  @@index([expiresAt])
   @@map("otp_codes")
 }
 
@@ -135,6 +136,7 @@ model RefreshToken {
   user       User      @relation(fields: [userId], references: [userId], onDelete: Cascade)
 
   @@index([userId])
+  @@index([expiresAt])
   @@map("refresh_tokens")
 }
 
@@ -311,6 +313,7 @@ model Shop {
   marketplaceOrders   MarketplaceOrder[]
   confirmFitRequests  ConfirmFitRequest[]
   purchaseBills       PurchaseBill[]
+  numberCounters      NumberCounter[]
 
   @@map("shops")
 }
@@ -338,6 +341,7 @@ model PurchaseBill {
   shop          Shop      @relation(fields: [shopId], references: [shopId])
 
   @@index([shopId, createdAt])
+  @@index([shopId, status])
   @@map("purchase_bills")
 }
 
@@ -516,8 +520,8 @@ model MasterPart {
   categoryL3         String?   @map("category_l3")
   // Primary OEM part number (first/canonical — rest go in oemNumbers array)
   primaryOemNumber   String?   @unique @map("primary_oem_number")
-  oemNumbers         String?   @map("oem_numbers")
-  barcodes           String?   @map("barcodes")
+  oemNumbers         String[]  @default([]) @map("oem_numbers")
+  barcodes           String[]  @default([]) @map("barcodes")
   hsnCode            String?   @map("hsn_code")
   gstRate            Decimal   @default(18.00) @map("gst_rate") @db.Decimal(5, 2)
   unitOfSale         String    @default("Piece") @map("unit_of_sale")
@@ -616,6 +620,7 @@ model ConfirmFitRequest {
   @@index([userId])
   @@index([shopId])
   @@index([masterPartId])
+  @@index([shopId, status])
   @@map("confirm_fit_requests")
 }
 
@@ -647,6 +652,7 @@ model ShopInventory {
   isMarketplaceListed   Boolean   @default(false) @map("is_marketplace_listed")
   lastPurchasedAt       DateTime? @map("last_purchased_at")
   lastSoldAt            DateTime? @map("last_sold_at")
+  deletedAt             DateTime? @map("deleted_at")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
   shop                  Shop      @relation(fields: [shopId], references: [shopId])
@@ -685,6 +691,8 @@ model ShopVehicle {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
+  owner     Party?   @relation(fields: [ownerId], references: [partyId], onDelete: SetNull)
+
   @@index([shopId])
   @@map("shop_vehicles")
 }
@@ -693,7 +701,7 @@ model ShopVehicle {
 model Movement {
   movementId    Int      @id @default(autoincrement()) @map("movement_id")
   shopId        Int      @map("shop_id")
-  inventoryId   Int      @map("inventory_id")
+  inventoryId   Int?     @map("inventory_id")
   createdBy     Int?     @map("created_by")
   type          String
   qty           Int
@@ -707,11 +715,15 @@ model Movement {
   partyId       Int?     @map("party_id")
   // External reference: bill number, PO number, challan number, etc.
   referenceNumber String? @map("reference_number")
+  // Denormalized display fields — snapshot at creation, avoids extra joins on history queries
+  invoiceNumber   String? @map("invoice_number")
+  partyName       String? @map("party_name")
+  paymentMode     String? @map("payment_mode")
   notes         String?
   createdAt     DateTime @default(now()) @map("created_at")
 
-  shop      Shop          @relation(fields: [shopId], references: [shopId])
-  inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
+  shop      Shop           @relation(fields: [shopId], references: [shopId])
+  inventory ShopInventory? @relation(fields: [inventoryId], references: [inventoryId])
   creator   User?         @relation("MovementCreatedBy", fields: [createdBy], references: [userId])
   invoice   Invoice?      @relation(fields: [invoiceId], references: [invoiceId])
   party     Party?        @relation(fields: [partyId], references: [partyId])
@@ -719,6 +731,7 @@ model Movement {
   @@index([shopId, createdAt(sort: Desc)])
   @@index([inventoryId])
   @@index([shopId, type])                       // movement type reporting (SALE / PURCHASE / RETURN breakdown)
+  @@index([invoiceId])                          // invoice detail — all movements for an invoice
   @@map("movements")
 }
 
@@ -740,15 +753,17 @@ model Party {
   creditDays  Int      @default(30) @map("credit_days")
   outstanding Decimal  @default(0) @db.Decimal(10, 2)
   notes       String?
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-  shop        Shop     @relation(fields: [shopId], references: [shopId])
+  isActive    Boolean   @default(true) @map("is_active")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  shop        Shop      @relation(fields: [shopId], references: [shopId])
 
   invoices       Invoice[]
   movements      Movement[]
   purchaseOrders PurchaseOrder[]
   ledgerEntries  PartyLedger[]
+  shopVehicles   ShopVehicle[]
 
   @@index([shopId])
   @@index([shopId, type])                       // filter CUSTOMER vs SUPPLIER
@@ -1087,6 +1102,8 @@ model MarketplaceReview {
   user       User?          @relation(fields: [userId], references: [userId])
 
   @@index([masterPartId])
+  @@index([inventoryId])
+  @@index([userId])
   @@map("marketplace_reviews")
 }
 
@@ -1126,6 +1143,8 @@ model NumberCounter {
   counterKey String   @map("counter_key")
   lastValue  Int      @default(0) @map("last_value")
   updatedAt  DateTime @updatedAt @map("updated_at")
+
+  shop       Shop     @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
 
   @@id([shopId, counterKey])
   @@map("number_counters")

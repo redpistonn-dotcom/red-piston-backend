@@ -68,7 +68,7 @@ async function writeLedgerEntry(tx, { shopId, partyId, entryType, debitAmount = 
 router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const { type, search, includeInactive } = req.query;
-    const where = { shopId: req.shopId };
+    const where = { shopId: req.shopId, deletedAt: null };
 
     if (includeInactive !== 'true') where.isActive = true;
     if (type && VALID_TYPES.includes(type)) where.type = type;
@@ -184,7 +184,7 @@ router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => 
 
     await prisma.party.update({
       where: { partyId: req.params.id },
-      data:  { isActive: false },
+      data:  { isActive: false, deletedAt: new Date() },
     });
     res.json({ success: true, message: 'Party deactivated' });
   } catch (err) { next(err); }
@@ -292,22 +292,21 @@ router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, nex
         createdBy: req.user.userId,
       });
 
-      // Also create a RECEIPT movement for stock ledger audit trail
-      const anyInv = await tx.shopInventory.findFirst({ where: { shopId: req.shopId } });
-      if (anyInv) {
-        await tx.movement.create({
-          data: {
-            shopId:      req.shopId,
-            inventoryId: anyInv.inventoryId,
-            type:        'RECEIPT',
-            qty:         0,
-            totalAmount: parsedAmount,
-            partyId:     req.params.id,
-            referenceNumber: reference || null,
-            notes:       `Payment from ${party.name} via ${mode}${reference ? ` · Ref: ${reference}` : ''}`,
-          },
-        });
-      }
+      // Create a RECEIPT movement — inventoryId is null (financial-only, no stock change)
+      await tx.movement.create({
+        data: {
+          shopId:      req.shopId,
+          inventoryId: null,
+          type:        'RECEIPT',
+          qty:         0,
+          totalAmount: parsedAmount,
+          partyId:     parseInt(req.params.id),
+          partyName:   party.name,
+          paymentMode: mode,
+          referenceNumber: reference || null,
+          notes:       `Payment from ${party.name} via ${mode}${reference ? ` · Ref: ${reference}` : ''}`,
+        },
+      });
     });
 
     res.json({ success: true, newOutstanding });
@@ -321,7 +320,7 @@ router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, nex
 router.get('/summary/overdue', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const parties = await prisma.party.findMany({
-      where:   { shopId: req.shopId, isActive: true, outstanding: { gt: 0 } },
+      where:   { shopId: req.shopId, isActive: true, deletedAt: null, outstanding: { gt: 0 } },
       orderBy: { outstanding: 'desc' },
     });
 

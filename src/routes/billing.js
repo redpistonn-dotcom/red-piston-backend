@@ -193,6 +193,9 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
               invoiceId:    inv.invoiceId,
               partyId:      partyId || null,
               referenceNumber: invoiceNumber,
+              invoiceNumber,
+              partyName:    partyName || null,
+              paymentMode:  paymentMode || 'CASH',
               createdBy:    req.user.userId,
             },
           });
@@ -275,7 +278,7 @@ router.get('/invoices', authenticate, requireShopOwner, async (req, res, next) =
         where,
         include: {
           items:   { include: { inventory: { include: { masterPart: true } } } },
-          party:   { select: { name: true, phone: true } },
+          party:   { select: { name: true } },
           payments: { orderBy: { receivedAt: 'desc' } },
         },
         orderBy: { createdAt: 'desc' },
@@ -296,7 +299,7 @@ router.get('/invoice/:id', authenticate, requireShopOwner, async (req, res, next
       where:   { invoiceId: parseInt(req.params.id, 10), shopId: req.shopId },
       include: {
         items:    { include: { inventory: { include: { masterPart: true } } } },
-        party:    { select: { name: true, phone: true, gstin: true, creditDays: true } },
+        party:    { select: { name: true, gstin: true, creditDays: true } },
         payments: { orderBy: { receivedAt: 'desc' } },
         shop:     true,
       },

@@ -50,8 +50,22 @@ const VALID_PROFILE_TYPES = ['INDIVIDUAL', 'MECHANIC', 'FLEET_MANAGER'];
 // GET /api/customer/profile
 router.get('/profile', authenticate, requireCustomer, async (req, res, next) => {
   try {
-    const profile = await ensureCustomerProfile(req.user.userId);
-    res.json({ success: true, data: profile });
+    const [profile, orderStats] = await Promise.all([
+      ensureCustomerProfile(req.user.userId),
+      prisma.marketplaceOrder.aggregate({
+        where: { customerId: req.user.userId, paymentStatus: 'PAID' },
+        _count: { orderId: true },
+        _sum:   { total: true },
+      }),
+    ]);
+    res.json({
+      success: true,
+      data: {
+        ...profile,
+        totalOrders: orderStats._count.orderId || 0,
+        totalSpent:  Number(orderStats._sum.total || 0),
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -103,30 +117,34 @@ router.post('/addresses', authenticate, requireCustomer, async (req, res, next) 
       });
     }
 
-    if (isDefault) {
-      await prisma.customerAddress.updateMany({
-        where: { userId: req.user.userId },
-        data: { isDefault: false },
-      });
-    }
+    const addressData = {
+      userId: req.user.userId,
+      label: label || 'Home',
+      fullName,
+      phone,
+      line1,
+      line2: line2 || null,
+      landmark: landmark || null,
+      city,
+      state,
+      pincode,
+      latitude: latitude ? parseFloat(latitude) : null,
+      longitude: longitude ? parseFloat(longitude) : null,
+      isDefault: isDefault || false,
+    };
 
-    const address = await prisma.customerAddress.create({
-      data: {
-        userId: req.user.userId,
-        label: label || 'Home',
-        fullName,
-        phone,
-        line1,
-        line2: line2 || null,
-        landmark: landmark || null,
-        city,
-        state,
-        pincode,
-        latitude: latitude ? parseFloat(latitude) : null,
-        longitude: longitude ? parseFloat(longitude) : null,
-        isDefault: isDefault || false,
-      },
-    });
+    let address;
+    if (isDefault) {
+      address = await prisma.$transaction(async (tx) => {
+        await tx.customerAddress.updateMany({
+          where: { userId: req.user.userId },
+          data: { isDefault: false },
+        });
+        return tx.customerAddress.create({ data: addressData });
+      });
+    } else {
+      address = await prisma.customerAddress.create({ data: addressData });
+    }
 
     res.status(201).json({ success: true, data: address });
   } catch (err) {
@@ -242,28 +260,32 @@ router.post('/garage', authenticate, requireCustomer, async (req, res, next) => 
       });
     }
 
-    if (isDefault) {
-      await prisma.customerVehicle.updateMany({
-        where: { userId: req.user.userId },
-        data:  { isDefault: false },
-      });
-    }
+    const vehicleData = {
+      userId:         req.user.userId,
+      vehicleId:      vehicleId      || null,
+      nickname:       nickname       || null,
+      make,
+      model,
+      variant:        variant        || null,
+      year:           parseInt(year),
+      fuelType:       fuelType       || null,
+      registrationNo: registrationNo || null,
+      purchaseYear:   purchaseYear   ? parseInt(purchaseYear) : null,
+      isDefault:      isDefault      || false,
+    };
 
-    const vehicle = await prisma.customerVehicle.create({
-      data: {
-        userId:         req.user.userId,
-        vehicleId:      vehicleId      || null,
-        nickname:       nickname       || null,
-        make,
-        model,
-        variant:        variant        || null,
-        year:           parseInt(year),
-        fuelType:       fuelType       || null,
-        registrationNo: registrationNo || null,
-        purchaseYear:   purchaseYear   ? parseInt(purchaseYear) : null,
-        isDefault:      isDefault      || false,
-      },
-    });
+    let vehicle;
+    if (isDefault) {
+      vehicle = await prisma.$transaction(async (tx) => {
+        await tx.customerVehicle.updateMany({
+          where: { userId: req.user.userId },
+          data:  { isDefault: false },
+        });
+        return tx.customerVehicle.create({ data: vehicleData });
+      });
+    } else {
+      vehicle = await prisma.customerVehicle.create({ data: vehicleData });
+    }
 
     res.status(201).json({ success: true, data: vehicle });
   } catch (err) { next(err); }
