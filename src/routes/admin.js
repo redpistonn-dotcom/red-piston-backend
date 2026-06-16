@@ -653,7 +653,7 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
   try {
     await ensureImportLogTable();
 
-    const [stagingRes, masterRes, todayRes, lastImportRes, recentLogs, recentImports] = await Promise.all([
+    const [stagingRes, masterRes, todayRes, lastImportRes, recentLogs, recentImports, brandStats, categoryStats] = await Promise.all([
       // Total products scraped into staging
       prisma.$queryRaw`SELECT COUNT(*)::int AS count FROM autodukan_parts_staging`.catch(() => [{ count: 0 }]),
 
@@ -691,6 +691,32 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
         WHERE source = 'SUPPLIER_IMPORT'
         ORDER BY created_at DESC
         LIMIT 30
+      `.catch(() => []),
+
+      // OEM brand breakdown — total + OEM vs OES split
+      prisma.$queryRaw`
+        SELECT
+          COALESCE(NULLIF(TRIM(brand), ''), 'Unknown') AS brand,
+          COUNT(*)::int AS total,
+          COUNT(CASE WHEN LOWER(type) LIKE '%oes%' THEN 1 END)::int AS oes_count,
+          COUNT(CASE WHEN LOWER(type) NOT LIKE '%oes%' OR type IS NULL THEN 1 END)::int AS oem_count,
+          COUNT(DISTINCT category)::int AS category_count
+        FROM autodukan_parts_staging
+        GROUP BY COALESCE(NULLIF(TRIM(brand), ''), 'Unknown')
+        ORDER BY COUNT(*) DESC
+        LIMIT 50
+      `.catch(() => []),
+
+      // Category breakdown — total + OEM vs OES split
+      prisma.$queryRaw`
+        SELECT
+          COALESCE(NULLIF(TRIM(category), ''), 'Uncategorised') AS category,
+          COUNT(*)::int AS total,
+          COUNT(CASE WHEN LOWER(type) LIKE '%oes%' THEN 1 END)::int AS oes_count,
+          COUNT(CASE WHEN LOWER(type) NOT LIKE '%oes%' OR type IS NULL THEN 1 END)::int AS oem_count
+        FROM autodukan_parts_staging
+        GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'Uncategorised')
+        ORDER BY COUNT(*) DESC
       `.catch(() => []),
     ]);
 
@@ -738,6 +764,19 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
           oemNumber:      r.primary_oem_number,
           status:         r.status,
           addedAt:        r.created_at,
+        })),
+        brandStats: brandStats.map(r => ({
+          brand:         r.brand,
+          total:         r.total,
+          oemCount:      r.oem_count,
+          oesCount:      r.oes_count,
+          categoryCount: r.category_count,
+        })),
+        categoryStats: categoryStats.map(r => ({
+          category: r.category,
+          total:    r.total,
+          oemCount: r.oem_count,
+          oesCount: r.oes_count,
         })),
       },
     });
