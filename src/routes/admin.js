@@ -994,7 +994,18 @@ router.post('/autodukan/scrape/start', authenticate, requireAdmin, async (req, r
     const pythonBin = process.platform === 'win32'
       ? 'python'
       : (existsSync(RENDER_VENV_PYTHON) ? RENDER_VENV_PYTHON : 'python3');
-    const child = spawn(pythonBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    // Render's build and runtime containers have separate /opt/render/.cache/ filesystems,
+    // so Chromium installed there during the build is gone at runtime.
+    // Installing into the project dir (/opt/render/project/src/.playwright-browsers) persists
+    // across both build and runtime. Pass the same path to the subprocess so Playwright finds it.
+    const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH
+      || '/opt/render/project/src/.playwright-browsers';
+
+    const child = spawn(pythonBin, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH },
+    });
 
     setScraperRunning(child.pid, category || 'ALL');
     appendScraperLog(`Started PID ${child.pid}: ${pythonBin} ${args.slice(1).join(' ')}`);

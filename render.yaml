@@ -3,7 +3,7 @@ services:
     name: red-piston-backend
     runtime: node
     plan: free
-    buildCommand: npm install && npx prisma generate && pip install -r scripts/requirements_scraper.txt && /opt/render/project/src/.venv/bin/playwright install chromium
+    buildCommand: npm install && npx prisma generate && pip install -r scripts/requirements_scraper.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers /opt/render/project/src/.venv/bin/playwright install chromium
     startCommand: npm start
     healthCheckPath: /health
     envVars:
