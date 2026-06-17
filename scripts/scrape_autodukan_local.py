@@ -194,10 +194,13 @@ EXTRACT_CARDS_JS = """
             const l = lines.find(s => s.startsWith(prefix));
             return l ? l.slice(prefix.length).trim() : null;
         };
-        const SKIP = ['Part No:', 'Type:', 'Brand:', '₹', 'MRP', 'ADD', 'BUY'];
-        const name = lines.find(l =>
-            l === l.toUpperCase() && l.length > 2 &&
-            !SKIP.some(p => l.startsWith(p))
+        const SKIP = ['Part No:', 'Type:', 'Brand:', '₹', 'MRP', 'ADD', 'BUY', 'CART'];
+        // Name always appears before "Part No:" in the card — grab the first
+        // meaningful line from that slice (works for both ALL-CAPS and mixed-case names).
+        const partNoIdx = lines.findIndex(l => l.startsWith('Part No:'));
+        const candidates = partNoIdx > 0 ? lines.slice(0, partNoIdx) : lines;
+        const name = candidates.find(l =>
+            l.length > 2 && !SKIP.some(p => l.startsWith(p))
         ) || null;
         const priceRaw = lines.find(l => l.startsWith('₹') && !l.includes('MRP'));
         const mrpRaw   = lines.find(l => l.startsWith('MRP ₹'));
