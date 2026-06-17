@@ -1222,4 +1222,117 @@ router.get('/autodukan/image-proxy', authenticate, async (req, res) => {
   }
 });
 
+// ─── Autodukan Image Migration (S3 → Cloudinary) ─────────────────────────────
+
+// In-memory state so the UI can poll progress without re-starting the job
+const imgMigState = {
+  running:   false,
+  total:     0,
+  done:      0,
+  failed:    0,
+  startedAt: null,
+  finishedAt: null,
+  lastError:  null,
+};
+
+async function runImageMigration() {
+  const { v2: cloudinary } = await import('cloudinary');
+  const pg = (await import('pg')).default;
+
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key:    process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure:     true,
+  });
+
+  const dbUrl = (process.env.DATABASE_URL || '')
+    .replace(/([?&])pgbouncer=true/i, '$1')
+    .replace(/[?&]$/, '');
+  const pool = new pg.Pool({ connectionString: dbUrl });
+
+  try {
+    const { rows: [{ n }] } = await pool.query(`
+      SELECT COUNT(*)::int AS n FROM autodukan_parts_staging
+      WHERE image_url LIKE '%autodukan.s3.ap-south-1.amazonaws.com%'
+        AND source = 'autodukan'
+    `);
+    imgMigState.total = n;
+
+    if (n === 0) { imgMigState.running = false; imgMigState.finishedAt = new Date(); return; }
+
+    while (true) {
+      const { rows } = await pool.query(`
+        SELECT id, image_url FROM autodukan_parts_staging
+        WHERE image_url LIKE '%autodukan.s3.ap-south-1.amazonaws.com%'
+          AND source = 'autodukan'
+        ORDER BY id LIMIT 10
+      `);
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        try {
+          const res = await fetch(encodeURI(row.image_url), {
+            headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://autodukan.com/' },
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const buf = Buffer.from(await res.arrayBuffer());
+
+          const result = await new Promise((resolve, reject) => {
+            const stream = cloudinary.uploader.upload_stream(
+              { folder: 'autodukan-parts', public_id: `part_${row.id}`, overwrite: true,
+                resource_type: 'image', format: 'webp',
+                transformation: [{ width: 400, height: 400, crop: 'limit' }] },
+              (err, r) => err ? reject(err) : resolve(r)
+            );
+            stream.end(buf);
+          });
+
+          await pool.query(
+            'UPDATE autodukan_parts_staging SET image_url = $1 WHERE id = $2',
+            [result.secure_url, row.id]
+          );
+          imgMigState.done++;
+        } catch (err) {
+          console.error('[img-migration] row', row.id, err.message);
+          await pool.query(
+            'UPDATE autodukan_parts_staging SET image_url = NULL WHERE id = $1',
+            [row.id]
+          );
+          imgMigState.failed++;
+          imgMigState.lastError = err.message;
+        }
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+  } finally {
+    await pool.end();
+    imgMigState.running    = false;
+    imgMigState.finishedAt = new Date();
+  }
+}
+
+// POST /api/admin/autodukan/migrate-images  — start the migration (idempotent)
+router.post('/autodukan/migrate-images', authenticate, requireAdmin, (req, res) => {
+  if (imgMigState.running) {
+    return res.json({ success: true, message: 'Already running', state: imgMigState });
+  }
+  Object.assign(imgMigState, {
+    running: true, total: 0, done: 0, failed: 0,
+    startedAt: new Date(), finishedAt: null, lastError: null,
+  });
+  runImageMigration().catch(err => {
+    console.error('[img-migration] fatal', err);
+    imgMigState.running = false;
+    imgMigState.lastError = err.message;
+    imgMigState.finishedAt = new Date();
+  });
+  res.json({ success: true, message: 'Migration started', state: imgMigState });
+});
+
+// GET /api/admin/autodukan/migrate-images  — poll progress
+router.get('/autodukan/migrate-images', authenticate, requireAdmin, (req, res) => {
+  res.json({ success: true, state: imgMigState });
+});
+
 export default router;
