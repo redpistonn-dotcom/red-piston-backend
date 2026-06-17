@@ -1192,4 +1192,34 @@ router.post('/autodukan/scrape/stop', authenticate, requireAdmin, async (req, re
   } catch (err) { next(err); }
 });
 
+// GET /api/admin/autodukan/image-proxy?url=<encoded-s3-url>
+// Proxies product images from the autodukan S3 bucket.
+// Direct S3 URLs 403 from non-autodukan origins; this adds a server-side hop
+// so the browser fetches from our backend, not directly from S3.
+router.get('/autodukan/image-proxy', authenticate, async (req, res) => {
+  const url = (req.query.url || '').trim();
+  if (!url || !url.startsWith('https://autodukan.s3.ap-south-1.amazonaws.com/')) {
+    return res.status(400).json({ error: 'Invalid or missing url parameter' });
+  }
+  try {
+    const upstream = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; RedPiston/1.0)',
+        'Referer': 'https://autodukan.com/',
+      },
+    });
+    if (!upstream.ok) {
+      return res.status(upstream.status).send('Image not available');
+    }
+    const ct = upstream.headers.get('content-type') || 'image/png';
+    res.set('Content-Type', ct);
+    res.set('Cache-Control', 'public, max-age=86400');
+    const buf = await upstream.arrayBuffer();
+    res.send(Buffer.from(buf));
+  } catch (err) {
+    console.error('[image-proxy]', err);
+    res.status(502).send('Failed to fetch image');
+  }
+});
+
 export default router;
