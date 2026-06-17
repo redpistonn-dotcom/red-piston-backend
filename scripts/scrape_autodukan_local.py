@@ -404,6 +404,28 @@ def scrape_category(page, conn, category, delay_s, resume):
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_null_name_categories(conn):
+    """Return list of categories that have at least one row with name IS NULL."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT COALESCE(NULLIF(TRIM(category), ''), 'UNKNOWN')
+            FROM autodukan_parts_staging
+            WHERE name IS NULL AND source = 'autodukan'
+            ORDER BY 1
+        """)
+        return [r[0] for r in cur.fetchall()]
+
+
+def clear_category_progress(conn, category):
+    """Delete ALL progress rows for a category so it gets fully re-scraped."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM autodukan_scrape_progress WHERE category = %s",
+            (category,)
+        )
+    conn.commit()
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Scrape autodukan.com → Supabase staging table")
     p.add_argument("--db-url", default=DATABASE_URL,
@@ -414,6 +436,8 @@ def parse_args():
                    help="Seconds between pages (default 10)")
     p.add_argument("--resume", action="store_true",
                    help="Skip already-completed pages")
+    p.add_argument("--fix-nulls", action="store_true",
+                   help="Re-scrape only categories that have NULL product names in the DB")
     p.add_argument("--headless", action="store_true",
                    help="Hide the browser window")
     return p.parse_args()
@@ -458,11 +482,39 @@ def main():
 
     setup_db(conn)
 
+    # --fix-nulls: find categories with NULL names, reset their progress, restrict to those
+    if args.fix_nulls:
+        null_cats = get_null_name_categories(conn)
+        if not null_cats:
+            print("No NULL-name rows found in staging. Nothing to fix!")
+            conn.close()
+            sys.exit(0)
+        # Intersect with known categories; warn about unrecognised ones
+        recognised   = [c for c in null_cats if c in ALL_CATEGORIES]
+        unrecognised = [c for c in null_cats if c not in ALL_CATEGORIES]
+        if unrecognised:
+            print(f"  (skipping {len(unrecognised)} DB categories not in ALL_CATEGORIES: {unrecognised})")
+        if not recognised:
+            print("No matching categories to re-scrape.")
+            conn.close()
+            sys.exit(0)
+        print(f"\n--fix-nulls: {len(recognised)} categor(ies) have NULL names → clearing their progress and re-scraping:")
+        for c in recognised:
+            null_count_row = None
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM autodukan_parts_staging WHERE name IS NULL AND source='autodukan' AND COALESCE(NULLIF(TRIM(category),''),'UNKNOWN')=%s", (c,))
+                null_count_row = cur.fetchone()
+            count = null_count_row[0] if null_count_row else '?'
+            print(f"  {c}  ({count} NULL rows)")
+            clear_category_progress(conn, c)
+        categories = recognised
+        # Force resume=True so per-page tracking works during re-scrape
+        args.resume = True
     print(f"\nautodukan.com Local Scraper", flush=True)
     print(f"  Source tag     : {SOURCE_TAG}", flush=True)
     print(f"  Categories     : {len(categories)}", flush=True)
     print(f"  Delay          : {args.delay}s ± 2s jitter", flush=True)
-    print(f"  Resume mode    : {'yes' if args.resume else 'no'}", flush=True)
+    print(f"  Mode           : {'fix-nulls' if args.fix_nulls else 'resume' if args.resume else 'full'}", flush=True)
     print(f"  Browser        : {'headless' if args.headless else 'visible'}", flush=True)
     print(flush=True)
 
