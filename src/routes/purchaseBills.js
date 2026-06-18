@@ -248,6 +248,38 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── GET /api/shop/purchase-bills/pdf-proxy — server-side PDF fetch ──────────
+// Works around Cloudinary's image-type delivery blocking PDFs (old uploads).
+// Also ensures correct Content-Type so browsers open the PDF viewer.
+router.get('/pdf-proxy', authenticate, requireShopOwner, async (req, res) => {
+  const url = (req.query.url || '').trim();
+  const CLOUDINARY_HOST = 'res.cloudinary.com';
+  if (!url || !url.includes(CLOUDINARY_HOST)) {
+    return res.status(400).json({ error: 'Invalid or missing url parameter' });
+  }
+  // Try the URL as-is first; if it fails and has /image/upload/, retry as /raw/upload/
+  const tryFetch = async (fetchUrl) => {
+    const r = await fetch(fetchUrl);
+    if (r.ok) return r;
+    return null;
+  };
+  try {
+    let result = await tryFetch(url);
+    if (!result && url.includes('/image/upload/')) {
+      result = await tryFetch(url.replace('/image/upload/', '/raw/upload/'));
+    }
+    if (!result) return res.status(404).send('PDF not available');
+    const buf = Buffer.from(await result.arrayBuffer());
+    res.set('Content-Type', 'application/pdf');
+    res.set('Content-Disposition', 'inline; filename="bill.pdf"');
+    res.set('Cache-Control', 'private, max-age=3600');
+    res.send(buf);
+  } catch (err) {
+    console.error('[purchase-bills/pdf-proxy]', err);
+    res.status(502).send('Failed to fetch PDF');
+  }
+});
+
 // ─── GET /api/shop/purchase-bills/:id — full bill incl. extracted items ──────
 router.get('/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {

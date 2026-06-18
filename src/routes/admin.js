@@ -52,7 +52,7 @@ router.get('/users', authenticate, requireAdmin, async (req, res, next) => {
         where,
         select: {
           userId: true, name: true, email: true, phone: true,
-          role: true, isActive: true, shopId: true,
+          role: true, isActive: true, shopId: true, avatarUrl: true,
           createdAt: true, lastLoginAt: true, loginCount: true,
           shop: { select: { name: true, city: true } },
           userType: { select: { id: true, name: true, slug: true } },
