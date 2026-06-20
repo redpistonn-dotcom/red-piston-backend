@@ -355,17 +355,7 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
 // Returns all items where stockQty <= minStockAlert
 router.get('/low-stock', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const items = await prisma.shopInventory.findMany({
-      where: {
-        shopId: req.shopId,
-        // stockQty at or below alert threshold
-        stockQty: { lte: prisma.shopInventory.fields.minStockAlert },
-      },
-      include: { masterPart: { select: { partName: true, brand: true, categoryL1: true, imageUrl: true } } },
-      orderBy: { stockQty: 'asc' },
-    });
-
-    // Prisma doesn't support field-to-field comparison in where, use raw filter
+    // Prisma doesn't support field-to-field comparison (stockQty <= minStockAlert), use raw SQL
     const lowStock = await prisma.$queryRaw`
       SELECT
         si.inventory_id, si.stock_qty, si.min_stock_alert, si.max_stock_level,

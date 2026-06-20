@@ -140,8 +140,9 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
 // ─── GET /:id — single party ──────────────────────────────────────────────────
 router.get('/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
+    const id = parseInt(req.params.id, 10);
     const party = await prisma.party.findFirst({
-      where: { partyId: req.params.id, shopId: req.shopId },
+      where: { partyId: id, shopId: req.shopId },
     });
     if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
     res.json({ success: true, party });
@@ -151,8 +152,9 @@ router.get('/:id', authenticate, requireShopOwner, async (req, res, next) => {
 // ─── PUT /:id — update party ──────────────────────────────────────────────────
 router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
+    const id = parseInt(req.params.id, 10);
     const party = await prisma.party.findFirst({
-      where: { partyId: req.params.id, shopId: req.shopId },
+      where: { partyId: id, shopId: req.shopId },
     });
     if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
 
@@ -168,8 +170,8 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
     if (creditDays  !== undefined) data.creditDays  = parseInt(creditDays);
     if (notes       !== undefined) data.notes       = notes || null;
 
-    const updated = await prisma.party.update({ where: { partyId: req.params.id }, data });
-    writeAudit(req, { entityType: ET.PARTY, entityId: req.params.id, action: ACT.UPDATE, oldValue: { name: party.name }, newValue: data });
+    const updated = await prisma.party.update({ where: { partyId: id }, data });
+    writeAudit(req, { entityType: ET.PARTY, entityId: id, action: ACT.UPDATE, oldValue: { name: party.name }, newValue: data });
     res.json({ success: true, party: updated });
   } catch (err) { next(err); }
 });
@@ -177,13 +179,14 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
 // ─── DELETE /:id — soft delete ────────────────────────────────────────────────
 router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
+    const id = parseInt(req.params.id, 10);
     const party = await prisma.party.findFirst({
-      where: { partyId: req.params.id, shopId: req.shopId },
+      where: { partyId: id, shopId: req.shopId },
     });
     if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
 
     await prisma.party.update({
-      where: { partyId: req.params.id },
+      where: { partyId: id },
       data:  { isActive: false, deletedAt: new Date() },
     });
     res.json({ success: true, message: 'Party deactivated' });
@@ -193,8 +196,9 @@ router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => 
 // ─── GET /:id/ledger — full udhaar trail ─────────────────────────────────────
 router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next) => {
   try {
+    const id = parseInt(req.params.id, 10);
     const party = await prisma.party.findFirst({
-      where: { partyId: req.params.id, shopId: req.shopId },
+      where: { partyId: id, shopId: req.shopId },
     });
     if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
 
@@ -202,7 +206,7 @@ router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next)
 
     const [entries, total] = await Promise.all([
       prisma.partyLedger.findMany({
-        where: { partyId: req.params.id, shopId: req.shopId },
+        where: { partyId: id, shopId: req.shopId },
         include: {
           invoice: { select: { invoiceNumber: true, totalAmount: true, invoiceType: true, createdAt: true } },
         },
@@ -210,7 +214,7 @@ router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next)
         take:    Math.min(Math.max(parseInt(limit) || 50, 1), 200),
         skip:    Math.max(parseInt(offset) || 0, 0),
       }),
-      prisma.partyLedger.count({ where: { partyId: req.params.id, shopId: req.shopId } }),
+      prisma.partyLedger.count({ where: { partyId: id, shopId: req.shopId } }),
     ]);
 
     res.json({
@@ -225,8 +229,9 @@ router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next)
 // ─── POST /:id/ledger — manual opening balance / adjustment ──────────────────
 router.post('/:id/ledger', authenticate, requireShopOwner, async (req, res, next) => {
   try {
+    const id = parseInt(req.params.id, 10);
     const party = await prisma.party.findFirst({
-      where: { partyId: req.params.id, shopId: req.shopId },
+      where: { partyId: id, shopId: req.shopId },
     });
     if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
 
@@ -244,7 +249,7 @@ router.post('/:id/ledger', authenticate, requireShopOwner, async (req, res, next
     await prisma.$transaction(async (tx) => {
       balanceAfter = await writeLedgerEntry(tx, {
         shopId:      req.shopId,
-        partyId:     req.params.id,
+        partyId:     id,
         entryType,
         debitAmount:  debitAmount  ? parseFloat(debitAmount)  : 0,
         creditAmount: creditAmount ? parseFloat(creditAmount) : 0,
@@ -261,6 +266,7 @@ router.post('/:id/ledger', authenticate, requireShopOwner, async (req, res, next
 // ─── POST /:id/payment — record payment received ──────────────────────────────
 router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, next) => {
   try {
+    const id = parseInt(req.params.id, 10);
     const { amount, mode, reference, notes } = req.body;
 
     if (!amount || !mode) return res.status(400).json({ success: false, error: { message: 'Amount and mode are required' } });
@@ -271,7 +277,7 @@ router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, nex
     }
 
     const party = await prisma.party.findFirst({
-      where: { partyId: req.params.id, shopId: req.shopId },
+      where: { partyId: id, shopId: req.shopId },
     });
     if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
 
@@ -280,7 +286,7 @@ router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, nex
       // Write ledger entry (credit = reduces outstanding)
       newOutstanding = await writeLedgerEntry(tx, {
         shopId:      req.shopId,
-        partyId:     req.params.id,
+        partyId:     id,
         entryType:   'PAYMENT_RECEIVED',
         creditAmount: parsedAmount,
         referenceNo: reference || null,
