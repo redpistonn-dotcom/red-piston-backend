@@ -175,18 +175,20 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
         supplierPhone && `Ph: ${supplierPhone}`,
         supplierInvoiceNo && `Invoice: ${supplierInvoiceNo}`,
       ].filter(Boolean);
+      const parsedQty   = parseInt(stockQty);
+      const parsedBuy   = buyingPrice ? parseFloat(buyingPrice) : null;
       await prisma.movement.create({
         data: {
-          shopId: req.shopId,
-          inventoryId: item.inventoryId,
-          type: 'OPENING',
-          qty: parseInt(stockQty),
-          unitPrice: buyingPrice ? parseFloat(buyingPrice) : null,
-          // Movement has no invoiceNo/supplierName columns — the bill number goes in
-          // referenceNumber; the supplier link goes in partyId; rest into notes.
+          shopId:         req.shopId,
+          inventoryId:    item.inventoryId,
+          type:           'OPENING',
+          qty:            parsedQty,
+          unitPrice:      parsedBuy,
+          totalAmount:    parsedBuy ? parsedQty * parsedBuy : null,
+          partyName:      supplierName || null,
           referenceNumber: supplierInvoiceNo || null,
-          partyId: supplierPartyId,
-          notes: supplierBits.length ? `Opening stock · ${supplierBits.join(' · ')}` : 'Opening stock',
+          partyId:        supplierPartyId,
+          notes:          supplierBits.length ? `Opening stock · ${supplierBits.join(' · ')}` : 'Opening stock',
         },
       });
     }
