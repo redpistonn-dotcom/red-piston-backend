@@ -27,7 +27,7 @@ import uploadRoutes from './routes/upload.js';
 import purchaseBillRoutes from './routes/purchaseBills.js';
 import auditRoutes from './routes/audit.js';
 import { errorHandler } from './middleware/errorHandler.js';
-import { authLimiter } from './middleware/rateLimiter.js';
+import { authLimiter, pdfExtractLimiter } from './middleware/rateLimiter.js';
 import { startCleanupJob } from './lib/cleanup.js';
 
 const app = express();
@@ -79,6 +79,8 @@ app.use(cors({
 // buffers (e.g. Nginx client_max_body_size) if larger payloads are needed.
 // Purchase-bill PDFs arrive base64-encoded — the raised limit MUST be
 // registered BEFORE the global 100kb parser (body-parser is first-wins).
+// Rate limiter also applied first — 5 uploads per 10 min per IP (CPU-heavy parse).
+app.use('/api/shop/purchase-bills/extract', pdfExtractLimiter);
 app.use('/api/shop/purchase-bills/extract', express.json({ limit: '18mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ limit: '100kb', extended: true }));
@@ -131,8 +133,23 @@ async function ensureSchemaFixes() {
 }
 
 startCleanupJob();
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`AutoSpace backend running on http://localhost:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   ensureSchemaFixes();
 });
+
+// Graceful shutdown — drain in-flight requests before exiting.
+// Render / Docker send SIGTERM on deploy; SIGINT handles Ctrl+C in dev.
+function gracefulShutdown(signal) {
+  console.log(`[shutdown] ${signal} received — closing server`);
+  server.close(async () => {
+    try { await prisma.$disconnect(); } catch {}
+    console.log('[shutdown] Clean exit');
+    process.exit(0);
+  });
+  // Force-kill if drain takes longer than 10 s (e.g. a stuck DB query)
+  setTimeout(() => { console.error('[shutdown] Forced exit after 10 s'); process.exit(1); }, 10_000);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));

@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-06-20] — Performance, auth stability, and input hardening
+
+### Auth
+- **Fixed frequent logouts** (`src/routes/auth/helpers.js`): `createSession` previously ran `deleteMany` wiping ALL sessions for a user on every login — opening a second tab or logging in on another device silently killed every other active session. Now keeps the 5 most-recent active sessions and deletes only the overflow.
+- **Keepalive ping** (`RED-PISTON-FRONTEND/src/shells/ERPShell.tsx`): pings `/health` every 9 minutes while the tab is visible to prevent Render free-tier backend cold starts (30-60s cold start vs 65s refresh timeout was the root cause of "random" logouts).
+
+### Performance
+- **N+1 eliminated in invoice creation** (`src/routes/billing.js`): inventory lookup was `findUnique` inside a `for` loop — one DB round-trip per cart item. Replaced with a single `findMany` batching all IDs up front with a `Map` for O(1) per-item access.
+- **N+1 eliminated in purchase-bill import** (`src/routes/purchaseBills.js`): same per-item sequential pattern; each item now runs in its own `prisma.$transaction` with pre-validation so one bad item doesn't abort all others.
+- **`lineCalcs` memoized in POS** (`src/pages/POSBillingPage.tsx`): line totals and grand totals were recomputed on every render. Wrapped in `useMemo([items])`.
+
+### Reliability
+- **Purchase bill import atomic per-item** (`src/routes/purchaseBills.js`): each item is now wrapped in its own `$transaction` so a DB error on item N doesn't roll back items 1…N-1. All-fail case now returns HTTP 207 with a clear error instead of a silent 200.
+- **Up-front validation in import**: bounds check on qty (≤100,000) and rate/sellingPrice (≤10,000,000) before touching the DB.
+
+### Input Validation
+- **POS price input**: added `min="0"` — previously accepted negative prices.
+- **POS customer fields**: `maxLength` on name (80), notes (500); phone stripped to digits + capped at 10; vehicle reg uppercased + alphanumeric-only + capped at 15.
+- **POS custom item name**: `maxLength={100}`.
+- **PurchaseBills review table**: `maxLength` on part name; `max` on qty (100,000) and price inputs (10,000,000).
+- **CatalogStockInModal supplier fields**: name `maxLength={100}`, invoice no `maxLength={50}`, GSTIN uppercase + alphanumeric + capped at 15, phone digits-only + capped at 10.
+- **CatalogStockInModal price/stock inputs**: `min`/`max` on all four numeric fields; HSN code digits-only + max 8 chars; part name/brand/OEM/rack all have `maxLength`.
+
 ## [2026-06-20] — Invoice number collision fix + receipt-style PDF redesign
 
 ### Fixes

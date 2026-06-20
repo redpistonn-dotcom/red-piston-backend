@@ -15,7 +15,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
-    "lint:fix": "eslint src/ --fix"
+    "lint:fix": "eslint src/ --fix",
+    "scrape:autodukan": "node scripts/scrape-autodukan.mjs",
+    "scrape:autodukan:resume": "node scripts/scrape-autodukan.mjs --resume"
   },
   "dependencies": {
     "@prisma/client": "^5.10.0",
@@ -44,6 +46,7 @@
     "globals": "^17.6.0",
     "nodemon": "^3.1.0",
     "pg": "^8.21.0",
+    "playwright": "^1.61.0",
     "prisma": "^5.10.0",
     "supertest": "^7.2.2",
     "vitest": "^4.1.8"

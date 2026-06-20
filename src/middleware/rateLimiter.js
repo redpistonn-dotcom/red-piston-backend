@@ -61,3 +61,15 @@ export const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// PDF extract: 5 uploads per 10 min per IP — each parses an 18 MB PDF, very CPU-heavy
+export const pdfExtractLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 5,
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many PDF uploads. Please wait 10 minutes before trying again.' },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

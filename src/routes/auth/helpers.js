@@ -119,8 +119,18 @@ export async function createSession(res, user, { isNewUser = false, req = null }
   const ipAddress = req ? (req.ip || req.connection?.remoteAddress || null) : null;
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
-  // Single active session — revoke all previous sessions for this user
-  await prisma.refreshToken.deleteMany({ where: { userId: user.userId } });
+  // Keep the most-recent 4 sessions; delete the rest so the table doesn't grow
+  // unboundedly. We no longer delete ALL sessions on login — that forced users
+  // out of every other open tab/device whenever they authenticated anywhere.
+  const oldSessions = await prisma.refreshToken.findMany({
+    where: { userId: user.userId, revokedAt: null },
+    orderBy: { createdAt: 'desc' },
+    skip: 4,
+    select: { id: true },
+  });
+  if (oldSessions.length > 0) {
+    await prisma.refreshToken.deleteMany({ where: { id: { in: oldSessions.map(s => s.id) } } });
+  }
 
   await prisma.refreshToken.create({
     data: {

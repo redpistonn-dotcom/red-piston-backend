@@ -34,12 +34,14 @@ const VALID_TYPES = ['CUSTOMER', 'SUPPLIER', 'BOTH'];
  * Always called inside a Prisma $transaction (tx).
  */
 async function writeLedgerEntry(tx, { shopId, partyId, entryType, debitAmount = 0, creditAmount = 0, invoiceId = null, referenceNo = null, notes = null, createdBy = null }) {
-  // Get current outstanding to compute balanceAfter
-  const party = await tx.party.findUnique({ where: { partyId }, select: { outstanding: true } });
-  const currentBalance = Number(party.outstanding);
-  const balanceAfter = currentBalance + debitAmount - creditAmount;
+  // Atomic increment — avoids read-modify-write race when two transactions hit the same party concurrently
+  const updated = await tx.party.update({
+    where: { partyId },
+    data:  { outstanding: { increment: debitAmount - creditAmount } },
+    select: { outstanding: true },
+  });
+  const balanceAfter = Number(updated.outstanding);
 
-  // Write immutable ledger row
   await tx.partyLedger.create({
     data: {
       shopId,
@@ -53,12 +55,6 @@ async function writeLedgerEntry(tx, { shopId, partyId, entryType, debitAmount = 
       notes:       notes       || null,
       createdBy:   createdBy   || null,
     },
-  });
-
-  // Update denormalized outstanding cache
-  await tx.party.update({
-    where: { partyId },
-    data:  { outstanding: balanceAfter },
   });
 
   return balanceAfter;

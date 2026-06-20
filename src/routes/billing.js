@@ -23,14 +23,18 @@ const VALID_INVOICE_TYPES = ['RETAIL', 'CREDIT', 'ESTIMATE', 'RETURN', 'WORKSHOP
 
 // ─── Helper: write one PartyLedger debit row (mirrors parties.js helper) ─────
 async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAmount = 0, invoiceId, entryType, notes, createdBy }) {
-  const party = await tx.party.findUnique({ where: { partyId }, select: { outstanding: true } });
-  const balanceAfter = Number(party.outstanding) + debitAmount - creditAmount;
+  // Atomic increment — avoids read-modify-write race when two invoices hit the same party concurrently
+  const updated = await tx.party.update({
+    where: { partyId },
+    data:  { outstanding: { increment: debitAmount - creditAmount } },
+    select: { outstanding: true },
+  });
+  const balanceAfter = Number(updated.outstanding);
 
   await tx.partyLedger.create({
     data: { shopId, partyId, entryType, debitAmount, creditAmount, balanceAfter, invoiceId, notes, createdBy: createdBy || null },
   });
 
-  await tx.party.update({ where: { partyId }, data: { outstanding: balanceAfter } });
   return balanceAfter;
 }
 
@@ -57,15 +61,20 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
     // so the counter increment and the invoice INSERT are in the same atomic unit.
 
     // ── Validate stock + calculate line-item totals ───────────────────────────
+    // Batch-fetch all inventory rows in ONE query instead of N separate findUniques.
+    const inventoryIds = items.map(i => parseInt(i.inventoryId));
+    const inventoryRows = await prisma.shopInventory.findMany({
+      where: { inventoryId: { in: inventoryIds }, shopId: req.shopId },
+      include: { masterPart: true },
+    });
+    const invMap = new Map(inventoryRows.map(r => [r.inventoryId, r]));
+
     let subtotal = 0, cgst = 0, sgst = 0;
     const processedItems = [];
 
     for (const item of items) {
-      const inv = await prisma.shopInventory.findUnique({
-        where:   { inventoryId: item.inventoryId },
-        include: { masterPart: true },
-      });
-      if (!inv || inv.shopId !== req.shopId) {
+      const inv = invMap.get(parseInt(item.inventoryId));
+      if (!inv) {
         throw { status: 400, message: `Invalid inventory item: ${item.inventoryId}` };
       }
 
@@ -85,9 +94,10 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
       if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
         throw { status: 400, message: `Invalid unit price for ${inv.masterPart.partName}` };
       }
-      // Negative discount would silently become a price increase
-      const discount   = Math.max(0, parseFloat(item.discount) || 0);
-      const taxableAmt = (unitPrice - discount) * itemQty;
+      // Discount: non-negative, capped at 80 % of unit price (leaves at least 20 % value)
+      const maxDiscount = unitPrice * 0.8;
+      const discount    = Math.min(maxDiscount, Math.max(0, parseFloat(item.discount) || 0));
+      const taxableAmt  = (unitPrice - discount) * itemQty;
       const gstRate    = parseFloat(inv.masterPart.gstRate || 18);
       const itemCgst   = taxableAmt * (gstRate / 2 / 100);
       const itemSgst   = itemCgst;
@@ -115,7 +125,16 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
     }
 
     const totalAmount  = subtotal + cgst + sgst;
-    const creditAmt    = creditAmount ? parseFloat(creditAmount) : 0;
+    const creditAmt    = creditAmount ? Math.max(0, parseFloat(creditAmount)) : 0;
+    if (creditAmt > totalAmount + 0.01) {
+      return res.status(400).json({ error: `Credit amount (₹${creditAmt.toFixed(2)}) cannot exceed invoice total (₹${totalAmount.toFixed(2)})` });
+    }
+    // If explicit cash + UPI amounts are provided, their combined sum must match the paid portion
+    const cashAmt = cashAmount ? Math.max(0, parseFloat(cashAmount)) : 0;
+    const upiAmt  = upiAmount  ? Math.max(0, parseFloat(upiAmount))  : 0;
+    if ((cashAmt > 0 || upiAmt > 0) && Math.abs(cashAmt + upiAmt + creditAmt - totalAmount) > 1) {
+      return res.status(400).json({ error: `Payment breakdown (₹${(cashAmt + upiAmt + creditAmt).toFixed(2)}) must match invoice total (₹${totalAmount.toFixed(2)})` });
+    }
     const isCreditSale = creditAmt > 0;
     const paidAmount   = totalAmount - creditAmt;
 
@@ -291,6 +310,7 @@ router.get('/invoices', authenticate, requireShopOwner, async (req, res, next) =
       prisma.invoice.count({ where }),
     ]);
 
+    res.set('Cache-Control', 'private, max-age=15, must-revalidate');
     res.json({ success: true, invoices, total });
   } catch (err) { next(err); }
 });

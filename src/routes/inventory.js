@@ -93,6 +93,10 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
     if (!masterPartId || !sellingPrice) {
       return res.status(400).json({ error: 'masterPartId and sellingPrice required' });
     }
+    const parsedSell = parseFloat(sellingPrice);
+    if (!Number.isFinite(parsedSell) || parsedSell <= 0) {
+      return res.status(400).json({ error: 'Selling price must be greater than 0' });
+    }
     // Buying price, when provided, must be a positive amount (0 is not valid).
     if (buyingPrice !== undefined && buyingPrice !== null && buyingPrice !== '' && parseFloat(buyingPrice) <= 0) {
       return res.status(400).json({ error: 'Buying price must be greater than 0' });

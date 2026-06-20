@@ -70,6 +70,22 @@ router.post('/extract', express.json({ limit: '18mb' }), authenticate, requireSh
       return res.status(422).json({ success: false, error: { message: 'No line items could be read automatically. If this is a scanned/photo invoice (no text layer) it can\'t be parsed — add the items manually.' } });
     }
 
+    // Prevent duplicate extraction: if an identical invoice number already exists for
+    // this shop, return the existing bill's data so the review UI can resume it.
+    if (extracted.invoiceNumber) {
+      const existing = await prisma.purchaseBill.findFirst({
+        where: { shopId: req.shopId, invoiceNumber: extracted.invoiceNumber },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing) {
+        if (existing.status === 'IMPORTED') {
+          return res.status(409).json({ success: false, error: { message: `Invoice ${extracted.invoiceNumber} has already been imported into inventory.` } });
+        }
+        // PENDING_REVIEW duplicate — return the existing bill so the user can continue reviewing it
+        return res.json({ success: true, billId: existing.billId, extracted: existing.extracted, duplicate: true });
+      }
+    }
+
     // Archive the original PDF (best-effort — extraction result is not blocked on it)
     let fileUrl = null;
     try {
@@ -127,90 +143,95 @@ router.post('/:id/import', authenticate, requireShopOwner, async (req, res, next
     const supplierNote = [bill.supplierName, bill.invoiceNumber ? `Bill: ${bill.invoiceNumber}` : null]
       .filter(Boolean).join(' · ');
 
+    // Validate all items up-front before touching the DB
+    const validItems = [];
     for (const item of items) {
-      const partName = String(item.partName || '').trim();
+      const partName = String(item.partName || '').trim().slice(0, 200);
       const qty = parseInt(item.qty, 10);
-      // Accept rateExclGst (new name) or rate (backward-compat)
       const rate = parseFloat(item.rateExclGst ?? item.rate);
       const sellingPrice = parseFloat(item.sellingPrice);
-      if (!partName || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(rate) || rate <= 0
-        || !Number.isFinite(sellingPrice) || sellingPrice <= 0) {
+      if (!partName || !Number.isFinite(qty) || qty <= 0 || qty > 100000
+        || !Number.isFinite(rate) || rate <= 0 || rate > 10000000
+        || !Number.isFinite(sellingPrice) || sellingPrice <= 0 || sellingPrice > 10000000) {
         errors.push({ partName: partName || '(blank)', error: 'invalid name/qty/rate/sellingPrice' });
         continue;
       }
-      try {
-        // 1. Match an existing MasterPart by exact name (case-insensitive), else create one
-        let master = await prisma.masterPart.findFirst({
-          where: { partName: { equals: partName, mode: 'insensitive' } },
-        });
-        if (!master) {
-          master = await prisma.masterPart.create({
-            data: {
-              partName,
-              hsnCode: item.hsnCode || null,
-              source: 'BILL_IMPORT',
-              status: 'PENDING',
-              contributedByShopId: req.shopId,
-              isUniversal: false,
-              requiresFitment: false,
-            },
-          });
-        }
+      validItems.push({ ...item, partName, qty, rate, sellingPrice });
+    }
 
-        // 2. Upsert shop inventory + movement
-        const existing = await prisma.shopInventory.findUnique({
-          where: { shopId_masterPartId: { shopId: req.shopId, masterPartId: master.masterPartId } },
-        });
-        let inv;
-        let movementType;
-        if (existing) {
-          inv = await prisma.shopInventory.update({
-            where: { inventoryId: existing.inventoryId },
+    if (!validItems.length && errors.length > 0) {
+      return res.status(400).json({ success: false, error: { message: 'No valid items to import', errors } });
+    }
+
+    // Process each valid item; each item gets its own mini-transaction so one
+    // bad item doesn't roll back all the others.
+    for (const item of validItems) {
+      const { partName, qty, rate, sellingPrice } = item;
+      try {
+        await prisma.$transaction(async (tx) => {
+          // 1. Match existing MasterPart by name or create
+          let master = await tx.masterPart.findFirst({
+            where: { partName: { equals: partName, mode: 'insensitive' } },
+          });
+          if (!master) {
+            master = await tx.masterPart.create({
+              data: {
+                partName,
+                hsnCode: item.hsnCode || null,
+                source: 'BILL_IMPORT',
+                status: 'PENDING',
+                contributedByShopId: req.shopId,
+                isUniversal: false,
+                requiresFitment: false,
+              },
+            });
+          }
+
+          // 2. Upsert shop inventory + movement
+          const existing = await tx.shopInventory.findUnique({
+            where: { shopId_masterPartId: { shopId: req.shopId, masterPartId: master.masterPartId } },
+          });
+          let inv;
+          let movementType;
+          if (existing) {
+            inv = await tx.shopInventory.update({
+              where: { inventoryId: existing.inventoryId },
+              data: { stockQty: { increment: qty }, buyingPrice: rate, sellingPrice, lastPurchasedAt: new Date() },
+            });
+            movementType = 'PURCHASE';
+          } else {
+            inv = await tx.shopInventory.create({
+              data: { shopId: req.shopId, masterPartId: master.masterPartId, sellingPrice, buyingPrice: rate, stockQty: qty, lastPurchasedAt: new Date() },
+            });
+            movementType = 'OPENING';
+          }
+          await tx.movement.create({
             data: {
-              stockQty: { increment: qty },
-              buyingPrice: rate,
-              sellingPrice,
-              lastPurchasedAt: new Date(),
+              shopId: req.shopId, inventoryId: inv.inventoryId, createdBy: req.user.userId,
+              type: movementType, qty, unitPrice: rate, totalAmount: rate * qty,
+              referenceNumber: bill.invoiceNumber || null,
+              notes: supplierNote || 'Imported from uploaded bill',
             },
           });
-          movementType = 'PURCHASE';
-        } else {
-          inv = await prisma.shopInventory.create({
-            data: {
-              shopId: req.shopId,
-              masterPartId: master.masterPartId,
-              sellingPrice,
-              buyingPrice: rate,
-              stockQty: qty,
-              lastPurchasedAt: new Date(),
-            },
-          });
-          movementType = 'OPENING';
-        }
-        await prisma.movement.create({
-          data: {
-            shopId: req.shopId,
-            inventoryId: inv.inventoryId,
-            createdBy: req.user.userId,
-            type: movementType,
-            qty,
-            unitPrice: rate,
-            totalAmount: rate * qty,
-            referenceNumber: bill.invoiceNumber || null,
-            notes: supplierNote || 'Imported from uploaded bill',
-          },
+          results.push({ partName, inventoryId: inv.inventoryId, masterPartId: master.masterPartId, qty, status: movementType });
         });
-        results.push({ partName, inventoryId: inv.inventoryId, masterPartId: master.masterPartId, qty, status: movementType });
       } catch (err) {
         console.error('[purchase-bills/import] item failed:', partName, err?.message);
         errors.push({ partName, error: 'database error' });
       }
     }
 
-    if (results.length) {
+    if (results.length > 0) {
       await prisma.purchaseBill.update({
         where: { billId },
         data: { status: 'IMPORTED', importedAt: new Date() },
+      });
+    } else {
+      // All items failed — tell the client clearly
+      return res.status(207).json({
+        success: false,
+        error: { message: 'All items failed to import — check errors for details' },
+        imported: 0, errors,
       });
     }
 
@@ -248,27 +269,70 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Extract the Cloudinary public_id from a delivery URL.
+// Handles both /image/upload/ and /raw/upload/ with optional version segment.
+function cloudinaryPublicId(url) {
+  const m = url.match(/\/(?:image|raw|video)\/upload\/(?:v\d+\/)?(.+?)(\.[^./]+)?$/);
+  return m ? m[1] : null;
+}
+
 // ─── GET /api/shop/purchase-bills/pdf-proxy — server-side PDF fetch ──────────
-// Works around Cloudinary's image-type delivery blocking PDFs (old uploads).
-// Also ensures correct Content-Type so browsers open the PDF viewer.
+// Cascades through strategies so both old (image/upload) and new (raw/upload)
+// Cloudinary PDFs open correctly. Old uploads are blocked by unsigned delivery
+// so we fall back to private_download_url which generates a time-limited
+// authenticated download link that bypasses Cloudinary's delivery restrictions.
 router.get('/pdf-proxy', authenticate, requireShopOwner, async (req, res) => {
   const url = (req.query.url || '').trim();
   const CLOUDINARY_HOST = 'res.cloudinary.com';
   if (!url || !url.includes(CLOUDINARY_HOST)) {
     return res.status(400).json({ error: 'Invalid or missing url parameter' });
   }
-  // Try the URL as-is first; if it fails and has /image/upload/, retry as /raw/upload/
   const tryFetch = async (fetchUrl) => {
-    const r = await fetch(fetchUrl);
-    if (r.ok) return r;
-    return null;
+    try {
+      const r = await fetch(fetchUrl);
+      return r.ok ? r : null;
+    } catch { return null; }
   };
   try {
-    let result = await tryFetch(url);
+    // 1. Try raw/upload directly (new uploads stored as resource_type: raw)
+    const rawUrl = url.includes('/raw/upload/') ? url : url.replace('/image/upload/', '/raw/upload/');
+    let result = await tryFetch(rawUrl);
+
+    // 2. Try original URL as-is
+    if (!result && rawUrl !== url) result = await tryFetch(url);
+
+    // 3. fl_attachment flag
     if (!result && url.includes('/image/upload/')) {
-      result = await tryFetch(url.replace('/image/upload/', '/raw/upload/'));
+      result = await tryFetch(url.replace('/image/upload/', '/image/upload/fl_attachment/'));
     }
-    if (!result) return res.status(404).send('PDF not available');
+
+    // 4. Cloudinary private_download_url — generates a time-limited signed download
+    //    link authenticated entirely via URL params (no Authorization header needed;
+    //    adding one actually breaks signature verification → 404).
+    if (!result) {
+      const pid = cloudinaryPublicId(url);
+      if (pid) {
+        try {
+          // Try as raw first, then as image (old uploads)
+          for (const rtype of ['raw', 'image']) {
+            const dlUrl = cloudinary.utils.private_download_url(pid, 'pdf', {
+              resource_type: rtype,
+              type: 'upload',
+              expires_at: Math.floor(Date.now() / 1000) + 120,
+            });
+            const r = await tryFetch(dlUrl); // NO auth headers — signed URL only
+            if (r) { result = r; break; }
+          }
+        } catch (e) {
+          console.error('[pdf-proxy] private_download_url error:', e.message);
+        }
+      }
+    }
+
+    if (!result) {
+      console.error('[pdf-proxy] all strategies failed for:', url);
+      return res.status(404).send('PDF not available');
+    }
     const buf = Buffer.from(await result.arrayBuffer());
     res.set('Content-Type', 'application/pdf');
     res.set('Content-Disposition', 'inline; filename="bill.pdf"');
