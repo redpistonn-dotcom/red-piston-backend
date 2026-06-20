@@ -126,7 +126,10 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
       // rolls back (e.g. stock check fails) the counter rolls back too.
       const yyyymm = currentYYYYMM();
       const seq = await nextSeq(tx, req.shopId, `INV-${yyyymm}`);
-      const invoiceNumber = `${yyyymm}-${String(seq).padStart(4, '0')}`;
+      // Prefix with shopId so the number is globally unique across shops
+      // (the DB unique constraint is global, not per-shop).
+      // Format: S{shopId}-YYYYMM-NNNN  e.g. S3-202606-0001
+      const invoiceNumber = `S${req.shopId}-${yyyymm}-${String(seq).padStart(4, '0')}`;
 
       const inv = await tx.invoice.create({
         data: {
