@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-06-20] — Invoice number collision fix + receipt-style PDF redesign
+
+### Fixes
+- **Invoice number collision**: `invoice_number` has a global `@unique` constraint but counters
+  were per-shop, so two shops both generating `202606-0001` caused a unique constraint violation.
+  Format is now `S{shopId}-{YYYYMM}-{NNNN}` (e.g. `S3-202606-0001`) ensuring global uniqueness.
+- **PDF redesign** (`src/services/pdf.js`): both Invoice and Purchase Order PDFs now match a
+  clean receipt layout — shop logo (or name) at top, address/GSTIN/phone centered, thin divider,
+  bold title, meta left/right columns, items table with grey header, right-aligned summary totals,
+  "Thank you" footer. Shared `buildReceiptDef()` keeps both consistent.
+  Shop logo is fetched from `logoUrl` or `photoUrl` and embedded as base64 in the PDF.
+
+### Frontend
+- **Session restore after expiry** (`App.tsx`): `auth:session-expired` now restores admin context
+  from the impersonation backup before falling back to full logout.
+- **Sidebar push** (`styles/theme.ts`): sidebar hover now slides topbar/banner/content right
+  via CSS sibling combinator with smooth transition instead of overlapping content.
+- **Cold-start data retry** (`ERPShell.tsx`): data load retries once after 8 s; shows inline
+  error banner with Retry button on second failure (Render free tier cold starts).
+- **Store HMR safety** (`context/store.ts`): added `import.meta.hot.decline()` to force a full
+  page reload on store module change, preventing the duplicate StoreContext HMR crash.
+
 ## [2026-06-12] — Product Audit round 2: emails, order wiring, image persistence
 
 ### Fixes / New
