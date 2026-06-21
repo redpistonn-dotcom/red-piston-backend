@@ -51,16 +51,10 @@ const PORT = process.env.PORT || 3001;
 // images from S3/CDN origins without triggering CORP blocks.
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "https://res.cloudinary.com", "data:"],
-      connectSrc: ["'self'", "https://api.razorpay.com", "https://*.googleapis.com"],
-      frameAncestors: ["'none'"],
-      objectSrc: ["'none'"],
-    },
-  },
+  // CSP disabled: this is a pure JSON API — no HTML pages served.
+  // CSP on an API backend only breaks browser preflight/CORS behaviour
+  // without providing any XSS protection (there is no DOM to inject into).
+  contentSecurityPolicy: false,
 }));
 
 app.use(httpLogger);

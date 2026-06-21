@@ -90,7 +90,7 @@ export const requireAdmin = async (req, res, next) => {
 export function requirePermission(permission) {
   return async (req, res, next) => {
     const slug = (req.user.userType?.slug || req.user.role || "").toUpperCase();
-    if (slug === "PLATFORM_ADMIN" || slug === "ADMIN") return next();
+    if (slug === "PLATFORM_ADMIN" || slug === "ADMIN" || slug === "SHOP_OWNER") return next();
     try {
       const shopUser = await prisma.shopUser.findUnique({
         where: { shopId_userId: { shopId: req.shopId, userId: req.user.userId } },
