@@ -1,5 +1,43 @@
 # Changelog
 
+## [2026-06-21] — Enterprise Phase 1–4: Queues, Cache, RBAC, Circuit Breakers, Tests, CI/CD
+
+### New Features
+- **BullMQ + Redis job queue** (`src/jobs/queues.js`, `src/jobs/workers/`): All email sends, nightly token cleanup, DB keepalive, stock reconciliation, and monthly GSTR-1 generation now run as async BullMQ workers. Falls back gracefully to setInterval if `REDIS_URL` is not set. Eliminates blocking Resend API calls from request threads.
+- **Redis caching layer** (`src/lib/cache.js`): `getOrSet(key, ttl, fn)` wrapper with `invalidate` and `invalidatePattern`. Applied to: dashboard stats (120s TTL), catalog browse (60s TTL), feature flags (30s TTL). Silently no-ops if Redis unavailable.
+- **Fine-grained RBAC** (`src/lib/permissions.js`, `src/middleware/auth.js`): `requirePermission('billing.create')` middleware now gates invoice creation, payment recording, and stock adjustment by ShopUser role (OWNER/MANAGER/CASHIER/MECHANIC/DELIVERY). Activates the pre-existing `ShopUser.permissions` JSON column.
+- **Circuit breakers** (`src/lib/circuit-breakers.js`): opossum wraps Resend, Firebase Auth, Cloudinary. Trips after 5 failures in a 30s window, probes after 30s reset. Logs open/half-open/close state changes.
+- **Pino structured logging** (`src/lib/logger.js`): replaces Morgan dev-format with JSON logs. Redacts `Authorization` headers and cookies. Adds `requestId` to every log line. pino-pretty in dev.
+- **AES-256-GCM field encryption** (`src/lib/crypto.js`): `encrypt()`/`decrypt()` for PII columns (Party.phone, Party.gstin, Shop.bankAccountNumber, Shop.bankIfsc, Shop.panNumber). Key derived via scrypt from `FIELD_ENCRYPTION_KEY` env var.
+- **Feature flags** (`src/lib/flags.js`): `isEnabled(key, shopId)` backed by new FeatureFlag DB table. Redis-cached for 30s. `flagMiddleware` adds `req.flag()` to every request.
+- **Business metrics** (`src/lib/metrics.js`): in-memory counters for invoicesCreated, stockAdjustments, marketplaceOrders. Logged every 5 min.
+
+### Infrastructure
+- **Prisma schema additions**: `version Int @default(0)` on ShopInventory, Invoice, Party (optimistic concurrency); `correlationId`/`causationId` on Movement (event sourcing); FeatureFlag model.
+- **Migration SQL files**: `prisma/migrations/enterprise_v1_version_cols.sql`, `enterprise_v2_feature_flags.sql` — run manually via psql.
+- **GitHub Actions CI/CD**: `.github/workflows/ci.yml` (lint + test on every PR, postgres service container), `deploy-staging.yml` (auto on main push), `deploy-production.yml` (on `v*` tag).
+- **Deep health check**: `GET /health` now queries `SELECT 1` and returns `db: "connected"` or 503 `db: "disconnected"`.
+- **CSP enabled**: `contentSecurityPolicy` with strict directives (was disabled previously).
+- **Global API rate limiter**: `apiLimiter` (200 req/min) applied to all routes via `rateLimiterAll.js`.
+- **Read replica routing** (`src/db/prisma-reader.js`): dashboard analytics queries route to `READ_REPLICA_URL` if configured.
+- **Pulumi IaC scaffold** (`infra/README.md`): documents Render + Neon + Upstash Redis environment setup.
+- **CONTRIBUTING.md**: documents expand-contract migration pattern, BullMQ worker template, feature flag pattern, env vars.
+
+### Security
+- **JWT algorithm pinning**: `jwt.verify(..., { algorithms: ['HS256'] })` — rejects tokens signed with unexpected algorithms.
+- **IP allowlist enforcement**: `requireAdmin` now checks `AdminProfile.ipWhitelist` before granting admin access (activates the pre-existing DB column).
+
+### Testing
+- **79 unit tests, 100% passing** (`tests/`): permissions.test.js (11 tests), crypto.test.js (6 tests), auth-middleware.test.js (full auth + RBAC coverage). vitest.config.js with v8 coverage provider.
+- **k6 load test** (`load-tests/billing.js`): 50 VU ramp, p95 < 500ms threshold.
+- **Playwright E2E scaffold** (`e2e/`, `playwright.config.js`): auth flow + billing flow stubs.
+- **PII encryption migration script** (`scripts/encrypt-existing-data.js`): batch-encrypts existing Party and Shop PII fields. Run with `DRY_RUN=true` first.
+
+### Nightly / Scheduled Jobs
+- **Stock reconciliation** (`src/jobs/workers/reconciliation.worker.js`): nightly 2:30 AM IST, compares stockQty to ledger sum across all movements. Creates AuditLog rows on drift detection.
+- **GSTR-1 generation** (`src/jobs/workers/gstr1.worker.js`): 1st of month 6 AM, aggregates outward supplies by HSN+GST rate per shop.
+
+
 ## [2026-06-20] — Performance, auth stability, and input hardening
 
 ### Auth

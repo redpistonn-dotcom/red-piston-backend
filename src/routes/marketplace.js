@@ -4,6 +4,8 @@ import prisma from '../db/prisma.js';
 import { authenticate } from '../middleware/auth.js';
 import { pageBounds } from '../lib/pagination.js';
 import { sendOrderConfirmationEmail } from '../services/email.js';
+import { getOrSet, invalidatePattern } from '../lib/cache.js';
+import { incrementCounter } from '../lib/metrics.js';
 
 const router = Router();
 
@@ -109,24 +111,29 @@ router.get('/browse', async (req, res, next) => {
     }
 
     // ── Step 3: Fetch matching parts with shop inventory ──────────────────────
-    const parts = await prisma.masterPart.findMany({
-      where: partWhere,
-      include: {
-        inventory: {
-          where: inventoryBase,   // same condition as partWhere — filters by price too
-          include: { shop: true },
+    const ck = "catalog:browse:" + JSON.stringify({...req.query, page:undefined});
+    const results = await getOrSet(ck, 60, async () => {
+      const parts = await prisma.masterPart.findMany({
+        where: partWhere,
+        include: {
+          inventory: {
+            where: inventoryBase,   // same condition as partWhere — filters by price too
+            include: { shop: true },
+          },
+          fitments: resolvedVehicleId
+            ? { where: { vehicleId: resolvedVehicleId }, select: { fitType: true } }
+            : false,
         },
-        fitments: resolvedVehicleId
-          ? { where: { vehicleId: resolvedVehicleId }, select: { fitType: true } }
-          : false,
-      },
-      orderBy: { partName: 'asc' },
-      take,
-      skip,
-    });
+        orderBy: { partName: 'asc' },
+        take,
+        skip,
+      });
 
-    // ── Step 4: Count total (for pagination) ─────────────────────────────────
-    const total = await prisma.masterPart.count({ where: partWhere });
+      // ── Step 4: Count total (for pagination) ───────────────────────────────
+      const total = await prisma.masterPart.count({ where: partWhere });
+      return { parts, total };
+    });
+    const { parts, total } = results;
 
     // ── Step 5: Shape response ─────────────────────────────────────────────────
     const userLat = lat ? parseFloat(lat) : null;
@@ -663,6 +670,9 @@ router.post('/orders', authenticate, async (req, res, next) => {
       }).catch((e) => console.error('[EMAIL] Order confirmation failed:', e?.message));
     }
 
+    await invalidatePattern("catalog:browse:*").catch(() => {});
+    incrementCounter("marketplaceOrders");
+
     res.json({ success: true, orders, orderNumber });
   } catch (err) { next(err); }
 });
@@ -918,7 +928,7 @@ router.post('/catalog/:masterPartId/review', authenticate, async (req, res, next
 });
 
 // GET /api/marketplace/orders/:id/track
-router.get('/orders/:id/track', async (req, res, next) => {
+router.get('/orders/:id/track', authenticate, async (req, res, next) => {
   try {
     const order = await prisma.marketplaceOrder.findUnique({
       where: { orderId: parseInt(req.params.id, 10) },

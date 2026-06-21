@@ -1,0 +1,38 @@
+name: Keep backend warm
+
+# Render's free tier spins the service DOWN after ~15 min idle, so the next
+# request pays a 30-60s cold start — the main cause of "sometimes very slow".
+# This pings /health on a schedule to keep the instance warm during active hours.
+#
+# The window is intentionally limited (not 24/7) to stay under Render's free
+# monthly instance-hour cap. Widen or narrow the cron below to taste; remove the
+# hour range (`2-19` -> `*`) for round-the-clock warming if your plan allows it.
+on:
+  schedule:
+    # Every 10 min, 02:00-19:59 UTC (~07:30-01:30 IST) — covers Indian active hours.
+    - cron: '*/10 2-19 * * *'
+  workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
+
+# Don't pile up runs if one is slow (a cold start can take ~60s).
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: |
+          URL="https://red-piston-backend.onrender.com/health"
+          # If the instance is asleep the first hit triggers the wake (slow), so
+          # allow a long timeout and retry a couple times to confirm it came up.
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 "$URL" || echo "000")
+            echo "Attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 20
+          done
+          echo "::warning::/health did not return 200 after 3 attempts (transient cold start?)"
+          # Don't fail the workflow on a transient miss — avoids noisy failure emails.
+          exit 0

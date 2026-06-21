@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
+import prismaReader from '../db/prisma-reader.js';
+import { getOrSet } from '../lib/cache.js';
 
 const router = Router();
 
@@ -22,25 +24,28 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
       startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     }
 
+    const today = new Date().toISOString().slice(0, 10);
+    const cacheKey = "shop:dashboard:" + shopId + ":" + today + ":" + period;
+
     // These five reads are independent — run them in parallel so the dashboard
     // pays ONE round-trip's latency, not five stacked serially (matters most on
     // a cold/cross-AZ Supabase connection).
-    const [salesAgg, purchaseAgg, lowStockRows, topProducts, totalOutstanding] = await Promise.all([
+    const [salesAgg, purchaseAgg, lowStockRows, topProducts, totalOutstanding] = await getOrSet(cacheKey, 120, async () => Promise.all([
       // Sales aggregates
-      prisma.movement.aggregate({
+      prismaReader.movement.aggregate({
         where: { shopId, type: 'SALE', createdAt: { gte: startDate } },
         _sum: { totalAmount: true, profit: true },
         _count: true,
       }),
       // Purchase aggregates
-      prisma.movement.aggregate({
+      prismaReader.movement.aggregate({
         where: { shopId, type: 'PURCHASE', createdAt: { gte: startDate } },
         _sum: { totalAmount: true },
         _count: true,
       }),
       // Low stock items — cross-column comparison requires raw SQL
       // (Prisma does not support WHERE column_a <= column_b in its query builder)
-      prisma.$queryRaw`
+      prismaReader.$queryRaw`
         SELECT si.inventory_id, si.shop_id, si.master_part_id,
                si.selling_price, si.buying_price, si.stock_qty,
                si.min_stock_alert, si.rack_location, si.is_marketplace_listed,
@@ -54,7 +59,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
         LIMIT  10
       `,
       // Top selling products
-      prisma.movement.groupBy({
+      prismaReader.movement.groupBy({
         by: ['inventoryId'],
         where: { shopId, type: 'SALE', createdAt: { gte: startDate } },
         _sum: { qty: true, totalAmount: true },
@@ -62,11 +67,11 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
         take: 5,
       }),
       // Outstanding dues
-      prisma.party.aggregate({
+      prismaReader.party.aggregate({
         where: { shopId, type: { in: ['CUSTOMER', 'BOTH'] } },
         _sum: { outstanding: true },
       }),
-    ]);
+    ]));
 
     const lowStockItems = lowStockRows.map(r => ({
       inventoryId: r.inventory_id,

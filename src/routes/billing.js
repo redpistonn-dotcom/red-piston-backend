@@ -11,11 +11,12 @@
 
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
-import { authenticate, requireShopOwner } from '../middleware/auth.js';
+import { authenticate, requireShopOwner, requirePermission } from '../middleware/auth.js';
 import { generateInvoicePdf } from '../services/pdf.js';
 import { sendInvoiceWhatsApp } from '../services/whatsapp.js';
 import { nextSeq, currentYYYYMM } from '../lib/sequence.js';
 import { writeAudit, ET, ACT } from '../lib/audit.js';
+import { incrementCounter } from '../lib/metrics.js';
 
 const router = Router();
 
@@ -39,7 +40,7 @@ async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAm
 }
 
 // ─── POST /api/billing/invoice ────────────────────────────────────────────────
-router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) => {
+router.post('/invoice', authenticate, requireShopOwner, requirePermission('billing.create'), async (req, res, next) => {
   try {
     const {
       items, partyId, partyName, partyPhone, partyGstin,
@@ -276,6 +277,8 @@ router.post('/invoice', authenticate, requireShopOwner, async (req, res, next) =
     });
 
     res.json({ success: true, invoice });
+    incrementCounter('invoicesCreated');
+    incrementCounter('invoicesTotalAmount', totalAmount);
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
@@ -429,7 +432,7 @@ router.post('/invoice/:id/send-whatsapp', authenticate, requireShopOwner, async 
 });
 
 // ─── POST /api/billing/invoice/:id/payment ───────────────────────────────────
-router.post('/invoice/:id/payment', authenticate, requireShopOwner, async (req, res, next) => {
+router.post('/invoice/:id/payment', authenticate, requireShopOwner, requirePermission('billing.payment'), async (req, res, next) => {
   try {
     const { amount, mode, reference, note } = req.body;
 

@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import prisma from '../db/prisma.js';
+import { hasPermission } from '../lib/permissions.js';
 
 export const authenticate = async (req, res, next) => {
   try {
@@ -11,7 +12,7 @@ export const authenticate = async (req, res, next) => {
       });
     }
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     const user = await prisma.user.findUnique({
       where: { userId: decoded.userId },
       // Drop the full `shop` JOIN (no handler reads req.user.shop — confirmed) and
@@ -45,7 +46,7 @@ export const authenticate = async (req, res, next) => {
 };
 
 export const requireShopOwner = (req, res, next) => {
-  const slug = req.user.userType?.slug || req.user.role;
+  const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();
   if (!['SHOP_OWNER', 'PLATFORM_ADMIN'].includes(slug)) {
     return res.status(403).json({
       success: false,
@@ -63,9 +64,20 @@ export const requireShopOwner = (req, res, next) => {
   next();
 };
 
-export const requireAdmin = (req, res, next) => {
+export const requireAdmin = async (req, res, next) => {
   const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();
   const isAdmin = slug === 'PLATFORM_ADMIN' || slug === 'ADMIN';
+  if (isAdmin) {
+    try {
+      const ap = await prisma.adminProfile.findUnique({ where: { userId: req.user.userId }, select: { ipWhitelist: true } });
+      if (ap && ap.ipWhitelist && ap.ipWhitelist.length > 0) {
+        const clientIp = req.ip || "";
+        if (!ap.ipWhitelist.includes(clientIp)) {
+          return res.status(403).json({ success: false, error: { code: "IP_RESTRICTED", message: "Access denied from this IP address" } });
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
   if (!isAdmin) {
     return res.status(403).json({
       success: false,
@@ -74,4 +86,25 @@ export const requireAdmin = (req, res, next) => {
   }
   next();
 };
+
+export function requirePermission(permission) {
+  return async (req, res, next) => {
+    const slug = (req.user.userType?.slug || req.user.role || "").toUpperCase();
+    if (slug === "PLATFORM_ADMIN" || slug === "ADMIN") return next();
+    try {
+      const shopUser = await prisma.shopUser.findUnique({
+        where: { shopId_userId: { shopId: req.shopId, userId: req.user.userId } },
+        select: { role: true, permissions: true, isActive: true },
+      });
+      if (!shopUser || !shopUser.isActive) {
+        return res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "Staff account not active" } });
+      }
+      if (!hasPermission(shopUser.role, shopUser.permissions, permission)) {
+        return res.status(403).json({ success: false, error: { code: "PERMISSION_DENIED", message: "Permission required: " + permission } });
+      }
+      req.shopUserRole = shopUser.role;
+      next();
+    } catch (err) { next(err); }
+  };
+}
 

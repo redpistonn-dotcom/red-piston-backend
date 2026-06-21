@@ -3,6 +3,7 @@ import prisma from '../../db/prisma.js';
 import { authenticate } from '../../middleware/auth.js';
 import { sendShopOwnerVerificationAlert, sendShopOwnerUnderReviewEmail } from '../../services/email.js';
 import { findUserByEmailInsensitive } from './helpers.js';
+import { emailQueue } from '../../jobs/queues.js';
 
 const router = Router();
 
@@ -123,13 +124,15 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
     const stateCode = STATE_CODE_MAP[resolvedState] || null;
 
     // ── Create shop + update user in a single transaction ───────────────────
+    const shopEmail = email?.trim() || null;
+
     const [shop, updatedUser] = await prisma.$transaction([
       prisma.shop.create({
         data: {
           name: shopName.trim(),
           ownerName: ownerName.trim(),
           phone: cleanPhone,
-          email: email?.trim() || null,
+          email: shopEmail,
           address: address.trim(),
           city: city.trim(),
           state: resolvedState,
@@ -147,6 +150,8 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
         data: {
           name: ownerName.trim(),
           verificationStatus: 'PENDING',
+          // save email on the user record so future sends work
+          ...(shopEmail && !user.email ? { email: shopEmail } : {}),
         },
       }),
     ]);
@@ -166,14 +171,57 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
       where: { role: 'PLATFORM_ADMIN', isActive: true, email: { not: null } },
       select: { email: true },
     });
-    sendShopOwnerVerificationAlert(
-      { ...updatedUser, shop },
-      admins.map(a => a.email)
-    ).catch(e => console.error('[EMAIL] Admin alert failed:', e));
 
-    // Acknowledge the applicant: "your profile is under review"
-    sendShopOwnerUnderReviewEmail(user.email || email?.trim() || null, ownerName.trim())
-      .catch(e => console.error('[EMAIL] Under-review email failed:', e));
+    const hasResendKey = !!process.env.RESEND_API_KEY;
+    const hasSenderEmail = !!process.env.RESEND_SENDER_EMAIL;
+    const ownerEmail = shopEmail || user.email || null;
+    console.log(`[EMAIL] env: RESEND_API_KEY=${hasResendKey}, RESEND_SENDER_EMAIL=${hasSenderEmail}`);
+    console.log(`[EMAIL] admin count with email: ${admins.length}`);
+    console.log(`[EMAIL] owner email present: ${!!ownerEmail}`);
+
+    if (!hasResendKey || !hasSenderEmail) {
+      console.error('[EMAIL] SKIPPING sends — missing RESEND_API_KEY or RESEND_SENDER_EMAIL in environment. Set these in Render dashboard → Environment.');
+    } else {
+      // ── Admin verification alert ─────────────────────────────────────────
+      const adminAlertSubject = `[RedPiston] New Shop Owner Pending Verification — ${ownerName.trim() || shopEmail}`;
+      const adminAlertText = `New shop owner awaiting verification:\nName: ${ownerName.trim() || '—'}\nEmail: ${shopEmail || '—'}\n\nPlease review in the Admin Console.`;
+
+      if (emailQueue) {
+        admins.forEach(a => {
+          emailQueue.add('shop-notification', {
+            to: a.email,
+            subject: adminAlertSubject,
+            html: null,
+            text: adminAlertText,
+          }).catch(err => console.error('[Email Queue] Admin alert enqueue failed:', err));
+        });
+      } else {
+        // direct send fallback
+        sendShopOwnerVerificationAlert(
+          { ...updatedUser, shop },
+          admins.map(a => a.email)
+        ).catch(e => console.error('[EMAIL] Admin alert failed:', e?.message || e));
+      }
+
+      // ── Under-review acknowledgement to the applicant ────────────────────
+      const underReviewSubject = 'Profile Under Review — RedPiston';
+      const underReviewText = `Thank you for registering. Your shop profile is currently under review. You will receive another email once approved — usually within 24 hours.`;
+
+      if (emailQueue) {
+        if (ownerEmail) {
+          emailQueue.add('shop-notification', {
+            to: ownerEmail,
+            subject: underReviewSubject,
+            html: null,
+            text: underReviewText,
+          }).catch(err => console.error('[Email Queue] Under-review enqueue failed:', err));
+        }
+      } else {
+        // direct send fallback
+        sendShopOwnerUnderReviewEmail(ownerEmail, ownerName.trim())
+          .catch(e => console.error('[EMAIL] Under-review email failed:', e?.message || e));
+      }
+    }
 
     res.json({
       success: true,

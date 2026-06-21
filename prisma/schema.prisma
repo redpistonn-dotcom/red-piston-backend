@@ -635,6 +635,7 @@ model ShopInventory {
   sellingPrice          Decimal   @map("selling_price") @db.Decimal(10, 2)
   buyingPrice           Decimal?  @map("buying_price") @db.Decimal(10, 2)
   stockQty              Int       @default(0) @map("stock_qty")
+  version               Int       @default(0) @map("version")
   reservedQty           Int       @default(0) @map("reserved_qty")
   minStockAlert         Int       @default(5) @map("min_stock_alert")
   maxStockLevel         Int?      @map("max_stock_level")
@@ -721,6 +722,8 @@ model Movement {
   paymentMode     String? @map("payment_mode")
   notes         String?
   createdAt     DateTime @default(now()) @map("created_at")
+  correlationId String?  @map("correlation_id")
+  causationId   Int?     @map("causation_id")
 
   shop      Shop           @relation(fields: [shopId], references: [shopId])
   inventory ShopInventory? @relation(fields: [inventoryId], references: [inventoryId])
@@ -730,6 +733,8 @@ model Movement {
 
   @@index([shopId, createdAt(sort: Desc)])
   @@index([inventoryId])
+  @@index([inventoryId, createdAt(sort: Desc)]) // composite for WHERE inventoryId + ORDER BY createdAt
+  @@index([partyId])                            // supplier/customer ledger queries
   @@index([shopId, type])                       // movement type reporting (SALE / PURCHASE / RETURN breakdown)
   @@index([invoiceId])                          // invoice detail — all movements for an invoice
   @@map("movements")
@@ -757,6 +762,7 @@ model Party {
   deletedAt   DateTime? @map("deleted_at")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
+  version     Int       @default(0) @map("version")
   shop        Shop      @relation(fields: [shopId], references: [shopId])
 
   invoices       Invoice[]
@@ -840,6 +846,7 @@ model Invoice {
   status         String   @default("PAID")
   notes          String?
   createdAt      DateTime @default(now()) @map("created_at")
+  version        Int      @default(0) @map("version")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   shop          Shop             @relation(fields: [shopId], references: [shopId])
@@ -853,6 +860,7 @@ model Invoice {
   @@index([shopId, createdAt(sort: Desc)])
   @@index([shopId, status])                     // filter PAID / CREDIT / ESTIMATE invoices
   @@index([partyId])                            // party invoice history
+  @@index([marketplaceOrderId])                 // customer invoice lookup + PDF access check
   @@map("invoices")
 }
 
@@ -1148,4 +1156,17 @@ model NumberCounter {
 
   @@id([shopId, counterKey])
   @@map("number_counters")
+}
+
+model FeatureFlag {
+  id              Int      @id @default(autoincrement())
+  key             String   @unique
+  description     String?
+  isActive        Boolean  @default(true) @map("is_active")
+  enabledForAll   Boolean  @default(false) @map("enabled_for_all")
+  enabledShopIds  Int[]    @default([]) @map("enabled_shop_ids")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("feature_flags")
 }

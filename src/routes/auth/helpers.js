@@ -132,26 +132,27 @@ export async function createSession(res, user, { isNewUser = false, req = null }
     await prisma.refreshToken.deleteMany({ where: { id: { in: oldSessions.map(s => s.id) } } });
   }
 
-  await prisma.refreshToken.create({
-    data: {
-      userId: user.userId,
-      shopId: user.shopId || null,
-      tokenHash,
-      deviceInfo,
-      ipAddress,
-      expiresAt,
-    },
-  });
-
-  // Update last login + increment login counter + set isVerified
-  await prisma.user.update({
-    where: { userId: user.userId },
-    data: {
-      lastLoginAt: new Date(),
-      loginCount: { increment: 1 },
-      isVerified: user.emailVerified || user.phoneVerified || false,
-    },
-  });
+  // Run token creation + user stat update in parallel — they're independent
+  await Promise.all([
+    prisma.refreshToken.create({
+      data: {
+        userId: user.userId,
+        shopId: user.shopId || null,
+        tokenHash,
+        deviceInfo,
+        ipAddress,
+        expiresAt,
+      },
+    }),
+    prisma.user.update({
+      where: { userId: user.userId },
+      data: {
+        lastLoginAt: new Date(),
+        loginCount: { increment: 1 },
+        isVerified: user.emailVerified || user.phoneVerified || false,
+      },
+    }),
+  ]);
 
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, REFRESH_COOKIE_OPTIONS);
 

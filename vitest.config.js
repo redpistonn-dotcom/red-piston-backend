@@ -1,13 +1,17 @@
-import { defineConfig } from 'vitest/config';
-
+import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
-    environment: 'node',
     globals: true,
-    setupFiles: ['./src/tests/setup.js'],
-    include: ['src/tests/**/*.test.js'],
-    // Clear mock state between each test so one test's mock doesn't bleed into another
-    clearMocks: true,
-    restoreMocks: true,
+    environment: "node",
+    setupFiles: ["./tests/setup.js"],
+    testTimeout: 15000,
+    include: ["tests/**/*.test.js"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json", "html"],
+      include: ["src/**/*.js"],
+      exclude: ["src/index.js", "src/db/prisma.js"],
+      thresholds: { lines: 30, functions: 30 },
+    },
   },
 });

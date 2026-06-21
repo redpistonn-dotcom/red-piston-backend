@@ -2,6 +2,9 @@ import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
 import { writeAudit, ET, ACT } from '../lib/audit.js';
+import { requirePermission } from '../middleware/auth.js';
+import { invalidate, invalidatePattern } from '../lib/cache.js';
+import { incrementCounter } from '../lib/metrics.js';
 
 const router = Router();
 
@@ -41,36 +44,30 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
       orderBy: { masterPart: { partName: 'asc' } },
     });
 
-    // Single movements fetch — ordered desc so slice(0,5) gives the most recent
+    // Fetch only the last 5 recent movements per product for the list view.
+    // stockQty is already kept accurate by every movement endpoint, so we don't
+    // need to scan all movements for stock calculation on this hot path.
     const inventoryIds = inventory.map(i => i.inventoryId);
-    const allMovements = inventoryIds.length > 0
+    const recentMovements = inventoryIds.length > 0
       ? await prisma.movement.findMany({
           where:   { inventoryId: { in: inventoryIds } },
           orderBy: { createdAt: 'desc' },
+          take:    inventoryIds.length * 5, // at most 5 per product
         })
       : [];
 
-    // Group by inventoryId for O(n) stock + recent-movements computation
+    // Group recent movements by inventoryId for O(n) display
     const movsByItem = {};
-    for (const m of allMovements) {
+    for (const m of recentMovements) {
       if (!movsByItem[m.inventoryId]) movsByItem[m.inventoryId] = [];
-      movsByItem[m.inventoryId].push(m);
-    }
-
-    const stockMap = {};
-    for (const [id, movs] of Object.entries(movsByItem)) {
-      stockMap[id] = 0;
-      for (const m of movs) {
-        if      (['PURCHASE', 'OPENING', 'RETURN_IN'].includes(m.type))    stockMap[id] += m.qty;
-        else if (['SALE', 'RETURN_OUT', 'DAMAGE', 'THEFT'].includes(m.type)) stockMap[id] -= m.qty;
-        else if (m.type === 'ADJUSTMENT' || m.type === 'AUDIT')              stockMap[id] += m.qty;
-      }
+      if (movsByItem[m.inventoryId].length < 5) movsByItem[m.inventoryId].push(m);
     }
 
     const inventoryWithStock = inventory.map(item => ({
       ...item,
-      computedStock: stockMap[item.inventoryId] ?? item.stockQty,
-      movements:     (movsByItem[item.inventoryId] || []).slice(0, 5),
+      // Trust the maintained stockQty column; no full ledger scan needed here
+      computedStock: item.stockQty,
+      movements:     movsByItem[item.inventoryId] || [],
     }));
 
     res.set('Cache-Control', 'private, max-age=20, must-revalidate');
@@ -214,30 +211,97 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
       minStockAlert, maxStockLevel,
       customPartName, barcode,
       shopSpecificNotes, isMarketplaceListed, imageUrl, images,
+      stockQty,
     } = req.body;
+    const clientVersion = req.body.version != null ? parseInt(req.body.version) : null;
 
     const inventoryId = parseInt(req.params.id);
     const item = await prisma.shopInventory.findUnique({ where: { inventoryId } });
     if (!item || item.shopId !== req.shopId) return res.status(404).json({ error: 'Item not found' });
 
-    const updated = await prisma.shopInventory.update({
-      where: { inventoryId },
-      data: {
-        ...(sellingPrice       !== undefined && { sellingPrice:       parseFloat(sellingPrice) }),
-        ...(buyingPrice        !== undefined && { buyingPrice:        parseFloat(buyingPrice) }),
-        ...(rackLocation       !== undefined && { rackLocation }),
-        ...(minStockAlert      !== undefined && { minStockAlert:      parseInt(minStockAlert) }),
-        ...(maxStockLevel      !== undefined && { maxStockLevel:      maxStockLevel ? parseInt(maxStockLevel) : null }),
-        ...(customPartName     !== undefined && { customPartName:     customPartName || null }),
-        ...(barcode            !== undefined && { barcode:            barcode || null }),
-        ...(shopSpecificNotes  !== undefined && { shopSpecificNotes:  shopSpecificNotes || null }),
-        ...(isMarketplaceListed !== undefined && { isMarketplaceListed }),
-        ...(imageUrl           !== undefined && { imageUrl:           imageUrl || null }),
-        // images: JSON string array of up to 3 photo URLs (caller serializes)
-        ...(images             !== undefined && { images:             images || null }),
-      },
-      include: { masterPart: true },
-    });
+    const metaData = {
+      ...(sellingPrice        !== undefined && { sellingPrice:        parseFloat(sellingPrice) }),
+      ...(buyingPrice         !== undefined && { buyingPrice:         parseFloat(buyingPrice) }),
+      ...(rackLocation        !== undefined && { rackLocation }),
+      ...(minStockAlert       !== undefined && { minStockAlert:       parseInt(minStockAlert) }),
+      ...(maxStockLevel       !== undefined && { maxStockLevel:       maxStockLevel ? parseInt(maxStockLevel) : null }),
+      ...(customPartName      !== undefined && { customPartName:      customPartName || null }),
+      ...(barcode             !== undefined && { barcode:             barcode || null }),
+      ...(shopSpecificNotes   !== undefined && { shopSpecificNotes:   shopSpecificNotes || null }),
+      ...(isMarketplaceListed !== undefined && { isMarketplaceListed }),
+      ...(imageUrl            !== undefined && { imageUrl:            imageUrl || null }),
+      // images: JSON string array of up to 3 photo URLs (caller serializes)
+      ...(images              !== undefined && { images:              images || null }),
+    };
+
+    // If stockQty is provided and differs from the stored value, update the column AND
+    // create an AUDIT movement so the change is traceable in History.
+    const newQty = stockQty !== undefined ? parseInt(stockQty) : undefined;
+    const qtyChanged = newQty !== undefined && !isNaN(newQty) && newQty >= 0 && newQty !== item.stockQty;
+
+    let updated;
+    if (qtyChanged) {
+      const delta = newQty - item.stockQty;
+
+      if (clientVersion !== null) {
+        const { count } = await prisma.$transaction(async (tx) => {
+          await tx.movement.create({
+            data: {
+              shopId:     req.shopId,
+              inventoryId,
+              type:       'AUDIT',
+              qty:        delta,
+              notes:      'Manual stock correction via product edit',
+            },
+          });
+          return tx.shopInventory.updateMany({
+            where: { inventoryId, shopId: req.shopId, version: clientVersion },
+            data:  { ...metaData, stockQty: newQty, version: { increment: 1 } },
+          });
+        });
+        if (count === 0) {
+          return res.status(409).json({ error: 'VERSION_CONFLICT' });
+        }
+      } else {
+        await prisma.$transaction([
+          prisma.movement.create({
+            data: {
+              shopId:     req.shopId,
+              inventoryId,
+              type:       'AUDIT',
+              qty:        delta,
+              notes:      'Manual stock correction via product edit',
+            },
+          }),
+          prisma.shopInventory.update({
+            where: { inventoryId },
+            data:  { ...metaData, stockQty: newQty },
+          }),
+        ]);
+      }
+
+      updated = await prisma.shopInventory.findUnique({ where: { inventoryId }, include: { masterPart: true } });
+
+      await invalidatePattern("shop:inventory:summary:" + req.shopId + ":*").catch(() => {});
+      incrementCounter("stockAdjustments");
+    } else {
+      if (clientVersion !== null) {
+        const { count } = await prisma.shopInventory.updateMany({
+          where: { inventoryId, shopId: req.shopId, version: clientVersion },
+          data:  { ...metaData, version: { increment: 1 } },
+        });
+        if (count === 0) {
+          return res.status(409).json({ error: 'VERSION_CONFLICT' });
+        }
+        updated = await prisma.shopInventory.findUnique({ where: { inventoryId }, include: { masterPart: true } });
+      } else {
+        updated = await prisma.shopInventory.update({
+          where:   { inventoryId },
+          data:    metaData,
+          include: { masterPart: true },
+        });
+      }
+    }
 
     writeAudit(req, {
       entityType: ET.PRODUCT,
@@ -247,6 +311,7 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
         sellingPrice: String(item.sellingPrice),
         buyingPrice:  item.buyingPrice ? String(item.buyingPrice) : null,
         isMarketplaceListed: item.isMarketplaceListed,
+        stockQty: item.stockQty,
       },
       newValue: req.body,
     });
@@ -267,8 +332,9 @@ router.get('/:id/movements', authenticate, requireShopOwner, async (req, res, ne
     const movements = await prisma.movement.findMany({
       where: { inventoryId },
       orderBy: { createdAt: 'desc' },
+      take: 100,
     });
-    const currentStock = await computeStock(inventoryId);
+    const currentStock = item.stockQty;
     res.json({ movements, currentStock });
   } catch (err) {
     next(err);
@@ -344,7 +410,7 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
       }
     });
 
-    const newStock = await computeStock(inventoryId);
+    const { stockQty: newStock } = await prisma.shopInventory.findUnique({ where: { inventoryId }, select: { stockQty: true } });
 
     writeAudit(req, {
       entityType: ET.STOCK,
@@ -352,6 +418,9 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
       action:     ACT.PURCHASE,
       newValue: { qty, unitPrice: parsedUnit, partyId: partyId || null, referenceNumber: referenceNumber || null, newStock },
     });
+
+    await invalidatePattern("shop:inventory:summary:" + req.shopId + ":*").catch(() => {});
+    incrementCounter("stockAdjustments");
 
     res.json({ success: true, newStock });
   } catch (err) { next(err); }
@@ -612,7 +681,7 @@ router.patch('/:id/marketplace', authenticate, requireShopOwner, async (req, res
 });
 
 // POST /api/shop/inventory/adjust
-router.post('/adjust', authenticate, requireShopOwner, async (req, res, next) => {
+router.post('/adjust', authenticate, requireShopOwner, requirePermission('inventory.adjust'), async (req, res, next) => {
   try {
     const { inventoryId, type, qty, notes } = req.body;
     if (!inventoryId || !type || qty === undefined) return res.status(400).json({ error: 'inventoryId, type, and qty required' });
@@ -651,7 +720,7 @@ router.post('/adjust', authenticate, requireShopOwner, async (req, res, next) =>
     // can drift, which would otherwise reject a reduction that looks valid to
     // the user ("current: 7" on screen but the stored column says 1).
     if (qtyChange < 0) {
-      const liveStock = await computeStock(inventoryId);
+      const { stockQty: liveStock } = await prisma.shopInventory.findUnique({ where: { inventoryId }, select: { stockQty: true } });
       if (liveStock + qtyChange < 0) {
         return res.status(400).json({ error: `Adjustment would make stock negative (current: ${liveStock})` });
       }
@@ -673,7 +742,11 @@ router.post('/adjust', authenticate, requireShopOwner, async (req, res, next) =>
       });
     });
 
-    const newStock = await computeStock(inventoryId);
+    const { stockQty: newStock } = await prisma.shopInventory.findUnique({ where: { inventoryId }, select: { stockQty: true } });
+
+    await invalidatePattern("shop:inventory:summary:" + req.shopId + ":*").catch(() => {});
+    incrementCounter("stockAdjustments");
+
     res.json({ success: true, newStock });
   } catch (err) {
     next(err);
@@ -701,18 +774,5 @@ router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => 
     next(err);
   }
 });
-
-// Helper: compute stock from movements ledger
-async function computeStock(inventoryId) {
-  const movements = await prisma.movement.findMany({ where: { inventoryId } });
-  return movements.reduce((total, m) => {
-    if (['PURCHASE', 'OPENING', 'RETURN_IN'].includes(m.type)) return total + m.qty;
-    if (['SALE', 'RETURN_OUT', 'DAMAGE', 'THEFT'].includes(m.type)) return total - m.qty;
-    // ADJUSTMENT and AUDIT: qty can be negative (downward correction) or positive (upward)
-    if (m.type === 'ADJUSTMENT' || m.type === 'AUDIT') return total + m.qty;
-    // RECEIPT, CREDIT_NOTE, DEBIT_NOTE: financial only — no stock change
-    return total;
-  }, 0);
-}
 
 export default router;
