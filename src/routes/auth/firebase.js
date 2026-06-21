@@ -121,10 +121,12 @@ router.post('/firebase', async (req, res, next) => {
       });
     }
 
-    // ── Step 5: Ensure auth providers are linked ──────────────────────────────
-    await ensureAuthProvider(user.userId, 'GOOGLE', uid);
-    if (phoneClean) await ensureAuthProvider(user.userId, 'PHONE', phoneClean);
-    if (emailNormalized) await ensureAuthProvider(user.userId, 'EMAIL', emailNormalized);
+    // ── Step 5: Ensure auth providers are linked (parallel — saves 2 round-trips) ─
+    await Promise.all([
+      ensureAuthProvider(user.userId, 'GOOGLE', uid),
+      phoneClean     ? ensureAuthProvider(user.userId, 'PHONE', phoneClean)         : null,
+      emailNormalized ? ensureAuthProvider(user.userId, 'EMAIL', emailNormalized)   : null,
+    ]);
 
     // ── Step 6: Shop owner needing shop setup → collect shop details first ────
     // Covers brand-new shop owners AND returning ones who abandoned the
