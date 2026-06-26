@@ -25,13 +25,16 @@ const router = Router();
 const VALID_STATUSES = ['DRAFT', 'APPROVED', 'SENT', 'PENDING', 'RECEIVED', 'PARTIAL', 'CANCELLED'];
 
 async function generatePoNumber(shopId) {
-  const prefix = `PO-${new Date().getFullYear()}`;
-  const last = await prisma.purchaseOrder.findFirst({
-    where: { shopId, poNumber: { startsWith: prefix } },
-    orderBy: { poNumber: 'desc' },
+  const year = new Date().getFullYear();
+  const counterKey = `po-${year}`;
+  // Atomic upsert — concurrent saves each get a unique sequence value.
+  const counter = await prisma.numberCounter.upsert({
+    where:  { shopId_counterKey: { shopId, counterKey } },
+    update: { lastValue: { increment: 1 } },
+    create: { shopId, counterKey, lastValue: 1 },
+    select: { lastValue: true },
   });
-  const seq = last ? parseInt(last.poNumber.split('-')[2]) + 1 : 1;
-  return `${prefix}-${String(seq).padStart(3, '0')}`;
+  return `PO-${year}-${String(counter.lastValue).padStart(3, '0')}`;
 }
 
 // Validate raw items against shop inventory and compute GST-split totals
