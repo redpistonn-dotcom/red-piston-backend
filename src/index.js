@@ -65,17 +65,21 @@ app.use(httpLogger);
 // Must be applied before routes so it wraps every response.
 app.use(compression({ threshold: 1024 }));
 
-const allowedOrigins = (
-  process.env.FRONTEND_URL
-    ? process.env.FRONTEND_URL.split(',').map((o) => o.trim()).filter(Boolean)
-    : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175']
-);
+const DOMAIN_PATTERNS = [
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,  // local dev
+  /^https?:\/\/([a-z0-9-]+\.)?redpiston\.in$/,     // redpiston.in + any subdomain
+];
+
+// FRONTEND_URL (comma-separated) still works as an escape hatch for one-off domains.
+const extraOrigins = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(',').map((o) => o.trim()).filter(Boolean)
+  : [];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow non-browser clients and same-origin requests without an Origin header.
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (DOMAIN_PATTERNS.some((p) => p.test(origin))) return callback(null, true);
+    if (extraOrigins.includes(origin)) return callback(null, true);
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
