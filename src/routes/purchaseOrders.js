@@ -16,6 +16,7 @@ import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner } from '../middleware/auth.js';
 import { generatePurchaseOrderPdf } from '../services/pdf.js';
+import { writeAudit, ET, ACT } from '../lib/audit.js';
 
 const router = Router();
 
@@ -201,6 +202,13 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       include: { items: true, party: { select: { name: true, phone: true, gstin: true } } },
     });
 
+    writeAudit(req, {
+      entityType: ET.ORDER,
+      entityId:   po.poId,
+      action:     ACT.CREATE,
+      newValue:   { poNumber, supplierId: partyId || null, itemCount: po.items.length, totalAmount },
+    });
+
     res.status(201).json({ success: true, data: po });
   } catch (err) {
     next(err);
@@ -370,6 +378,22 @@ router.patch('/:id/status', authenticate, requireShopOwner, async (req, res, nex
       where: { poId },
       include: { items: true },
     });
+
+    // Audit the status transition
+    const actionMap = {
+      APPROVED:  ACT.APPROVE,
+      SENT:      ACT.UPDATE,
+      RECEIVED:  ACT.PURCHASE,
+      PARTIAL:   ACT.UPDATE,
+      CANCELLED: ACT.REJECT,
+    };
+    writeAudit(req, {
+      entityType: ET.ORDER,
+      entityId:   poId,
+      action:     actionMap[status] || ACT.UPDATE,
+      newValue:   { status, poNumber: po.poNumber },
+    });
+
     res.json({ success: true, data: updated });
   } catch (err) {
     next(err);

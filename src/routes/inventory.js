@@ -403,8 +403,20 @@ router.post('/purchase', authenticate, requireShopOwner, async (req, res, next) 
       });
 
       const priceUpdates = {};
-      if (unitPrice)       priceUpdates.buyingPrice  = parseFloat(unitPrice);
       if (newSellingPrice) priceUpdates.sellingPrice = parseFloat(newSellingPrice);
+
+      // Weighted average cost: (currentStock × currentBuyPrice + qty × newBuyPrice) / (currentStock + qty)
+      // Only recalculate when both qty and a new buying price are supplied.
+      const newBuyPrice = parsedUnit;
+      if (qty > 0 && newBuyPrice && newBuyPrice > 0) {
+        const currentStock    = item.stockQty;                          // stock BEFORE this purchase
+        const currentBuyPrice = item.buyingPrice ? parseFloat(item.buyingPrice) : newBuyPrice;
+        const newAvg = Math.round(
+          ((currentStock * currentBuyPrice) + (qty * newBuyPrice)) / (currentStock + qty) * 100
+        ) / 100;
+        priceUpdates.buyingPrice = newAvg;
+      }
+
       if (Object.keys(priceUpdates).length > 0) {
         await tx.shopInventory.update({ where: { inventoryId }, data: priceUpdates });
       }

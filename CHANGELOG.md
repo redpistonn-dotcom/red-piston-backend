@@ -1,5 +1,19 @@
 # Changelog
 
+## [2026-06-26] — Audit Logs, Batch/Lot Tracking, Date Range Analytics, GSTR-1 Export, WAC Pricing
+
+### New Features
+- **Audit log coverage for Purchase Orders** (`src/routes/purchaseOrders.js`): `writeAudit` now fires on PO create (`ACT.CREATE`) and every status transition (`ACT.APPROVE / ACT.PURCHASE / ACT.UPDATE / ACT.REJECT`). All PO mutations are now fully traceable in `audit_logs`.
+- **Date range analytics** (`src/routes/dashboard.js`): `GET /api/shop/dashboard` now accepts `?from=YYYY-MM-DD&to=YYYY-MM-DD` in addition to `?period=today|week|month`. Two new endpoints: `GET /api/shop/dashboard/trend` (daily revenue/profit/salesCount, default 30 days) and `GET /api/shop/dashboard/product-breakdown` (top 20 products by revenue for any date range). Both are Redis-cached for 5 min.
+- **GSTR-1 export** (`src/routes/gstr.js`): `GET /api/billing/gstr1?from=&to=&format=json|excel` generates Indian GST Return-1 in three sections — B2B (per-invoice with party GSTIN), B2CS (aggregated B2C by GST rate), HSN Summary (by HSN code). Excel output via `xlsx` package with three sheets. JSON by default.
+- **Batch / Lot / Serial number tracking** (`src/routes/stockBatches.js`, `prisma/schema.prisma`, `prisma/migrations/enterprise_v2_stock_batches.sql`): new `StockBatch` model tracks qty received, qty remaining, cost price, supplier, expiry date, batch number, and serial number per inventory item. Three endpoints: list batches per product, create batch, shop-wide batch search by number/serial.
+- **Weighted Average Cost pricing** (`src/routes/inventory.js`): when recording a PURCHASE movement, `shopInventory.buyingPrice` is now updated to the weighted average — `(currentStock × currentCost + qty × newPrice) / (currentStock + qty)` — replacing the flat overwrite. Ensures ongoing cost accuracy without FIFO complexity.
+
+### Infrastructure
+- **`stock_batches` migration SQL** (`prisma/migrations/enterprise_v2_stock_batches.sql`): new table with FK refs to `shops`, `shop_inventory`, `parties`, `purchase_orders`. Run manually on DB before deploying.
+- **GSTR route registered** in `src/index.js` as `app.use('/api/billing', gstrRoutes)`.
+- **Stock batch route registered** in `src/index.js` as `app.use('/api/shop/inventory', stockBatchRoutes)`.
+
 ## [2026-06-21] — Enterprise Phase 1–4: Queues, Cache, RBAC, Circuit Breakers, Tests, CI/CD
 
 ### New Features

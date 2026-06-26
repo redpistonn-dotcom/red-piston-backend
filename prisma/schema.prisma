@@ -314,6 +314,7 @@ model Shop {
   confirmFitRequests  ConfirmFitRequest[]
   purchaseBills       PurchaseBill[]
   numberCounters      NumberCounter[]
+  batches             StockBatch[]
 
   @@map("shops")
 }
@@ -665,6 +666,7 @@ model ShopInventory {
   jobCardItems          JobCardItem[]
   marketplaceOrderItems MarketplaceOrderItem[]
   reviews               MarketplaceReview[]
+  batches               StockBatch[]
 
   @@unique([shopId, masterPartId])
   @@index([shopId])
@@ -738,6 +740,31 @@ model Movement {
   @@index([shopId, type])                       // movement type reporting (SALE / PURCHASE / RETURN breakdown)
   @@index([invoiceId])                          // invoice detail — all movements for an invoice
   @@map("movements")
+}
+
+model StockBatch {
+  batchId        Int       @id @default(autoincrement()) @map("batch_id")
+  shopId         Int       @map("shop_id")
+  inventoryId    Int       @map("inventory_id")
+  batchNumber    String?   @map("batch_number")
+  serialNumber   String?   @map("serial_number")
+  qtyReceived    Int       @map("qty_received")
+  qtyRemaining   Int       @map("qty_remaining")
+  costPrice      Decimal   @map("cost_price") @db.Decimal(10, 2)
+  supplierName   String?   @map("supplier_name")
+  partyId        Int?      @map("party_id")
+  receivedDate   DateTime  @default(now()) @map("received_date")
+  expiryDate     DateTime? @map("expiry_date")
+  notes          String?
+  poId           Int?      @map("po_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  shop      Shop          @relation(fields: [shopId], references: [shopId])
+  inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
+
+  @@index([shopId, inventoryId])
+  @@index([shopId, batchNumber])
+  @@map("stock_batches")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
