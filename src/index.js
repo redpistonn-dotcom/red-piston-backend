@@ -66,8 +66,9 @@ app.use(httpLogger);
 app.use(compression({ threshold: 1024 }));
 
 const DOMAIN_PATTERNS = [
-  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,  // local dev
-  /^https?:\/\/([a-z0-9-]+\.)?redpiston\.in$/,     // redpiston.in + any subdomain
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,          // local dev
+  /^https?:\/\/([a-z0-9-]+\.)?redpiston\.in$/,             // redpiston.in + any subdomain
+  /^https:\/\/red-piston[a-z0-9-]*\.vercel\.app$/,         // Vercel deployments
 ];
 
 // FRONTEND_URL (comma-separated) still works as an escape hatch for one-off domains.
