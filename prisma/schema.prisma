@@ -651,6 +651,9 @@ model ShopInventory {
   // Up to 3 shop product photos, stored as a JSON string array of URLs.
   // imageUrl stays the primary/first photo for back-compat.
   images                String?
+  // Shop-level overrides for category and emoji icon (independent of MasterPart)
+  customCategoryL1      String?   @map("custom_category_l1")
+  customIcon            String?   @map("custom_icon")
   isMarketplaceListed   Boolean   @default(false) @map("is_marketplace_listed")
   lastPurchasedAt       DateTime? @map("last_purchased_at")
   lastSoldAt            DateTime? @map("last_sold_at")

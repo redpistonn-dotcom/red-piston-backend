@@ -216,6 +216,7 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
       minStockAlert, maxStockLevel,
       customPartName, barcode,
       shopSpecificNotes, isMarketplaceListed, imageUrl, images,
+      customCategoryL1, customIcon,
       stockQty,
     } = req.body;
     const clientVersion = req.body.version != null ? parseInt(req.body.version) : null;
@@ -237,6 +238,8 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
       ...(imageUrl            !== undefined && { imageUrl:            imageUrl || null }),
       // images: JSON string array of up to 3 photo URLs (caller serializes)
       ...(images              !== undefined && { images:              images || null }),
+      ...(customCategoryL1    !== undefined && { customCategoryL1:    customCategoryL1 || null }),
+      ...(customIcon          !== undefined && { customIcon:          customIcon || null }),
     };
 
     // If stockQty is provided and differs from the stored value, update the column AND
