@@ -104,13 +104,18 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
     });
     if (existing) return res.status(409).json({ error: 'Product already in inventory', inventoryId: existing.inventoryId });
 
+    const parsedInitialQty = stockQty != null ? parseInt(stockQty) : 0;
+    if (isNaN(parsedInitialQty) || parsedInitialQty < 0) {
+      return res.status(400).json({ error: 'stockQty must be 0 or greater' });
+    }
+
     const item = await prisma.shopInventory.create({
       data: {
         shopId:              req.shopId,
         masterPartId,
         sellingPrice:        parseFloat(sellingPrice),
         buyingPrice:         buyingPrice     ? parseFloat(buyingPrice) : null,
-        stockQty:            stockQty        || 0,
+        stockQty:            parsedInitialQty,
         rackLocation:        rackLocation    || null,
         minStockAlert:       minStockAlert   || 5,
         maxStockLevel:       maxStockLevel   ? parseInt(maxStockLevel) : null,
@@ -165,14 +170,14 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
 
     // If opening stock provided, create an OPENING movement, linked to the supplier
     // party and recording the full supplier details (name / GSTIN / phone / invoice).
-    if (stockQty && stockQty > 0) {
+    if (parsedInitialQty > 0) {
       const supplierBits = [
         supplierName && `Supplier: ${supplierName}`,
         supplierGstin && `GSTIN: ${supplierGstin}`,
         supplierPhone && `Ph: ${supplierPhone}`,
         supplierInvoiceNo && `Invoice: ${supplierInvoiceNo}`,
       ].filter(Boolean);
-      const parsedQty   = parseInt(stockQty);
+      const parsedQty   = parsedInitialQty;
       const parsedBuy   = buyingPrice ? parseFloat(buyingPrice) : null;
       await prisma.movement.create({
         data: {
@@ -780,6 +785,14 @@ router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => 
       where: { inventoryId },
       data:  { deletedAt: new Date(), isMarketplaceListed: false },
     });
+
+    writeAudit(req, {
+      entityType: ET.PRODUCT,
+      entityId:   inventoryId,
+      action:     ACT.DELETE,
+      oldValue:   { partName: item.customPartName || null, stockQty: item.stockQty },
+    });
+
     res.json({ success: true });
   } catch (err) {
     console.error('[inventory DELETE]', err);
