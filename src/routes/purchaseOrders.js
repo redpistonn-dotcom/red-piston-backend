@@ -109,19 +109,35 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
 router.get('/supplier-products/:partyId', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const partyId = parseInt(req.params.partyId);
-    const [movements, poItems] = await Promise.all([
+
+    // Look up the party's name so we can also match movements that were recorded
+    // with a supplier name string but no partyId FK (the common case for POS/stock-in purchases).
+    const party = await prisma.party.findUnique({ where: { partyId }, select: { name: true } });
+    const partyName = party?.name || null;
+
+    const [movementsById, movementsByName, poItems] = await Promise.all([
+      // Movements explicitly linked via partyId FK
       prisma.movement.findMany({
         where: { shopId: req.shopId, partyId, type: 'PURCHASE' },
         select: { inventoryId: true },
         distinct: ['inventoryId'],
       }),
+      // Movements where supplier name was stored as text (no FK set) — case-insensitive match
+      partyName ? prisma.movement.findMany({
+        where: { shopId: req.shopId, partyId: null, type: 'PURCHASE', partyName: { equals: partyName, mode: 'insensitive' } },
+        select: { inventoryId: true },
+        distinct: ['inventoryId'],
+      }) : [],
+      // Past PO items for this supplier
       prisma.purchaseOrderItem.findMany({
         where: { purchaseOrder: { shopId: req.shopId, partyId } },
         select: { inventoryId: true },
         distinct: ['inventoryId'],
       }),
     ]);
-    const ids = [...new Set([...movements, ...poItems].map(r => r.inventoryId))];
+
+    const ids = [...new Set([...movementsById, ...movementsByName, ...poItems]
+      .map(r => r.inventoryId).filter(Boolean))];
     res.json({ success: true, inventoryIds: ids });
   } catch (err) {
     next(err);
