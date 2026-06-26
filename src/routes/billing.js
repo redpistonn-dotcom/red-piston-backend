@@ -26,7 +26,7 @@ const VALID_INVOICE_TYPES = ['RETAIL', 'CREDIT', 'ESTIMATE', 'RETURN', 'WORKSHOP
 async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAmount = 0, invoiceId, entryType, notes, createdBy }) {
   // Atomic increment — avoids read-modify-write race when two invoices hit the same party concurrently
   const updated = await tx.party.update({
-    where: { partyId },
+    where: { partyId: parseInt(String(partyId), 10) },
     data:  { outstanding: { increment: debitAmount - creditAmount } },
     select: { outstanding: true },
   });

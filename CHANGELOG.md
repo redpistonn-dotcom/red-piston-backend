@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026-06-26] — Bug Fixes: Udhaar sync, PDF proxy, Orders page
+
+### Fixes
+- **Udhaar (credit sale) sync failure** (`src/routes/billing.js`): `writeLedgerDebit` was calling `tx.party.update({ where: { partyId } })` with a string value when the POS party-selector `<select>` sends the id as a string. Prisma v5 rejects a string in an Int `where` clause, causing the transaction to throw and `syncInvoice` to return false. Fixed by `parseInt(String(partyId), 10)` in the `where` clause.
+- **Purchase Bills PDF proxy** (`src/routes/purchaseBills.js`): the proxy was rejecting any URL that didn't contain `res.cloudinary.com` with a 400, causing "Could not open PDF" for bills stored on S3, Supabase, or other CDNs. Fixed by relaxing the guard to `^https?://` and falling through to a simple fetch/stream for non-Cloudinary URLs.
+
 ## [2026-06-26] — Audit Logs, Batch/Lot Tracking, Date Range Analytics, GSTR-1 Export, WAC Pricing
 
 ### New Features

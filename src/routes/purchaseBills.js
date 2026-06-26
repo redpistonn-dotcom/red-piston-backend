@@ -284,8 +284,24 @@ function cloudinaryPublicId(url) {
 router.get('/pdf-proxy', authenticate, requireShopOwner, async (req, res) => {
   const url = (req.query.url || '').trim();
   const CLOUDINARY_HOST = 'res.cloudinary.com';
-  if (!url || !url.includes(CLOUDINARY_HOST)) {
+  if (!url || !/^https?:\/\//i.test(url)) {
     return res.status(400).json({ error: 'Invalid or missing url parameter' });
+  }
+
+  // Non-Cloudinary URL: simple authenticated proxy (S3, Supabase, etc.)
+  if (!url.includes(CLOUDINARY_HOST)) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return res.status(404).send('PDF not available');
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.set('Content-Type', r.headers.get('content-type') || 'application/pdf');
+      res.set('Content-Disposition', 'inline; filename="bill.pdf"');
+      res.set('Cache-Control', 'private, max-age=3600');
+      return res.send(buf);
+    } catch (err) {
+      console.error('[pdf-proxy] non-cloudinary fetch failed:', err.message);
+      return res.status(502).send('Failed to fetch PDF');
+    }
   }
   const tryFetch = async (fetchUrl) => {
     try {
