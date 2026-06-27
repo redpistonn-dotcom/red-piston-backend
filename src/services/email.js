@@ -41,6 +41,8 @@ function getResendClient() {
 // ─── HTML Email Templates ────────────────────────────────────────────
 
 function baseTemplate(content) {
+  const appUrl = getFrontendAppUrl();
+  const logoUrl = `${appUrl}/logo.png`;
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -56,14 +58,14 @@ function baseTemplate(content) {
         <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="background:#111827;border-radius:16px;border:1px solid #1F2937;overflow:hidden;">
           <!-- Header -->
           <tr>
-            <td style="padding:32px 40px 0;">
+            <td style="padding:28px 40px 0;">
               <table role="presentation" cellpadding="0" cellspacing="0">
                 <tr>
-                  <td style="width:40px;height:40px;background:#F59E0B;border-radius:10px;text-align:center;vertical-align:middle;font-size:20px;">
-                    &#9881;
+                  <td style="background:#ffffff;border-radius:10px;padding:6px;line-height:0;vertical-align:middle;">
+                    <img src="${logoUrl}" width="44" height="44" alt="RedPiston" style="display:block;border:0;border-radius:6px;" />
                   </td>
-                  <td style="padding-left:12px;font-size:20px;font-weight:800;color:#F3F4F6;letter-spacing:-0.5px;">
-                    RedPiston
+                  <td style="padding-left:12px;vertical-align:middle;">
+                    <span style="font-size:20px;font-weight:800;color:#F3F4F6;letter-spacing:-0.5px;">RedPiston</span>
                   </td>
                 </tr>
               </table>

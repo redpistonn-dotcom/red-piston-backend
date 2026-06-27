@@ -1,5 +1,10 @@
 # Changelog
 
+## [2026-06-28] — Email branding: real logo in all transactional emails
+
+### New Features
+- **All transactional emails now show the RedPiston logo** (`src/services/email.js`): replaced the amber gear-emoji placeholder in `baseTemplate` with an `<img>` tag pointing to `${FRONTEND_APP_URL}/logo.png` (the PNG from the frontend `public/` folder). The logo is wrapped in a white rounded box so it renders correctly on the dark email background regardless of the logo's own colour scheme.
+
 ## [2026-06-26] — Bug Fixes: Udhaar sync, PDF proxy, Orders page
 
 ### Fixes
