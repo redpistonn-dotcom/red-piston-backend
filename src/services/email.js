@@ -40,121 +40,149 @@ function getResendClient() {
 
 // ─── HTML Email Templates ────────────────────────────────────────────
 
-function baseTemplate(content) {
+function baseTemplate(content, { accentColor = '#8B1A0F', accentLabel = null } = {}) {
   const appUrl = getFrontendAppUrl();
   const logoUrl = `${appUrl}/logo.png`;
-  return `
-<!DOCTYPE html>
+  const year = new Date().getFullYear();
+  const accentBadge = accentLabel
+    ? `<tr><td style="padding:20px 40px 0;"><div style="display:inline-block;background:${accentColor}18;border:1px solid ${accentColor}55;border-radius:6px;padding:5px 14px;"><span style="font-size:11px;font-weight:700;color:${accentColor};text-transform:uppercase;letter-spacing:0.09em;">${accentLabel}</span></div></td></tr>`
+    : '';
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RedPiston</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>RedPiston</title>
+<style>
+  body,table,td,a{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}
+  table,td{mso-table-lspace:0;mso-table-rspace:0}
+  img{-ms-interpolation-mode:bicubic;border:0;outline:none;text-decoration:none}
+  body{margin:0;padding:0;background:#F2F2F2}
+  @media only screen and (max-width:600px){
+    .email-card{width:100%!important;border-radius:0!important}
+    .email-content{padding:28px 24px!important}
+    .email-header{padding:24px 24px 20px!important}
+    .email-footer{padding:20px 24px!important}
+    .btn-cta{display:block!important;text-align:center!important}
+    .otp-code{font-size:32px!important;letter-spacing:8px!important}
+    .detail-table td{display:block!important;width:100%!important}
+  }
+</style>
 </head>
-<body style="margin:0;padding:0;background:#0A0F1D;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0A0F1D;padding:40px 20px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="background:#111827;border-radius:16px;border:1px solid #1F2937;overflow:hidden;">
-          <!-- Header -->
-          <tr>
-            <td style="padding:28px 40px 0;">
-              <table role="presentation" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="background:#ffffff;border-radius:10px;padding:6px;line-height:0;vertical-align:middle;">
-                    <img src="${logoUrl}" width="44" height="44" alt="RedPiston" style="display:block;border:0;border-radius:6px;" />
-                  </td>
-                  <td style="padding-left:12px;vertical-align:middle;">
-                    <span style="font-size:20px;font-weight:800;color:#F3F4F6;letter-spacing:-0.5px;">RedPiston</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          <!-- Content -->
-          <tr>
-            <td style="padding:32px 40px 40px;">
-              ${content}
-            </td>
-          </tr>
-          <!-- Footer -->
-          <tr>
-            <td style="padding:20px 40px;border-top:1px solid #1F2937;">
-              <p style="margin:0;font-size:12px;color:#6B7280;line-height:1.5;">
-                This email was sent by RedPiston. If you didn't request this, you can safely ignore it.
-              </p>
-              <p style="margin:8px 0 0;font-size:11px;color:#4B5563;">
-                &copy; ${new Date().getFullYear()} RedPiston &mdash; India's Auto Parts Platform
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
+<body>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F2F2F2;padding:32px 16px;">
+  <tr>
+    <td align="center">
+      <!-- Card -->
+      <table role="presentation" class="email-card" width="600" cellpadding="0" cellspacing="0" style="background:#FFFFFF;border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.10);">
+
+        <!-- Top accent bar -->
+        <tr>
+          <td style="background:#8B1A0F;height:4px;font-size:1px;line-height:1px;">&nbsp;</td>
+        </tr>
+
+        <!-- Header -->
+        <tr>
+          <td class="email-header" style="padding:28px 40px 24px;border-bottom:1px solid #F0F0F0;">
+            <table role="presentation" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="line-height:0;vertical-align:middle;">
+                  <img src="${logoUrl}" width="48" height="48" alt="RedPiston" style="display:block;width:48px;height:48px;object-fit:contain;" />
+                </td>
+                <td style="padding-left:12px;vertical-align:middle;">
+                  <span style="font-size:18px;font-weight:800;color:#111111;letter-spacing:-0.3px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">RedPiston</span>
+                  <div style="font-size:11px;color:#888888;margin-top:1px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">India's Auto Parts Platform</div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        ${accentBadge}
+
+        <!-- Content -->
+        <tr>
+          <td class="email-content" style="padding:32px 40px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+            ${content}
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td class="email-footer" style="padding:20px 40px 24px;background:#F9FAFB;border-top:1px solid #F0F0F0;">
+            <p style="margin:0;font-size:12px;color:#9CA3AF;line-height:1.6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+              This email was sent by RedPiston. If you didn't request this, you can safely ignore it.
+            </p>
+            <p style="margin:6px 0 0;font-size:11px;color:#C4C4C4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+              &copy; ${year} RedPiston &mdash; India's Auto Parts Platform
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
 </body>
 </html>`;
 }
 
 function otpEmailHtml(code) {
   return baseTemplate(`
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">
-      Verify your email
-    </h1>
-    <p style="margin:0 0 28px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      Enter this code to verify your email address and complete your registration.
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Verify your email</h1>
+    <p style="margin:0 0 28px;font-size:15px;color:#6B7280;line-height:1.7;">
+      Use the code below to verify your email address. It's valid for <strong style="color:#111111;">10 minutes</strong>.
     </p>
-    <div style="background:#0A0F1D;border:2px solid #F59E0B;border-radius:12px;padding:20px;text-align:center;margin-bottom:28px;">
-      <span style="font-size:36px;font-weight:800;letter-spacing:12px;color:#F59E0B;font-family:'Courier New',monospace;">
-        ${code}
-      </span>
-    </div>
-    <p style="margin:0 0 4px;font-size:13px;color:#6B7280;">
-      This code expires in <strong style="color:#9CA3AF;">10 minutes</strong>.
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr>
+        <td align="center" style="background:#FBF4F4;border:2px solid #8B1A0F;border-radius:12px;padding:28px 20px;">
+          <div style="font-size:11px;font-weight:700;color:#8B1A0F;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:12px;">Your verification code</div>
+          <div class="otp-code" style="font-size:42px;font-weight:800;letter-spacing:14px;color:#8B1A0F;font-family:'Courier New',Courier,monospace;line-height:1;">${code}</div>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0 0 6px;font-size:13px;color:#9CA3AF;line-height:1.6;">
+      Do not share this code with anyone. RedPiston will never ask for it.
     </p>
-    <p style="margin:0;font-size:13px;color:#6B7280;">
-      If you didn't create an account, ignore this email.
+    <p style="margin:0;font-size:13px;color:#9CA3AF;">
+      Didn't create an account? You can ignore this email.
     </p>
   `);
 }
 
 function passwordResetHtml(resetUrl, isFirstPassword = false) {
-  const heading = isFirstPassword ? 'Set a password for your account' : 'Reset your password';
+  const heading = isFirstPassword ? 'Set your password' : 'Reset your password';
   const subtext = isFirstPassword
     ? 'You signed up with Google or phone. Click the button below to add an email + password login to your account.'
-    : 'We received a request to reset the password for your account. Click the button below to set a new password.';
+    : 'We received a request to reset the password for your account. Click the button below to choose a new one.';
   const btnLabel = isFirstPassword ? 'Set My Password' : 'Reset Password';
   const ignoreNote = isFirstPassword
     ? "If you didn't request this, you can safely ignore this email."
-    : "If you didn't request a password reset, ignore this email. Your password won't change.";
+    : "If you didn't request a password reset, ignore this email — your password won't change.";
 
   return baseTemplate(`
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">
-      ${heading}
-    </h1>
-    <p style="margin:0 0 28px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      ${subtext}
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">${heading}</h1>
+    <p style="margin:0 0 28px;font-size:15px;color:#6B7280;line-height:1.7;">${subtext}</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr>
+        <td align="center">
+          <a href="${resetUrl}" class="btn-cta"
+             style="display:inline-block;background:#8B1A0F;color:#FFFFFF;font-size:15px;font-weight:700;padding:15px 40px;border-radius:8px;text-decoration:none;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+            ${btnLabel} &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0 0 10px;font-size:13px;color:#9CA3AF;line-height:1.5;">
+      Button not working? Copy and paste this link into your browser:
     </p>
-    <div style="text-align:center;margin-bottom:28px;">
-      <a href="${resetUrl}"
-         style="display:inline-block;background:#F59E0B;color:#000;font-size:15px;font-weight:700;
-                padding:14px 36px;border-radius:10px;text-decoration:none;letter-spacing:0.3px;">
-        ${btnLabel}
-      </a>
+    <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:12px 16px;margin-bottom:24px;word-break:break-all;">
+      <a href="${resetUrl}" style="font-size:13px;color:#8B1A0F;text-decoration:none;">${resetUrl}</a>
     </div>
-    <p style="margin:0 0 16px;font-size:13px;color:#6B7280;line-height:1.5;">
-      Or copy and paste this link into your browser:
-    </p>
-    <div style="background:#0A0F1D;border-radius:8px;padding:12px 16px;margin-bottom:28px;word-break:break-all;">
-      <a href="${resetUrl}" style="font-size:13px;color:#F59E0B;text-decoration:none;">
-        ${resetUrl}
-      </a>
-    </div>
-    <p style="margin:0 0 4px;font-size:13px;color:#6B7280;">
-      This link expires in <strong style="color:#9CA3AF;">1 hour</strong>.
-    </p>
-    <p style="margin:0;font-size:13px;color:#6B7280;">
-      ${ignoreNote}
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">
+      This link expires in <strong style="color:#374151;">1 hour</strong>. ${ignoreNote}
     </p>
   `);
 }
@@ -179,62 +207,49 @@ function getFrontendAppUrl() {
 function welcomeEmailHtml(name) {
   const displayName = name || 'there';
   return baseTemplate(`
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">
-      Welcome to RedPiston!
-    </h1>
-    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      Hey ${displayName}, your account is all set. Here's what you can do:
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Welcome to RedPiston, ${displayName}!</h1>
+    <p style="margin:0 0 28px;font-size:15px;color:#6B7280;line-height:1.7;">
+      Your account is all set. Here's everything you can do on the platform:
     </p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
       <tr>
-        <td style="padding:12px 16px;background:#0A0F1D;border-radius:10px;margin-bottom:8px;">
-          <p style="margin:0;font-size:14px;color:#F3F4F6;">
-            <span style="color:#F59E0B;font-weight:700;">&#x1F50D; Browse Parts</span>
-            &mdash; Find parts with guaranteed fitment for your vehicle
-          </p>
+        <td style="padding:14px 18px;background:#FBF4F4;border-left:3px solid #8B1A0F;border-radius:0 8px 8px 0;margin-bottom:10px;">
+          <p style="margin:0;font-size:14px;font-weight:700;color:#8B1A0F;">&#x1F50D; Browse Parts</p>
+          <p style="margin:4px 0 0;font-size:13px;color:#6B7280;">Find parts with guaranteed fitment for your vehicle</p>
         </td>
       </tr>
-      <tr><td style="height:8px;"></td></tr>
+      <tr><td style="height:10px;"></td></tr>
       <tr>
-        <td style="padding:12px 16px;background:#0A0F1D;border-radius:10px;">
-          <p style="margin:0;font-size:14px;color:#F3F4F6;">
-            <span style="color:#10B981;font-weight:700;">&#x1F3EA; Compare Shops</span>
-            &mdash; Compare prices across local shops near you
-          </p>
+        <td style="padding:14px 18px;background:#F0FDF4;border-left:3px solid #16A34A;border-radius:0 8px 8px 0;">
+          <p style="margin:0;font-size:14px;font-weight:700;color:#15803D;">&#x1F3EA; Compare Shops</p>
+          <p style="margin:4px 0 0;font-size:13px;color:#6B7280;">Compare prices across local shops near you</p>
         </td>
       </tr>
-      <tr><td style="height:8px;"></td></tr>
+      <tr><td style="height:10px;"></td></tr>
       <tr>
-        <td style="padding:12px 16px;background:#0A0F1D;border-radius:10px;">
-          <p style="margin:0;font-size:14px;color:#F3F4F6;">
-            <span style="color:#38BDF8;font-weight:700;">&#x1F6D2; Order Online</span>
-            &mdash; Get hyperlocal delivery from shops near you
-          </p>
+        <td style="padding:14px 18px;background:#EFF6FF;border-left:3px solid #2563EB;border-radius:0 8px 8px 0;">
+          <p style="margin:0;font-size:14px;font-weight:700;color:#1D4ED8;">&#x1F6D2; Order Online</p>
+          <p style="margin:4px 0 0;font-size:13px;color:#6B7280;">Get hyperlocal delivery from shops near you</p>
         </td>
       </tr>
     </table>
-    <p style="margin:0;font-size:13px;color:#6B7280;">
-      Need help? Just reply to this email.
-    </p>
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">Questions? Just reply to this email and we'll be happy to help.</p>
   `);
 }
 
 function passwordChangedHtml() {
   return baseTemplate(`
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">
-      Password changed
-    </h1>
-    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      Your password was successfully changed. If you did this, no further action is needed.
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Password changed</h1>
+    <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
+      Your RedPiston password was successfully updated. If you made this change, no further action is needed.
     </p>
-    <div style="background:#0A0F1D;border:1px solid #EF4444;border-radius:10px;padding:16px;margin-bottom:24px;">
-      <p style="margin:0;font-size:14px;color:#EF4444;font-weight:600;">
-        &#x26A0; Didn't change your password?
-      </p>
-      <p style="margin:8px 0 0;font-size:13px;color:#9CA3AF;line-height:1.5;">
-        If you didn't make this change, your account may be compromised. Reset your password immediately and contact support.
+    <div style="background:#FEF2F2;border:1px solid #FCA5A5;border-radius:10px;padding:18px 20px;margin-bottom:24px;">
+      <p style="margin:0 0 6px;font-size:14px;font-weight:700;color:#DC2626;">&#x26A0;&#xFE0F; Didn't change your password?</p>
+      <p style="margin:0;font-size:13px;color:#7F1D1D;line-height:1.6;">
+        Your account may be compromised. Reset your password immediately and contact our support team.
       </p>
     </div>
+    <p style="margin:0;font-size:13px;color:#9CA3AF;">If you have any concerns, reply to this email and we'll help secure your account.</p>
   `);
 }
 
@@ -356,33 +371,45 @@ export async function sendShopOwnerVerificationAlert(shopOwner, adminEmails) {
   if (!adminEmails || adminEmails.length === 0) return;
   const appUrl = getFrontendAppUrl();
   const html = baseTemplate(`
-    <div style="background:#1A1200;border:1px solid #D97706;border-radius:10px;padding:14px 18px;margin-bottom:20px;">
-      <p style="margin:0;font-size:12px;font-weight:700;color:#D97706;text-transform:uppercase;letter-spacing:0.06em;">Action Required</p>
-    </div>
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">New Shop Owner Awaiting Verification</h1>
-    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      A new shop owner has registered and is waiting for your approval before they can access the platform.
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">New Shop Owner Awaiting Verification</h1>
+    <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
+      A new shop owner has registered and needs your approval before they can access the platform.
     </p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0A0F1D;border-radius:10px;padding:20px;margin-bottom:24px;">
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Name</td><td style="padding:6px 0;font-size:14px;font-weight:600;color:#F3F4F6;">${shopOwner.name || '—'}</td></tr>
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Email</td><td style="padding:6px 0;font-size:14px;color:#F59E0B;">${shopOwner.email || '—'}</td></tr>
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Phone</td><td style="padding:6px 0;font-size:14px;color:#F3F4F6;">${shopOwner.phone || '—'}</td></tr>
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Registered</td><td style="padding:6px 0;font-size:14px;color:#F3F4F6;">${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</td></tr>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;margin-bottom:24px;">
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Name</span>
+          <span style="font-size:14px;font-weight:600;color:#111111;">${shopOwner.name || '—'}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Email</span>
+          <span style="font-size:14px;color:#8B1A0F;">${shopOwner.email || '—'}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Registered</span>
+          <span style="font-size:14px;color:#374151;">${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</span>
+        </td>
+      </tr>
     </table>
-    <div style="text-align:center;margin-bottom:20px;">
-      <a href="${appUrl}/admin"
-         style="display:inline-block;background:#F59E0B;color:#000;font-size:15px;font-weight:700;padding:14px 36px;border-radius:10px;text-decoration:none;">
-        Review in Admin Console →
-      </a>
-    </div>
-    <p style="margin:0;font-size:13px;color:#6B7280;text-align:center;">
-      Go to the Verifications tab in the Admin Console to approve or reject.
-    </p>
-  `);
-  // Send to all admins (concurrently, don't fail if one bounces)
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+      <tr>
+        <td align="center">
+          <a href="${appUrl}/admin" class="btn-cta"
+             style="display:inline-block;background:#8B1A0F;color:#FFFFFF;font-size:15px;font-weight:700;padding:15px 40px;border-radius:8px;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+            Review in Admin Console &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;font-size:13px;color:#9CA3AF;text-align:center;">Go to the Verifications tab to approve or reject this application.</p>
+  `, { accentColor: '#D97706', accentLabel: 'Action Required' });
   await Promise.allSettled(adminEmails.map(email =>
     sendMail({ to: email, subject: `[RedPiston] New Shop Owner Pending Verification — ${shopOwner.name || shopOwner.email}`, html,
-      text: `New shop owner awaiting verification:\nName: ${shopOwner.name || '—'}\nEmail: ${shopOwner.email || '—'}\nPhone: ${shopOwner.phone || '—'}\n\nReview at: ${appUrl}/admin` })
+      text: `New shop owner awaiting verification:\nName: ${shopOwner.name || '—'}\nEmail: ${shopOwner.email || '—'}\n\nReview at: ${appUrl}/admin` })
   ));
 }
 
@@ -393,26 +420,25 @@ export async function sendShopOwnerApprovedEmail(shopOwner) {
   if (!shopOwner.email) return;
   const appUrl = getFrontendAppUrl();
   const html = baseTemplate(`
-    <div style="background:#0A2E1A;border:1px solid #16A34A;border-radius:10px;padding:14px 18px;margin-bottom:20px;">
-      <p style="margin:0;font-size:12px;font-weight:700;color:#4ADE80;text-transform:uppercase;letter-spacing:0.06em;">✓ Account Approved</p>
-    </div>
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">Your Shop is Approved!</h1>
-    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Your Shop is Approved!</h1>
+    <p style="margin:0 0 28px;font-size:15px;color:#6B7280;line-height:1.7;">
       Hey ${shopOwner.name || 'there'}, great news! Your shop owner account on RedPiston has been verified and approved. You can now log in and start managing your shop.
     </p>
-    <div style="text-align:center;margin-bottom:28px;">
-      <a href="${appUrl}/login"
-         style="display:inline-block;background:#10B981;color:#fff;font-size:15px;font-weight:700;padding:14px 36px;border-radius:10px;text-decoration:none;">
-        Log In to Your Shop →
-      </a>
-    </div>
-    <p style="margin:0;font-size:13px;color:#6B7280;">
-      Need help getting started? Reply to this email and our team will assist you.
-    </p>
-  `);
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+      <tr>
+        <td align="center">
+          <a href="${appUrl}/login" class="btn-cta"
+             style="display:inline-block;background:#8B1A0F;color:#FFFFFF;font-size:15px;font-weight:700;padding:15px 40px;border-radius:8px;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+            Log In to Your Shop &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">Need help getting started? Reply to this email and our team will assist you.</p>
+  `, { accentColor: '#16A34A', accentLabel: '&#10003; Account Approved' });
   await sendMail({
     to: shopOwner.email,
-    subject: '🎉 Your RedPiston Shop Account is Approved!',
+    subject: 'Your RedPiston Shop Account is Approved!',
     html,
     text: `Great news! Your RedPiston shop owner account has been approved. Log in at: ${appUrl}/login`,
   });
@@ -424,21 +450,18 @@ export async function sendShopOwnerApprovedEmail(shopOwner) {
 export async function sendShopOwnerRejectedEmail(shopOwner, reason) {
   if (!shopOwner.email) return;
   const html = baseTemplate(`
-    <div style="background:#2E0A0A;border:1px solid #EF4444;border-radius:10px;padding:14px 18px;margin-bottom:20px;">
-      <p style="margin:0;font-size:12px;font-weight:700;color:#F87171;text-transform:uppercase;letter-spacing:0.06em;">Application Not Approved</p>
-    </div>
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">Your Application Was Reviewed</h1>
-    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Your Application Was Reviewed</h1>
+    <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
       Hey ${shopOwner.name || 'there'}, after reviewing your shop owner application, we were unable to approve it at this time.
     </p>
-    <div style="background:#0A0F1D;border:1px solid #374151;border-radius:10px;padding:18px;margin-bottom:24px;">
-      <p style="margin:0 0 8px;font-size:12px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.06em;">Reason provided:</p>
-      <p style="margin:0;font-size:15px;color:#F3F4F6;line-height:1.6;">${reason || 'Your application did not meet our current requirements.'}</p>
+    <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:18px 20px;margin-bottom:24px;">
+      <p style="margin:0 0 8px;font-size:11px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.08em;">Reason provided</p>
+      <p style="margin:0;font-size:15px;color:#374151;line-height:1.7;">${reason || 'Your application did not meet our current requirements.'}</p>
     </div>
-    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.5;">
-      If you believe this is a mistake or want to reapply, please contact our support team by replying to this email.
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">
+      If you believe this is a mistake or would like to reapply, please contact our support team by replying to this email.
     </p>
-  `);
+  `, { accentColor: '#EF4444', accentLabel: 'Application Not Approved' });
   await sendMail({
     to: shopOwner.email,
     subject: 'Update on your RedPiston Shop Owner Application',
@@ -454,20 +477,19 @@ export async function sendShopOwnerRejectedEmail(shopOwner, reason) {
 export async function sendShopOwnerUnderReviewEmail(email, ownerName) {
   if (!email) return;
   const html = baseTemplate(`
-    <div style="background:#1A1200;border:1px solid #D97706;border-radius:10px;padding:14px 18px;margin-bottom:20px;">
-      <p style="margin:0;font-size:12px;font-weight:700;color:#D97706;text-transform:uppercase;letter-spacing:0.06em;">Profile Under Review</p>
-    </div>
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">Thanks for registering${ownerName ? `, ${ownerName}` : ''}!</h1>
-    <p style="margin:0 0 16px;font-size:15px;color:#9CA3AF;line-height:1.6;">
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Thanks for registering${ownerName ? `, ${ownerName}` : ''}!</h1>
+    <p style="margin:0 0 20px;font-size:15px;color:#6B7280;line-height:1.7;">
       Your shop profile has been submitted and is currently under review by our team.
     </p>
-    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      You will receive another email once your account is approved — usually within 24 hours. No action is needed from you right now.
-    </p>
-    <p style="margin:0;font-size:13px;color:#6B7280;">
+    <div style="background:#FFFBEB;border:1px solid #FCD34D;border-radius:10px;padding:16px 20px;margin-bottom:24px;">
+      <p style="margin:0;font-size:14px;color:#92400E;line-height:1.6;">
+        &#x23F3; We'll notify you once your account is approved — usually within <strong>24 hours</strong>. No action is needed from you right now.
+      </p>
+    </div>
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">
       Questions? Just reply to this email and our team will help.
     </p>
-  `);
+  `, { accentColor: '#D97706', accentLabel: 'Profile Under Review' });
   await sendMail({
     to: email,
     subject: 'Profile Under Review — RedPiston',
@@ -482,23 +504,40 @@ export async function sendShopOwnerUnderReviewEmail(email, ownerName) {
 export async function sendOrderConfirmationEmail(email, { customerName, orderNumber, shopName, itemCount, totalAmount }) {
   if (!email) return;
   const html = baseTemplate(`
-    <div style="background:#0A2E1A;border:1px solid #16A34A;border-radius:10px;padding:14px 18px;margin-bottom:20px;">
-      <p style="margin:0;font-size:12px;font-weight:700;color:#4ADE80;text-transform:uppercase;letter-spacing:0.06em;">✓ Order Placed</p>
-    </div>
-    <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#F3F4F6;">Thanks for your order${customerName ? `, ${customerName}` : ''}!</h1>
-    <p style="margin:0 0 24px;font-size:15px;color:#9CA3AF;line-height:1.6;">
-      Your order has been placed and the shop has been notified.
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Order confirmed${customerName ? `, ${customerName}` : ''}!</h1>
+    <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
+      Your order has been placed and the shop has been notified. You'll receive an update when it's ready.
     </p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0A0F1D;border-radius:10px;padding:20px;margin-bottom:24px;">
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Order</td><td style="padding:6px 0;font-size:14px;font-weight:600;color:#F3F4F6;">#${orderNumber}</td></tr>
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Shop</td><td style="padding:6px 0;font-size:14px;color:#F3F4F6;">${shopName || '—'}</td></tr>
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Items</td><td style="padding:6px 0;font-size:14px;color:#F3F4F6;">${itemCount}</td></tr>
-      <tr><td style="padding:6px 0;font-size:13px;color:#6B7280;">Total</td><td style="padding:6px 0;font-size:14px;font-weight:700;color:#4ADE80;">₹${Number(totalAmount).toFixed(2)}</td></tr>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;margin-bottom:24px;">
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Order Number</span>
+          <span style="font-size:15px;font-weight:700;color:#8B1A0F;">#${orderNumber}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Shop</span>
+          <span style="font-size:14px;color:#374151;">${shopName || '—'}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Items</span>
+          <span style="font-size:14px;color:#374151;">${itemCount} item${itemCount !== 1 ? 's' : ''}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Total Amount</span>
+          <span style="font-size:16px;font-weight:800;color:#16A34A;">&#x20B9;${Number(totalAmount).toFixed(2)}</span>
+        </td>
+      </tr>
     </table>
-    <p style="margin:0;font-size:13px;color:#6B7280;">
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">
       Track your order anytime from the Orders section of your account.
     </p>
-  `);
+  `, { accentColor: '#16A34A', accentLabel: '&#10003; Order Placed' });
   await sendMail({
     to: email,
     subject: `Order #${orderNumber} confirmed — RedPiston`,

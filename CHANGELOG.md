@@ -1,5 +1,10 @@
 # Changelog
 
+## [2026-06-28] — Email templates full redesign
+
+### Redesign
+- **All 9 email templates redesigned** (`src/services/email.js`): new clean white-card layout replaces the dark theme. Logo renders directly as `<img>` with no border or wrapping box. 4px brand-red top accent bar, white card with shadow, mobile-responsive `@media` CSS (OTP scales to 32px on mobile, padding adjusts). `baseTemplate` takes `accentColor`/`accentLabel` options for per-email status badges (green/amber/red). Detail tables use bordered card style. All CTA buttons are consistent `#8B1A0F` red. MSO/Outlook compat meta tags added.
+
 ## [2026-06-28] — Email branding: real logo in all transactional emails
 
 ### New Features
