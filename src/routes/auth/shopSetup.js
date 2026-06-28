@@ -168,7 +168,7 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
 
     // ── Alert all platform admins ────────────────────────────────────────────
     const admins = await prisma.user.findMany({
-      where: { role: 'PLATFORM_ADMIN', isActive: true, email: { not: null } },
+      where: { role: { in: ['PLATFORM_ADMIN', 'SUPER_ADMIN'] }, isActive: true, email: { not: null } },
       select: { email: true },
     });
 
