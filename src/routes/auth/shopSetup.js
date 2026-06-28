@@ -149,6 +149,7 @@ router.post('/shop-setup', authenticate, async (req, res, next) => {
         where: { userId },
         data: {
           name: ownerName.trim(),
+          phone: cleanPhone,
           verificationStatus: 'PENDING',
           // save email on the user record so future sends work
           ...(shopEmail && !user.email ? { email: shopEmail } : {}),
