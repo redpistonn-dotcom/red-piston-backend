@@ -875,6 +875,9 @@ model Invoice {
   whatsappSentAt DateTime? @map("whatsapp_sent_at")
   status         String   @default("PAID")
   notes          String?
+  // JSON snapshot of non-inventory line items (services, labour, ad-hoc charges) sold in this invoice.
+  // InvoiceItem.inventoryId is non-nullable, so custom items cannot be stored as rows there.
+  customItemsMeta Json?   @map("custom_items_meta")
   createdAt      DateTime @default(now()) @map("created_at")
   version        Int      @default(0) @map("version")
   updatedAt      DateTime @updatedAt @map("updated_at")

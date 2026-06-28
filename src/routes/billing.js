@@ -43,7 +43,7 @@ async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAm
 router.post('/invoice', authenticate, requireShopOwner, requirePermission('billing.create'), async (req, res, next) => {
   try {
     const {
-      items, partyId, partyName, partyPhone, partyGstin,
+      items, customItems, partyId, partyName, partyPhone, partyGstin,
       billingAddress,
       invoiceType,
       paymentMode, cashAmount, upiAmount, creditAmount,
@@ -52,7 +52,11 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
       notes,
     } = req.body;
 
-    if (!items || items.length === 0) return res.status(400).json({ error: 'No items in invoice' });
+    const hasInventoryItems = Array.isArray(items) && items.length > 0;
+    const hasCustomItems    = Array.isArray(customItems) && customItems.length > 0;
+    if (!hasInventoryItems && !hasCustomItems) {
+      return res.status(400).json({ error: 'No items in invoice' });
+    }
 
     const invType = invoiceType && VALID_INVOICE_TYPES.includes(invoiceType)
       ? invoiceType
@@ -63,17 +67,19 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
 
     // ── Validate stock + calculate line-item totals ───────────────────────────
     // Batch-fetch all inventory rows in ONE query instead of N separate findUniques.
-    const inventoryIds = items.map(i => parseInt(i.inventoryId));
-    const inventoryRows = await prisma.shopInventory.findMany({
-      where: { inventoryId: { in: inventoryIds }, shopId: req.shopId },
-      include: { masterPart: true },
-    });
+    const inventoryIds = hasInventoryItems ? items.map(i => parseInt(i.inventoryId)) : [];
+    const inventoryRows = inventoryIds.length > 0
+      ? await prisma.shopInventory.findMany({
+          where: { inventoryId: { in: inventoryIds }, shopId: req.shopId },
+          include: { masterPart: true },
+        })
+      : [];
     const invMap = new Map(inventoryRows.map(r => [r.inventoryId, r]));
 
     let subtotal = 0, cgst = 0, sgst = 0;
     const processedItems = [];
 
-    for (const item of items) {
+    for (const item of (items || [])) {
       const inv = invMap.get(parseInt(item.inventoryId));
       if (!inv) {
         throw { status: 400, message: `Invalid inventory item: ${item.inventoryId}` };
@@ -123,6 +129,38 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
         total:       itemTotal,
         buyingPrice: parseFloat(inv.buyingPrice || 0),
       });
+    }
+
+    // ── Process custom items (no inventory lookup, no stock deduction) ───────
+    const processedCustomItems = [];
+    if (hasCustomItems) {
+      for (const ci of customItems) {
+        const ciQty      = Math.max(1, parseInt(ci.qty) || 1);
+        const ciUnit     = Math.max(0, parseFloat(ci.unitPrice) || 0);
+        const ciDisc     = Math.min(ciUnit * 0.8, Math.max(0, parseFloat(ci.discount) || 0));
+        const ciTaxable  = (ciUnit - ciDisc) * ciQty;
+        const ciGstRate  = Math.max(0, parseFloat(ci.gstRate) || 0);
+        const ciCgst     = ciTaxable * (ciGstRate / 2 / 100);
+        const ciSgst     = ciCgst;
+        const ciTotal    = ciTaxable + ciCgst + ciSgst;
+
+        subtotal += ciTaxable;
+        cgst     += ciCgst;
+        sgst     += ciSgst;
+
+        processedCustomItems.push({
+          name:        String(ci.name  || 'Custom Item').slice(0, 200),
+          qty:         ciQty,
+          unitPrice:   ciUnit,
+          discount:    ciDisc,
+          taxableAmt:  ciTaxable,
+          gstRate:     ciGstRate,
+          cgst:        ciCgst,
+          sgst:        ciSgst,
+          total:       ciTotal,
+          buyingPrice: Math.max(0, parseFloat(ci.buyingPrice) || 0),
+        });
+      }
     }
 
     const totalAmount  = subtotal + cgst + sgst;
@@ -176,6 +214,7 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
           marketplaceOrderId: marketplaceOrderId || null,
           status:            isCreditSale ? 'CREDIT' : 'PAID',
           notes:             notes             || null,
+          customItemsMeta:   processedCustomItems.length > 0 ? processedCustomItems : undefined,
           createdBy:         req.user.userId,
           items: {
             create: processedItems.map(item => ({
@@ -244,6 +283,35 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
         }
       }
 
+      // ── Create movements for custom items (no stock deduction, no FK) ───────
+      if (invType !== 'ESTIMATE' && processedCustomItems.length > 0) {
+        for (const ci of processedCustomItems) {
+          const profit = ci.taxableAmt - (ci.buyingPrice * ci.qty);
+          await tx.movement.create({
+            data: {
+              shopId:          req.shopId,
+              inventoryId:     null,
+              type:            'SALE',
+              qty:             ci.qty,
+              unitPrice:       ci.unitPrice,
+              gstRate:         ci.gstRate,
+              taxableAmount:   ci.taxableAmt,
+              totalAmount:     ci.total,
+              gstAmount:       ci.cgst + ci.sgst,
+              profit,
+              invoiceId:       inv.invoiceId,
+              partyId:         partyId || null,
+              referenceNumber: invoiceNumber,
+              invoiceNumber,
+              partyName:       partyName || null,
+              paymentMode:     paymentMode || 'CASH',
+              notes:           ci.name,
+              createdBy:       req.user.userId,
+            },
+          });
+        }
+      }
+
       // ── Write PartyLedger debit if credit sale ──────────────────────────────
       if (isCreditSale && partyId) {
         await writeLedgerDebit(tx, {
@@ -270,7 +338,8 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
         invoiceType:   invType,
         totalAmount:   String(totalAmount),
         paymentMode:   paymentMode || 'CASH',
-        itemCount:     processedItems.length,
+        itemCount:     processedItems.length + processedCustomItems.length,
+        customItemCount: processedCustomItems.length || undefined,
         isCreditSale,
         partyId:       partyId || null,
       },
