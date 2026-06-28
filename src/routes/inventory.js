@@ -168,8 +168,9 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
       }
     }
 
-    // If opening stock provided, create an OPENING movement, linked to the supplier
-    // party and recording the full supplier details (name / GSTIN / phone / invoice).
+    // If opening stock provided, create a PURCHASE movement (type=PURCHASE so it counts
+    // in purchase reports / cost-of-goods). Notes preserve "Opening stock" context so
+    // History still shows this was the initial stock entry, not a restock.
     if (parsedInitialQty > 0) {
       const supplierBits = [
         supplierName && `Supplier: ${supplierName}`,
@@ -183,7 +184,7 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
         data: {
           shopId:         req.shopId,
           inventoryId:    item.inventoryId,
-          type:           'OPENING',
+          type:           'PURCHASE',
           qty:            parsedQty,
           unitPrice:      parsedBuy,
           totalAmount:    parsedBuy ? parsedQty * parsedBuy : null,
@@ -622,7 +623,7 @@ router.post('/bulk-stock-in', authenticate, requireShopOwner, async (req, res, n
             },
           });
           invId   = created.inventoryId;
-          movType = 'OPENING';
+          movType = 'PURCHASE'; // new item's first stock is still a purchase
         }
 
         // ── Record movement ───────────────────────────────────────────────────
