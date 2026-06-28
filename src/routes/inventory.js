@@ -41,7 +41,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
           },
         },
       },
-      orderBy: { masterPart: { partName: 'asc' } },
+      orderBy: { createdAt: 'desc' },
     });
 
     // Fetch only the last 5 recent movements per product for the list view.
