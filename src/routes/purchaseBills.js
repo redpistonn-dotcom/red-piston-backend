@@ -271,9 +271,10 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
 
 // Extract the Cloudinary public_id from a delivery URL.
 // Handles both /image/upload/ and /raw/upload/ with optional version segment.
+// Decodes %2F so folder paths like "bills/shop-1/file" are preserved correctly.
 function cloudinaryPublicId(url) {
   const m = url.match(/\/(?:image|raw|video)\/upload\/(?:v\d+\/)?(.+?)(\.[^./]+)?$/);
-  return m ? m[1] : null;
+  return m ? decodeURIComponent(m[1]) : null;
 }
 
 // ─── GET /api/shop/purchase-bills/pdf-proxy — server-side PDF fetch ──────────
