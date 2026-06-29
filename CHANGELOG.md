@@ -1,5 +1,82 @@
 # Changelog
 
+## [2026-06-29] — PDF line-item parser: robust column auto-detection
+
+### Fixes
+- **`parseTallyInvoice` now auto-detects column X positions** from the "Description of Goods" header row instead of using hardcoded pixel offsets. Different Tally versions and print settings produce PDFs with different page widths, so the old hardcoded values silently missed items on any non-standard layout.
+- **Quantity parsing fixed** — old regex `[A-Z]{2,4}` rejected lowercase units (`sets`, `pcs`). Now case-insensitive, accepts `"24"`, `"24.00"`, `"24 sets"`, `"24 pcs"`, `"24 Nos"` etc. Tally's decimal qty format `"24.00"` is now captured before the `isMoney` check so it isn't silently dropped.
+- **Items with missing HSN/qty no longer silently dropped** — if name + amount are present, the item is added with a warning so the reviewer can fill gaps before importing. qty defaults to 1 when unreadable.
+- **Footer stop refined** — changed bare `/Taxable/i` to `/Taxable\s+Value/i` so the stop only fires on the actual footer row, not on any row that happens to mention "taxable". `Output CGST/SGST/IGST` labels now also trigger the stop.
+- **`parseGenericInvoice` footer stop** — same fix: bare `taxable` → `taxable (value|amount|total)` so the generic fallback doesn't stop mid-table on Tally invoices.
+- **Invoice date regex** — now accepts both `-` and `/` date separators (e.g. `15/Jun/2024`) and numeric month formats (`15-06-2024`).
+- **Invoice number fallback** — added inline regex to catch `"Invoice No. : RP/24-25/00147"` format on the same row when the label+value are not on separate rows.
+
+## [2026-06-28] — Redis-backed rate limiting + mutation limiter
+
+### Infrastructure / Security
+- **All rate limiters now use Redis store** (`rate-limit-redis` v4 + `ioredis`): `apiLimiter`, `mutationLimiter`, `authLimiter`, `otpSendLimiter`, `verifyOtpLimiter`, `emailLoginLimiter`, `passwordResetLimiter`, `pdfExtractLimiter` — all backed by Redis with prefixed keys (`rl:api:`, `rl:mut:`, etc.). Falls back to in-memory automatically when `REDIS_URL` is not set (dev with no Redis).
+- **`mutationLimiter` now wired** (`src/index.js`): all `POST / PATCH / PUT / DELETE` requests are capped at 60/min per IP via an inline method-check middleware applied after `apiLimiter`. Previously defined but never applied — write endpoints were unlimited.
+- **New env var required**: `REDIS_URL` must be set in production for persistent rate limiting. Use Upstash Redis free tier (10K requests/day) — same instance already used by BullMQ.
+
+## [2026-06-28] — Email send for Purchase Orders
+
+### New Features
+- **PO email send** (`POST /api/shop/purchase-orders/:id/send-email`): sends the PO PDF as an attachment to the supplier's email via Resend. Only APPROVED POs may be emailed. On success, status auto-advances to SENT and an audit log entry is written. If the supplier has no email on file, returns `NO_SUPPLIER_EMAIL` (400). If the PDF generation or Resend delivery fails, returns a clear error code so the frontend can show a useful toast.
+- **Email template** (`sendPurchaseOrderEmail` in `src/services/email.js`): uses the existing `baseTemplate` + `getResendClient` infrastructure. Includes PO number, shop name, item count, total value, remarks block (only shown when notes exist), and the PDF as `${poNumber}.pdf` attachment.
+- **Frontend** (`PurchaseOrderModal.tsx`): "📧 Send" button appears for APPROVED POs in the list view. Button is disabled (greyed, `not-allowed` cursor) when the supplier has no email — the `title` tooltip tells the user to add one in Parties. While sending, the button shows "Sending…" and is locked to prevent double-sends. On success, status refreshes to Sent in the list without a page reload.
+- **Party email exposed in list response**: added `email` to `PO_INCLUDE_LIST` and `PO_INCLUDE_DETAIL` party selects so the frontend can conditionally enable/disable the send button without a separate fetch.
+
+### Required env vars (already in use for auth emails)
+- `RESEND_API_KEY` — Resend API key
+- `RESEND_SENDER_EMAIL` — verified sender address (e.g. `orders@redpiston.in`)
+- `RESEND_SENDER_NAME` — display name (e.g. `RedPiston`)
+
+## [2026-06-28] — Supplier flow fixes: BOTH-type parties + PurchaseOrder safety-net
+
+### Fixes
+- **BOTH-type parties now appear in PO supplier dropdown**: `GET /api/shop/parties?type=SUPPLIER` previously did an exact `WHERE type = 'SUPPLIER'`, excluding parties typed as `BOTH` (customer + supplier). Changed to `WHERE type IN ('SUPPLIER', 'BOTH')` — same logic applied when filtering `type=CUSTOMER`. Parties requesting only `type=BOTH` still get exact match.
+- **PurchaseOrder added to Prisma tenant safety-net**: `TENANT_MODELS` in `src/db/prisma.js` now includes `PurchaseOrder`, so the `$use` middleware auto-injects `shopId` on every PO query as a second line of defence. All existing PO routes were already manually scoped — this closes the gap for any future route that omits the manual filter.
+
+## [2026-06-28] — Supplier price history in PO modal
+
+### New Features
+- **Supplier price history**: when creating a PO, selecting a supplier now fetches the last 5 confirmed purchase prices per item from that supplier (`GET /api/shop/purchase-orders/price-history/:partyId`). For selected items, the last 3 ordered prices appear inline below the price input (most recent first, with `title` showing PO number + qty on hover). For unselected items, the last ordered price replaces the generic buy price, with a trend arrow (↑ price went up / ↓ went down vs the previous order). No new DB columns — query is entirely over existing `PurchaseOrderItem` + `PurchaseOrder` rows. DRAFT and CANCELLED POs are excluded so only confirmed orders appear in history.
+
+## [2026-06-28] — Purchase Order feature parity with Indian ERPs
+
+### New Features
+- **Freight + other charges**: `freight` and `otherCharges` fields added to `PurchaseOrder` schema and all create/edit/clone routes; totals computed correctly; shown in Excel export and list view
+- **Partial receipt UI**: new `ReceiveItemsDialog` component — per-item qty inputs, capped at remaining qty; auto-selects RECEIVED vs PARTIAL based on whether all items are fully filled
+- **State-machine enforcement**: backend now validates transitions against `VALID_TRANSITIONS` map; illegal jumps (e.g. RECEIVED → DRAFT) return 400 `INVALID_TRANSITION` with a clear message
+- **Clone/duplicate PO**: `POST /api/shop/purchase-orders/:id/clone` creates a fresh DRAFT copying all items and surcharges; ⧉ button in list view; receivedQty and linkedBillId reset
+- **PO → Purchase bill link**: `PATCH /api/shop/purchase-orders/:id/link-bill`; new `LinkBillDialog` loads imported bills and lets owner reconcile a received PO to a vendor invoice; green reconciliation strip shown in list view
+
+### Schema
+- `purchase_orders`: added `freight NUMERIC(10,2) DEFAULT 0`, `other_charges NUMERIC(10,2) DEFAULT 0`, `linked_bill_id INT FK purchase_bills`
+- `purchase_bills`: added back-relation `linkedPurchaseOrders`
+- Migration script: `scripts/migrations/add_po_freight_bill_link.sql` (run manually in DBeaver before deploy)
+
+### API
+- `purchaseOrders.ts`: added `clonePurchaseOrder`, `linkPurchaseOrderBill` exports
+- List endpoint now returns `linkedBill` (invoiceNumber, status, grandTotal) in every PO row
+
+## [2026-06-28] — Production hardening: security & data integrity fixes
+
+### Security
+- **errorHandler**: raw `err.message` no longer exposed in production for 5xx errors — returns a safe generic message; dev mode unchanged
+- **multiTenancyMiddleware activated**: wired via AsyncLocalStorage (`shopContext` in `db/prisma.js`) + `prisma.$use()` — shopId now auto-injected on all tenant-scoped Prisma queries as a defense-in-depth layer; routes still manually scope as primary guard
+- **auth.js**: `authenticate` middleware now calls `shopContext.run()` to bind shopId to the async context for each request
+
+### Auth
+- **OTP mark-used**: removed silent `.catch(() => {})` — DB failure now throws 500 so the user is told to retry instead of silently receiving a potentially reusable OTP
+- **OTP attempt counter**: failure-increment catch now logs the error instead of swallowing it
+
+### Ops
+- **.env.example**: added `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` (required for image uploads — was missing), and `EMAIL_LOGO_URL`
+- **Prisma connection pool**: `db/prisma.js` now appends `connection_limit=5&pool_timeout=10` to `DATABASE_URL` if not already set — prevents exhausting Supabase free-tier connections on restarts
+- **JWT_SECRET boot check**: `index.js` exits with a clear fatal error if `JWT_SECRET` is shorter than 32 chars — prevents accidental deploy with a weak secret
+- **CONTRIBUTING.md**: documented Python 3 + pip deps required for the catalog scraper admin feature (optional, app works without it)
+
 ## [2026-06-28] — Email templates full redesign
 
 ### Redesign

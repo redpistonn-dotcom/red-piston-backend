@@ -85,42 +85,79 @@ export async function parseTallyInvoice(buffer) {
       if (g) result.supplierGstin = g[1];
     }
     if (!result.invoiceDate) {
-      const d = text.match(/\b(\d{1,2}-[A-Za-z]{3}-\d{2,4})\b/);
+      const d = text.match(/\b(\d{1,2}[-/][A-Za-z0-9]{1,3}[-/]\d{2,4})\b/);
       if (d) result.invoiceDate = d[1];
     }
     if (!result.invoiceNumber) {
       // label cell "Invoice No." — value renders on a following row in the same column
-      const label = flat[i].cells.find((c) => /^Invoice No\.?$/i.test(c.str.trim()));
+      const label = flat[i].cells.find((c) => /^Invoice\s*No\.?$/i.test(c.str.trim()));
       if (label) {
         for (let j = i + 1; j < Math.min(i + 4, flat.length); j++) {
           const v = flat[j].cells.find((c) => Math.abs(c.x - label.x) < 30 && /^[\w/-]+$/.test(c.str.trim()) && !/^Dated$/i.test(c.str.trim()));
           if (v) { result.invoiceNumber = v.str.trim(); break; }
         }
       }
+      // Fallback: "Invoice No. : RP/24-25/00147" on the same row
+      if (!result.invoiceNumber) {
+        const m = text.match(/Invoice\s*No\.?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9/-]{1,30})/i);
+        if (m && !/^(date|no|num|number)\b/i.test(m[1])) result.invoiceNumber = m[1].trim();
+      }
     }
   }
 
-  // ── Line items via column classification ──────────────────────────────────
-  // Columns (from the table header row): Sl≈39 | Description≈51 | HSN≈158 |
-  // Quantity≈217+ | Rate(incl)≈271-329 | Rate≈330-369 | per≈370 | Disc%≈392 | Amount≈448+
+  // ── Auto-detect column X positions from the table header row ─────────────
+  // Different Tally versions and print settings produce PDFs with different
+  // page widths and column layouts. We read the actual X coordinates from the
+  // "Description of Goods" header row instead of using hardcoded values.
+  // Defaults match a common A4 Tally layout as fallback.
+  const colX = { desc: 51, hsn: 158, qty: 230, rateIncl: 285, rateExcl: 330, per: 370, disc: 392, amount: 448 };
+  for (const row of flat) {
+    const joined = row.cells.map((c) => c.str).join(' ');
+    if (!/Description\s+of\s+Goods/i.test(joined)) continue;
+    let rateCount = 0;
+    for (const c of row.cells) {
+      const s = c.str.trim();
+      if (/^description/i.test(s) || /\bgoods\b/i.test(s)) { colX.desc = Math.min(colX.desc, c.x); continue; }
+      if (/^hsn/i.test(s) || /^sac$/i.test(s)) { colX.hsn = c.x; continue; }
+      if (/^quantity$/i.test(s) || /^qty$/i.test(s)) { colX.qty = c.x; continue; }
+      if (/^rate$/i.test(s)) {
+        rateCount++;
+        // Tally has "Rate (Incl. of Tax)" first, then bare "Rate" (excl.) to its right.
+        // We keep the leftmost as rateIncl and the next as rateExcl.
+        if (rateCount === 1) colX.rateIncl = c.x;
+        else colX.rateExcl = c.x;
+        continue;
+      }
+      if (/^per$/i.test(s)) { colX.per = c.x; continue; }
+      if (/^disc/i.test(s)) { colX.disc = c.x; continue; }
+      if (/^amount$/i.test(s)) { colX.amount = c.x; continue; }
+    }
+    break;
+  }
+  const T = 18; // x-position tolerance (pt) — handles minor layout variations
+
+  // ── Line items via detected column classification ─────────────────────────
   let current = null;
   const pushCurrent = () => {
     if (!current) return;
-    if (current.hsnCode && current.amount != null && current.qty != null) {
-      current.partName = current.nameParts.join(' ').replace(/\s+/g, ' ').trim();
+    const name = (current.nameParts || []).join(' ').replace(/\s+/g, ' ').trim();
+    if (current.amount != null && name && /[A-Za-z]{2,}/.test(name)) {
+      current.partName = name;
       delete current.nameParts;
-      // Skip service/charge line items — they are one-time fees, not inventory parts.
       if (SERVICE_ITEM_RE.test(current.partName)) {
         result.warnings.push(`Service charge excluded from import: "${current.partName}" (₹${current.amount}) — add manually if needed`);
         current = null;
         return;
       }
+      // qty defaults to 1 when it couldn't be read — reviewer can correct it
+      current.qty = current.qty ?? 1;
+      if (!current.hsnCode) result.warnings.push(`HSN missing for item ${current.serial} ("${current.partName}") — review before importing`);
       current.mathOk = current.rateExclGst != null
         ? Math.abs(current.amount - current.rateExclGst * current.qty) < 0.05
         : true;
       if (!current.mathOk) result.warnings.push(`qty×rate ≠ amount for item ${current.serial}`);
       result.items.push(current);
-    } else {
+    } else if (current.serial) {
       result.warnings.push(`Incomplete item row (serial ${current.serial}) — skipped`);
     }
     current = null;
@@ -130,25 +167,25 @@ export async function parseTallyInvoice(buffer) {
     let inTable = false;
     for (const row of pageRows) {
       const joined = row.cells.map((c) => c.str).join(' ');
-      if (/Description of Goods/.test(joined)) { inTable = true; continue; }
+      if (/Description\s+of\s+Goods/i.test(joined)) { inTable = true; continue; }
       if (!inTable) continue;
-      if (/^No\.?\s*\(Incl/.test(joined) || /^\(Incl\. of Tax\)/.test(joined)) continue;
-      if (/continued/.test(joined)) break; // end of this page's table — item may continue next page
+      if (/\(Incl\.?\s*of\s*Tax\)/i.test(joined)) continue; // sub-header
+      if (/continued/i.test(joined)) break;
 
-      // Tax footer begins after the last item: OUTPUT CGST/SGST/IGST rows,
-      // round-off rows, or the unlabeled taxable-subtotal row (a lone value in
-      // the Amount column with nothing else). Without this cut, footer rows
-      // bleed into the last item's name and overwrite its amount.
+      // Tax footer: stop collecting items when we hit CGST/SGST rows, round-off,
+      // or specific footer labels. Use "Taxable Value" (not bare "Taxable") to avoid
+      // false stops on column headers like "GST Rate" in item rows.
       const isFooterLabel = /^(OUTPUT\s|Less\s*:|.*ROUND\s*OFF)/i.test(joined);
-      const isLoneSubtotal = row.cells.length === 1 && row.cells[0].x >= 440 && isMoney(row.cells[0].str.trim());
+      const isLoneSubtotal = row.cells.length === 1 && row.cells[0].x >= colX.amount - T && isMoney(row.cells[0].str.trim());
       if (isFooterLabel || isLoneSubtotal
-        || /JURISDICTION|Computer Generated|Amount Chargeable|^Total\b|E\. ?& ?O\.E|Declaration|Taxable/i.test(joined)) {
+        || /JURISDICTION|Computer Generated|Amount Chargeable|^Total\b|E\. ?& ?O\.E|Declaration|Taxable\s+Value|Output\s+(CGST|SGST|IGST)/i.test(joined)) {
         pushCurrent();
         inTable = false;
         continue;
       }
 
-      const serialCell = row.cells.find((c) => c.x < 50 && /^\d{1,3}$/.test(c.str));
+      // Serial number: just to the left of the description column
+      const serialCell = row.cells.find((c) => c.x < colX.desc - 2 && /^\d{1,3}$/.test(c.str));
       if (serialCell) {
         pushCurrent();
         current = { serial: parseInt(serialCell.str, 10), nameParts: [], hsnCode: null, qty: null, unit: null, rateExclGst: null, rateInclGst: null, discountPct: 0, amount: null };
@@ -157,19 +194,42 @@ export async function parseTallyInvoice(buffer) {
 
       for (const c of row.cells) {
         const s = c.str.trim();
-        if (c.x < 50) continue; // serial — handled
-        if (c.x < 150) { current.nameParts.push(s); continue; }            // Description
-        if (c.x < 217 && /^\d{4,8}$/.test(s)) { current.hsnCode = s; continue; } // HSN/SAC (4-8 digits)
-        const qm = s.match(/^([\d,]+)\s*([A-Z]{2,4})$/);
-        if (qm && c.x < 271) { current.qty = parseInt(qm[1].replace(/,/g, ''), 10); current.unit = qm[2]; continue; } // Quantity
+        if (!s) continue;
+        if (c.x < colX.desc - 2) continue; // serial — already handled
+
+        // Description: between desc column and just before hsn
+        if (c.x < colX.hsn - T) { current.nameParts.push(s); continue; }
+
+        // HSN/SAC: 4–8 digit code in the hsn column zone
+        if (c.x < colX.qty - T && /^\d{4,8}$/.test(s)) { current.hsnCode = s; continue; }
+
+        // Quantity: numeric value (with optional unit suffix) between hsn and rate columns.
+        // Handles: "24", "24.00", "24 Nos", "24 sets", "24 pcs" — any case.
+        // Note: Tally sometimes renders qty as "24.00" which satisfies isMoney — we
+        // check the qty zone FIRST so it takes priority over the money-value block below.
+        if (c.x >= colX.hsn + T && c.x < colX.rateIncl - T) {
+          const qm = s.match(/^([\d,]+(?:\.\d+)?)\s*([A-Za-z]{1,8})?$/);
+          if (qm) {
+            const qv = Math.round(parseFloat(qm[1].replace(/,/g, '')));
+            if (qv > 0 && qv < 1_000_000) {
+              current.qty = qv;
+              if (qm[2]) current.unit = qm[2].toUpperCase();
+              continue; // skip isMoney block below
+            }
+          }
+        }
+
+        // Money values: classify by x-position zone relative to detected columns
         if (isMoney(s)) {
-          if (c.x >= 448) current.amount = num(s);                              // Amount (taxable)
-          else if (c.x >= 330 && c.x < 370) current.rateExclGst = num(s);      // Rate excl. GST
-          else if (c.x >= 271 && c.x < 330) current.rateInclGst = num(s);      // Rate incl. GST
-          else if (c.x >= 392 && c.x < 448) current.discountPct = num(s);      // Disc %
+          if (c.x >= colX.amount - T) { current.amount = num(s); continue; }
+          if (c.x >= colX.disc - T && c.x < colX.amount - T) { current.discountPct = num(s); continue; }
+          if (c.x >= colX.rateExcl - T && c.x < colX.disc - T) { current.rateExclGst = num(s); continue; }
+          if (c.x >= colX.rateIncl - T) { current.rateInclGst = num(s); continue; }
           continue;
         }
-        if (/^[A-Z]{2,4}$/.test(s) && c.x >= 370 && c.x < 392) continue;     // per-unit label
+
+        // per-unit label (Nos, Set, sets, pcs…) in the per column — skip silently
+        if (/^[A-Za-z]{1,8}$/.test(s) && c.x >= colX.per - T && c.x < colX.amount - T) continue;
       }
     }
   }
@@ -297,7 +357,7 @@ export async function parseGenericInvoice(buffer) {
       const row = flat[i];
       const joined = row.cells.map((c) => c.str).join(' ');
       // Hard stop at the totals/footer block.
-      if (/\b(grand\s*total|taxable|cgst|sgst|igst|round\s*off|amount\s*chargeable|amount\s*in\s*words|declaration|bank\s*details|jurisdiction|e\.?\s*&\s*o\.?e|hsn\s*summary)\b/i.test(joined)) break;
+      if (/\b(grand\s*total|taxable\s*(value|amount|total)|cgst|sgst|igst|round\s*off|amount\s*chargeable|amount\s*in\s*words|declaration|bank\s*details|jurisdiction|e\.?\s*&\s*o\.?e|hsn\s*summary)\b/i.test(joined)) break;
       if (/^\s*(total|sub\s*total)\b/i.test(joined.trim())) continue;
 
       let descParts = [], qty = null, rate = null, amount = null, hsn = null;
