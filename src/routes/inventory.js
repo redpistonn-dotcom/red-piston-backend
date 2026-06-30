@@ -26,20 +26,30 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
     const limit  = Math.min(parseInt(req.query.limit  || '500', 10), 1000);
     const offset = Math.max(parseInt(req.query.offset || '0',   10), 0);
 
-    // ?all=true bypasses the configured-only filter (used by admin / export flows)
+    // ?all=true bypasses the configured-only filter (used by catalog search)
     const showAll = req.query.all === 'true';
+    // ?search=... filters by part name, OEM number, or custom name (useful with all=true)
+    const search  = req.query.search?.trim() || '';
 
-    // By default only return items the shop has actually configured (price or stock set).
-    // This prevents a shop seeded with 300k zero rows from timing out on every load.
+    // Build AND conditions so configured-only filter and search can coexist
+    const andConditions = [];
+    if (!showAll) {
+      andConditions.push({ OR: [{ sellingPrice: { gt: 0 } }, { stockQty: { gt: 0 } }] });
+    }
+    if (search) {
+      andConditions.push({
+        OR: [
+          { customPartName: { contains: search, mode: 'insensitive' } },
+          { masterPart: { partName:   { contains: search, mode: 'insensitive' } } },
+          { masterPart: { oemNumbers: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
+    }
+
     const where = {
       shopId,
       deletedAt: null,
-      ...(showAll ? {} : {
-        OR: [
-          { sellingPrice: { gt: 0 } },
-          { stockQty:     { gt: 0 } },
-        ],
-      }),
+      ...(andConditions.length > 0 ? { AND: andConditions } : {}),
     };
 
     const [inventory, total] = await Promise.all([
