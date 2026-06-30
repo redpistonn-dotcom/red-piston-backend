@@ -22,41 +22,63 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const shopId = req.shopId;
 
-    const inventory = await prisma.shopInventory.findMany({
-      where:    { shopId, deletedAt: null },
-      include:  {
-        masterPart: {
-          select: {
-            masterPartId:  true,
-            partName:      true,
-            brand:         true,
-            categoryL1:    true,
-            categoryL2:    true,
-            description:   true,
-            hsnCode:       true,
-            gstRate:       true,
-            unitOfSale:    true,
-            imageUrl:      true,
-            oemNumbers:    true,
+    // Pagination params
+    const limit  = Math.min(parseInt(req.query.limit  || '500', 10), 1000);
+    const offset = Math.max(parseInt(req.query.offset || '0',   10), 0);
+
+    // ?all=true bypasses the configured-only filter (used by admin / export flows)
+    const showAll = req.query.all === 'true';
+
+    // By default only return items the shop has actually configured (price or stock set).
+    // This prevents a shop seeded with 300k zero rows from timing out on every load.
+    const where = {
+      shopId,
+      deletedAt: null,
+      ...(showAll ? {} : {
+        OR: [
+          { sellingPrice: { gt: 0 } },
+          { stockQty:     { gt: 0 } },
+        ],
+      }),
+    };
+
+    const [inventory, total] = await Promise.all([
+      prisma.shopInventory.findMany({
+        where,
+        include: {
+          masterPart: {
+            select: {
+              masterPartId: true,
+              partName:     true,
+              brand:        true,
+              categoryL1:   true,
+              categoryL2:   true,
+              description:  true,
+              hsnCode:      true,
+              gstRate:      true,
+              unitOfSale:   true,
+              imageUrl:     true,
+              oemNumbers:   true,
+            },
           },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+        take:    limit,
+        skip:    offset,
+      }),
+      prisma.shopInventory.count({ where }),
+    ]);
 
-    // Fetch only the last 5 recent movements per product for the list view.
-    // stockQty is already kept accurate by every movement endpoint, so we don't
-    // need to scan all movements for stock calculation on this hot path.
+    // Fetch last 5 movements only for this page's items — never unbounded
     const inventoryIds = inventory.map(i => i.inventoryId);
     const recentMovements = inventoryIds.length > 0
       ? await prisma.movement.findMany({
           where:   { inventoryId: { in: inventoryIds } },
           orderBy: { createdAt: 'desc' },
-          take:    inventoryIds.length * 5, // at most 5 per product
+          take:    Math.min(inventoryIds.length * 5, 2500),
         })
       : [];
 
-    // Group recent movements by inventoryId for O(n) display
     const movsByItem = {};
     for (const m of recentMovements) {
       if (!movsByItem[m.inventoryId]) movsByItem[m.inventoryId] = [];
@@ -65,13 +87,12 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
 
     const inventoryWithStock = inventory.map(item => ({
       ...item,
-      // Trust the maintained stockQty column; no full ledger scan needed here
       computedStock: item.stockQty,
       movements:     movsByItem[item.inventoryId] || [],
     }));
 
     res.set('Cache-Control', 'private, max-age=20, must-revalidate');
-    res.json({ inventory: inventoryWithStock });
+    res.json({ inventory: inventoryWithStock, total, limit, offset });
   } catch (err) {
     next(err);
   }
