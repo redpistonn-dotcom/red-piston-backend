@@ -61,6 +61,7 @@ router.get('/vehicles/makes', async (req, res, next) => {
       select:   { make: true },
       distinct: ['make'],
       orderBy:  { make: 'asc' },
+      take:     500,
     });
     res.json({ success: true, makes: makes.map(m => m.make) });
   } catch (err) { next(err); }

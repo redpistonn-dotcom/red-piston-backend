@@ -349,28 +349,35 @@ router.get('/oem/:oemNumber', async (req, res, next) => {
 });
 
 // ─── GET /api/catalog/vehicles ────────────────────────────────────────────────
+// Only return fields needed for dropdowns — avoids sending full rows (specs, description etc.)
 router.get('/vehicles', async (req, res, next) => {
   try {
     const vehicles = await prisma.vehicle.findMany({
+      select: { vehicleId: true, make: true, model: true, yearFrom: true, yearTo: true, fuelType: true, variant: true },
       orderBy: [{ make: 'asc' }, { model: 'asc' }, { yearFrom: 'desc' }],
+      take: 5000,
     });
+    // Return only grouped — callers never need the flat array separately
     const grouped = vehicles.reduce((acc, v) => {
       if (!acc[v.make]) acc[v.make] = [];
       acc[v.make].push(v);
       return acc;
     }, {});
-    res.json({ vehicles, grouped });
+    res.json({ grouped });
   } catch (err) {
     next(err);
   }
 });
 
 // ─── GET /api/catalog/vehicles/:make/models ───────────────────────────────────
+// Returns distinct model names only — no full vehicle rows
 router.get('/vehicles/:make/models', async (req, res, next) => {
   try {
     const vehicles = await prisma.vehicle.findMany({
       where: { make: { equals: req.params.make, mode: 'insensitive' } },
+      select: { vehicleId: true, model: true, yearFrom: true, yearTo: true, fuelType: true, variant: true },
       orderBy: [{ model: 'asc' }, { yearFrom: 'desc' }],
+      take: 500,
     });
     const models = [...new Set(vehicles.map(v => v.model))];
     res.json({ models, vehicles });

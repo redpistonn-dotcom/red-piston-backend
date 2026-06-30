@@ -114,17 +114,26 @@ router.post('/impersonate/:userId', authenticate, requireAdmin, async (req, res,
 // GET /api/admin/verifications — pending shop owner verifications
 router.get('/verifications', authenticate, requireAdmin, async (req, res, next) => {
   try {
-    const pending = await prisma.user.findMany({
-      where: { role: 'SHOP_OWNER', verificationStatus: { in: ['PENDING', 'REJECTED'] } },
-      select: {
-        userId: true, name: true, email: true, phone: true, avatarUrl: true,
-        verificationStatus: true, verificationNote: true, verifiedAt: true,
-        createdAt: true, isActive: true,
-        userType: { select: { id: true, name: true, slug: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json({ success: true, data: pending });
+    const limit  = Math.min(parseInt(req.query.limit  || '100', 10), 500);
+    const offset = Math.max(parseInt(req.query.offset || '0',   10), 0);
+    const where  = { role: 'SHOP_OWNER', verificationStatus: { in: ['PENDING', 'REJECTED'] } };
+
+    const [pending, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: {
+          userId: true, name: true, email: true, phone: true, avatarUrl: true,
+          verificationStatus: true, verificationNote: true, verifiedAt: true,
+          createdAt: true, isActive: true,
+          userType: { select: { id: true, name: true, slug: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take:    limit,
+        skip:    offset,
+      }),
+      prisma.user.count({ where }),
+    ]);
+    res.json({ success: true, data: pending, total, limit, offset });
   } catch (err) { next(err); }
 });
 
@@ -347,11 +356,24 @@ router.post('/catalog/bulk-import', authenticate, requireAdmin, async (req, res,
     }
 
     // ── 2. One query to find all already-existing OEM numbers ───────────────
+    // Enforce max batch size — prevents a single request from triggering a huge DB scan
+    if (valid.length > 500) {
+      return res.status(400).json({ success: false, error: { code: 'BATCH_TOO_LARGE', message: 'Max 500 rows per request. Split into smaller batches.' } });
+    }
     const oemLookup = valid.map(p => p._oemNumber).filter(Boolean);
+    // Only fetch heavy fields (oemNumbers[], specifications{}) when the batch
+    // actually needs them — avoids pulling large JSON blobs on every lookup
+    const needsOemMerge  = valid.some(p => p._altOems.length > 0);
+    const needsSpecMerge = valid.some(p => p._specs !== null);
     const existingRows = oemLookup.length > 0
       ? await prisma.masterPart.findMany({
           where: { primaryOemNumber: { in: oemLookup } },
-          select: { masterPartId: true, primaryOemNumber: true, oemNumbers: true, specifications: true },
+          select: {
+            masterPartId:      true,
+            primaryOemNumber:  true,
+            oemNumbers:        needsOemMerge,
+            specifications:    needsSpecMerge,
+          },
         })
       : [];
     const existingMap = new Map(existingRows.map(e => [e.primaryOemNumber, e]));

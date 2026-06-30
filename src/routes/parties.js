@@ -67,7 +67,10 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
     const where = { shopId: req.shopId, deletedAt: null };
 
     if (includeInactive !== 'true') where.isActive = true;
-    if (type && VALID_TYPES.includes(type)) where.type = type;
+    // BOTH parties act as customers AND suppliers — include them in either filtered view.
+    if (type && VALID_TYPES.includes(type)) {
+      where.type = type === 'BOTH' ? 'BOTH' : { in: [type, 'BOTH'] };
+    }
     if (search) {
       where.OR = [
         { name:  { contains: search, mode: 'insensitive' } },
@@ -76,13 +79,21 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
       ];
     }
 
-    const parties = await prisma.party.findMany({
-      where,
-      orderBy: [{ outstanding: 'desc' }, { name: 'asc' }],
-    });
+    const limit  = Math.min(parseInt(req.query.limit  || '200', 10), 500);
+    const offset = Math.max(parseInt(req.query.offset || '0',   10), 0);
+
+    const [parties, total] = await Promise.all([
+      prisma.party.findMany({
+        where,
+        orderBy: [{ outstanding: 'desc' }, { name: 'asc' }],
+        take:    limit,
+        skip:    offset,
+      }),
+      prisma.party.count({ where }),
+    ]);
 
     res.set('Cache-Control', 'private, max-age=15, must-revalidate');
-    res.json({ success: true, parties, total: parties.length });
+    res.json({ success: true, parties, total, limit, offset });
   } catch (err) { next(err); }
 });
 
