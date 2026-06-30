@@ -37,8 +37,16 @@ import { startReconcileWorker } from './jobs/workers/reconciliation.worker.js';
 import { startGstr1Worker } from './jobs/workers/gstr1.worker.js';
 import { scheduleRecurringJobs } from './jobs/queues.js';
 import { startMetricsReporting } from './lib/metrics.js';
-import { apiLimiter } from './middleware/rateLimiterAll.js';
+import { apiLimiter, mutationLimiter } from './middleware/rateLimiterAll.js';
 import { flagMiddleware } from './lib/flags.js';
+
+// ── Boot-time environment validation ─────────────────────────────────────────
+// Fail fast with a clear message rather than a cryptic JWT error at runtime.
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (JWT_SECRET.length < 32) {
+  console.error('[startup] FATAL: JWT_SECRET must be at least 32 characters. Set a strong random value (e.g. openssl rand -hex 32) and restart.');
+  process.exit(1);
+}
 
 const app = express();
 // Render (and most cloud platforms) sit behind a reverse proxy.
@@ -97,15 +105,43 @@ app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ limit: '100kb', extended: true }));
 app.use(cookieParser());
 app.use(apiLimiter);
+// Tighter limit on all write operations — 60 mutations/min per IP
+app.use((req, _res, next) => {
+  if (req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' || req.method === 'DELETE') {
+    return mutationLimiter(req, _res, next);
+  }
+  next();
+});
 app.use(flagMiddleware);
 
-// Health check
+// Health check — exposes process memory so external monitors (UptimeRobot, etc.) can
+// alert when heapUsed approaches the Railway container limit (~512 MB on Hobby plan).
 app.get('/health', async (req, res) => {
+  const mem = process.memoryUsage();
+  const toMB = (b) => Math.round(b / 1024 / 1024);
+  const heapMB = toMB(mem.heapUsed);
+  const rssMB  = toMB(mem.rss);
+  // Flag as degraded if heap > 400 MB — gives early warning before OOM kill
+  const memPressure = heapMB > 400 ? 'high' : heapMB > 250 ? 'moderate' : 'normal';
+
   try {
     await prisma.$queryRaw`SELECT 1`;
-    res.json({ status: "ok", db: "connected", timestamp: new Date().toISOString() });
+    const status = memPressure === 'high' ? 'degraded' : 'ok';
+    res.status(status === 'degraded' ? 503 : 200).json({
+      status,
+      db: 'connected',
+      memory: { heapMB, rssMB, pressure: memPressure },
+      uptimeSec: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
-    res.status(503).json({ status: "degraded", db: "disconnected", error: err.message, timestamp: new Date().toISOString() });
+    res.status(503).json({
+      status: 'degraded',
+      db: 'disconnected',
+      memory: { heapMB, rssMB, pressure: memPressure },
+      error: err.message,
+      timestamp: new Date().toISOString(),
+    });
   }
 });
 
@@ -164,7 +200,7 @@ if (process.env.REDIS_URL) {
 }
 startMetricsReporting();
 const server = app.listen(PORT, () => {
-  console.log(`AutoSpace backend running on http://localhost:${PORT}`);
+  console.log(`RedPiston backend running on http://localhost:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`[email] RESEND_API_KEY set: ${!!process.env.RESEND_API_KEY}`);
   console.log(`[email] RESEND_SENDER_EMAIL set: ${!!process.env.RESEND_SENDER_EMAIL}`);
