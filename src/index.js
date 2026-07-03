@@ -27,6 +27,8 @@ import uploadRoutes from './routes/upload.js';
 import purchaseBillRoutes from './routes/purchaseBills.js';
 import stockBatchRoutes from './routes/stockBatches.js';
 import auditRoutes from './routes/audit.js';
+import salesReturnRoutes from './routes/salesReturns.js';
+import creditNoteRoutes from './routes/creditNotes.js';
 import gstrRoutes from './routes/gstr.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authLimiter, pdfExtractLimiter } from './middleware/rateLimiter.js';
@@ -162,6 +164,8 @@ app.use('/api/shop/workshop', workshopRoutes);
 app.use('/api/shop/vehicles', shopVehicleRoutes);
 app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
 app.use('/api/shop/purchase-bills', purchaseBillRoutes);
+app.use('/api/shop/returns', salesReturnRoutes);
+app.use('/api/shop/credit-notes', creditNoteRoutes);
 // Bulk import needs a larger body — only applied to this path
 app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
 app.use('/api/admin', adminRoutes);

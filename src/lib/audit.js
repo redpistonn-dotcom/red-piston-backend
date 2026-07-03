@@ -15,16 +15,18 @@ import prisma from '../db/prisma.js';
 
 // ─── Entity type constants ────────────────────────────────────────────────────
 export const ET = {
-  PRODUCT: 'PRODUCT',
-  INVOICE: 'INVOICE',
-  PARTY:   'PARTY',
-  ORDER:   'ORDER',
-  AUTH:    'AUTH',
-  BILL:    'BILL',
-  STOCK:   'STOCK',
-  PROFILE: 'PROFILE',
-  SHOP:    'SHOP',
-  ADMIN:   'ADMIN',
+  PRODUCT:      'PRODUCT',
+  INVOICE:      'INVOICE',
+  PARTY:        'PARTY',
+  ORDER:        'ORDER',
+  AUTH:         'AUTH',
+  BILL:         'BILL',
+  STOCK:        'STOCK',
+  PROFILE:      'PROFILE',
+  SHOP:         'SHOP',
+  ADMIN:        'ADMIN',
+  SALES_RETURN: 'SALES_RETURN',
+  CREDIT_NOTE:  'CREDIT_NOTE',
 };
 
 // ─── Action constants ─────────────────────────────────────────────────────────

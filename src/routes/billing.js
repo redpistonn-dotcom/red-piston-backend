@@ -50,6 +50,8 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
       upiReference,
       marketplaceOrderId,
       notes,
+      // Redeem an existing store-credit CreditNote (from a prior return) against this sale
+      appliedCreditNoteId, appliedCreditAmount,
     } = req.body;
 
     const hasInventoryItems = Array.isArray(items) && items.length > 0;
@@ -171,8 +173,24 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
     // If explicit cash + UPI amounts are provided, their combined sum must match the paid portion
     const cashAmt = cashAmount ? Math.max(0, parseFloat(cashAmount)) : 0;
     const upiAmt  = upiAmount  ? Math.max(0, parseFloat(upiAmount))  : 0;
-    if ((cashAmt > 0 || upiAmt > 0) && Math.abs(cashAmt + upiAmt + creditAmt - totalAmount) > 1) {
-      return res.status(400).json({ error: `Payment breakdown (₹${(cashAmt + upiAmt + creditAmt).toFixed(2)}) must match invoice total (₹${totalAmount.toFixed(2)})` });
+
+    // ── Redeem an existing store-credit note against this sale (validated up front,
+    //    consumed atomically inside the transaction to prevent double-spend) ────────
+    const appliedAmt = appliedCreditAmount ? Math.max(0, parseFloat(appliedCreditAmount)) : 0;
+    let creditNoteRow = null;
+    if (appliedCreditNoteId) {
+      creditNoteRow = await prisma.creditNote.findFirst({ where: { creditNoteId: parseInt(appliedCreditNoteId, 10), shopId: req.shopId } });
+      if (!creditNoteRow) return res.status(400).json({ error: 'Credit note not found' });
+      if (partyId && creditNoteRow.partyId && parseInt(partyId, 10) !== creditNoteRow.partyId) {
+        return res.status(400).json({ error: 'Credit note does not belong to this customer' });
+      }
+      if (appliedAmt <= 0 || appliedAmt > Number(creditNoteRow.remainingBalance) + 0.01) {
+        return res.status(400).json({ error: `Credit note has only ₹${Number(creditNoteRow.remainingBalance).toFixed(2)} remaining` });
+      }
+    }
+
+    if ((cashAmt > 0 || upiAmt > 0 || appliedAmt > 0) && Math.abs(cashAmt + upiAmt + appliedAmt + creditAmt - totalAmount) > 1) {
+      return res.status(400).json({ error: `Payment breakdown (₹${(cashAmt + upiAmt + appliedAmt + creditAmt).toFixed(2)}) must match invoice total (₹${totalAmount.toFixed(2)})` });
     }
     const isCreditSale = creditAmt > 0;
     const paidAmount   = totalAmount - creditAmt;
@@ -323,6 +341,34 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
           notes:       `Credit sale — Invoice ${invoiceNumber}`,
           createdBy:   req.user.userId,
         });
+      }
+
+      // ── Redeem the credit note atomically — guard prevents double-spend if two
+      //    invoices try to apply the same note concurrently ───────────────────────
+      if (creditNoteRow && appliedAmt > 0) {
+        const consumed = await tx.creditNote.updateMany({
+          where: { creditNoteId: creditNoteRow.creditNoteId, remainingBalance: { gte: appliedAmt } },
+          data:  { remainingBalance: { decrement: appliedAmt } },
+        });
+        if (consumed.count === 0) {
+          throw { status: 400, message: 'Credit note balance changed — please refresh and try again' };
+        }
+        const updatedNote = await tx.creditNote.findUnique({ where: { creditNoteId: creditNoteRow.creditNoteId }, select: { remainingBalance: true } });
+        await tx.creditNote.update({
+          where: { creditNoteId: creditNoteRow.creditNoteId },
+          data:  { status: Number(updatedNote.remainingBalance) <= 0.01 ? 'FULLY_USED' : 'PARTIALLY_USED' },
+        });
+        if (partyId) {
+          await writeLedgerDebit(tx, {
+            shopId:      req.shopId,
+            partyId,
+            debitAmount: appliedAmt,
+            invoiceId:   inv.invoiceId,
+            entryType:   'CREDIT_NOTE_APPLIED',
+            notes:       `Applied credit note ${creditNoteRow.creditNoteNo} — Invoice ${invoiceNumber}`,
+            createdBy:   req.user.userId,
+          });
+        }
       }
 
       return inv;
