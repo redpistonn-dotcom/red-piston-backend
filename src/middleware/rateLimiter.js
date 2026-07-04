@@ -1,13 +1,16 @@
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
-import { getCacheClient } from '../lib/cache.js';
+import { getCacheClient, callWithTimeout } from '../lib/cache.js';
 
 function makeStore(prefix) {
   const client = getCacheClient();
   if (!client) return undefined; // graceful fallback to in-memory when REDIS_URL is absent
   return new RedisStore({
     prefix,
-    sendCommand: (...args) => client.call(...args),
+    // Timeout-guarded: a zombie pooled connection (dead socket ioredis still
+    // thinks is "ready") would otherwise hang this call — and therefore the
+    // whole request — forever. See src/lib/cache.js withRedisTimeout.
+    sendCommand: (...args) => callWithTimeout(client, ...args),
   });
 }
 

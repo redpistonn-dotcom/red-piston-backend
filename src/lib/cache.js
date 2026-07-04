@@ -15,6 +15,7 @@ function getOrCreateClient() {
       lazyConnect: true,
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
+      connectTimeout: 8000,
       retryStrategy(times) {
         if (times >= 3) {
           clientFailed = true;
@@ -42,6 +43,36 @@ export function getCacheClient() {
   return getOrCreateClient();
 }
 
+// ioredis has no built-in per-command timeout. `enableOfflineQueue`/
+// `maxRetriesPerRequest` only kick in when the client's own state is
+// disconnected/reconnecting — if the TCP connection died silently (a NAT/LB
+// or Redis provider dropping an idle connection without a FIN/RST, which is
+// exactly what a multi-day-idle deploy runs into), ioredis still thinks the
+// socket is "ready" and will wait forever for a reply that's never coming.
+// Every command call MUST race against a manual deadline so a dead
+// connection degrades to "treat Redis as unavailable" instead of hanging
+// the caller (and, for the rate limiter, hanging every single request).
+const REDIS_CMD_TIMEOUT_MS = 3000;
+
+export function withRedisTimeout(promise, ms = REDIS_CMD_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('REDIS_TIMEOUT')), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+/**
+ * Timeout-guarded raw command call, for use as rate-limit-redis's
+ * sendCommand. Throws (never hangs) if Redis doesn't reply within the
+ * deadline — callers (express-rate-limit) already fail open on store errors.
+ */
+export function callWithTimeout(redisClient, ...args) {
+  return withRedisTimeout(redisClient.call(...args));
+}
+
 /**
  * Returns the cached value for key, or calls fn() to compute and cache it.
  * Falls back to calling fn() directly if Redis is unavailable.
@@ -55,12 +86,12 @@ export async function getOrSet(key, ttlSeconds, fn) {
 
   if (redis) {
     try {
-      const cached = await redis.get(key);
+      const cached = await withRedisTimeout(redis.get(key));
       if (cached !== null) {
         return JSON.parse(cached);
       }
     } catch {
-      // Redis unavailable or parse error — fall through to fn()
+      // Redis unavailable, timed out, or parse error — fall through to fn()
     }
   }
 
@@ -68,7 +99,7 @@ export async function getOrSet(key, ttlSeconds, fn) {
 
   if (redis && value !== undefined) {
     try {
-      await redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
+      await withRedisTimeout(redis.set(key, JSON.stringify(value), "EX", ttlSeconds));
     } catch {
       // Silently skip caching if Redis is unavailable
     }
@@ -87,7 +118,7 @@ export async function invalidate(key) {
   if (!redis) return;
 
   try {
-    await redis.del(key);
+    await withRedisTimeout(redis.del(key));
   } catch {
     // Silently ignore
   }
@@ -105,9 +136,9 @@ export async function invalidatePattern(pattern) {
   if (!redis) return;
 
   try {
-    const keys = await redis.keys(pattern);
+    const keys = await withRedisTimeout(redis.keys(pattern));
     if (keys.length > 0) {
-      await redis.del(...keys);
+      await withRedisTimeout(redis.del(...keys));
     }
   } catch {
     // Silently ignore
