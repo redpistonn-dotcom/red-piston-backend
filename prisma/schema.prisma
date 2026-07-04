@@ -323,6 +323,8 @@ model Shop {
   purchaseReturns    PurchaseReturn[]
   exchangeOrders     ExchangeOrder[]
   warrantyClaims     WarrantyClaim[]
+  gstPeriodLocks     GstPeriodLock[]
+  returnPolicyWindows ReturnPolicyWindow[]
 
   @@map("shops")
 }
@@ -995,11 +997,13 @@ model SalesReturn {
   returnId          Int      @id @default(autoincrement()) @map("return_id")
   returnNo          String   @unique @map("return_no") // RET-S{shopId}-{FY}-NNNNN
   shopId            Int      @map("shop_id")
-  originalInvoiceId Int      @map("original_invoice_id")
+  // Nullable — a walk-in return (isWalkIn=true) has no traceable original sale.
+  originalInvoiceId Int?     @map("original_invoice_id")
   partyId           Int?     @map("party_id")
   // WRONG_PART | DEFECTIVE | WARRANTY | CHANGED_MIND | OTHER
   reason            String
-  // Flagged (not blocked) when outside Shop.returnPolicyDays — manager can still approve
+  // Flagged (not blocked) when outside Shop.returnPolicyDays — manager can still approve.
+  // Always true for walk-in returns (no invoice trail to fall back on).
   requiresApproval  Boolean  @default(false) @map("requires_approval")
   approvedBy        Int?     @map("approved_by")
   // PENDING_APPROVAL | COMPLETED | CANCELLED
@@ -1007,12 +1011,15 @@ model SalesReturn {
   // CASH | UPI | BANK | STORE_CREDIT — how the customer was made whole
   refundMode        String?  @map("refund_mode")
   creditNoteId      Int?     @unique @map("credit_note_id")
+  // True when staff could not locate/match an original invoice — customer walked in
+  // with no findable sale record. Always paired with requiresApproval=true.
+  isWalkIn          Boolean  @default(false) @map("is_walk_in")
   notes             String?
   createdBy         Int?     @map("created_by")
   createdAt         DateTime @default(now()) @map("created_at")
 
   shop          Shop              @relation(fields: [shopId], references: [shopId])
-  invoice       Invoice           @relation(fields: [originalInvoiceId], references: [invoiceId])
+  invoice       Invoice?          @relation(fields: [originalInvoiceId], references: [invoiceId])
   party         Party?            @relation(fields: [partyId], references: [partyId])
   items         SalesReturnItem[]
   creditNote    CreditNote?       @relation(fields: [creditNoteId], references: [creditNoteId])
@@ -1029,8 +1036,9 @@ model SalesReturnItem {
   itemId        Int     @id @default(autoincrement()) @map("item_id")
   returnId      Int     @map("return_id")
   inventoryId   Int     @map("inventory_id")
-  // Ties back to the exact original line — enforces "can't return more than was sold" per line
-  invoiceItemId Int     @map("invoice_item_id")
+  // Ties back to the exact original line — enforces "can't return more than was sold" per line.
+  // Null for a walk-in return item (no invoice line to tie back to).
+  invoiceItemId Int?    @map("invoice_item_id")
   qty           Int
   // SEALED | GOOD | DAMAGED | USED
   condition     String
@@ -1045,7 +1053,7 @@ model SalesReturnItem {
 
   return      SalesReturn   @relation(fields: [returnId], references: [returnId], onDelete: Cascade)
   inventory   ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
-  invoiceItem InvoiceItem   @relation(fields: [invoiceItemId], references: [itemId])
+  invoiceItem InvoiceItem?  @relation(fields: [invoiceItemId], references: [itemId])
 
   @@index([returnId])
   @@index([invoiceItemId]) // sum-returned-so-far check per invoice line
@@ -1131,7 +1139,11 @@ model CreditNote {
   shopId            Int      @map("shop_id")
   // GST | COMMERCIAL — see Section 34 CGST Act deadline logic in src/lib/gst-fy.js
   type              String
-  linkedInvoiceId   Int      @map("linked_invoice_id")
+  // Nullable — a walk-in (no-invoice) return's credit note has nothing to link to.
+  // It is always type=COMMERCIAL (a GST credit note legally requires a taxable
+  // supply reference) and, when it exists at all, only as an exchange's internal
+  // old-item/new-item settlement bridge, fully consumed in the same request.
+  linkedInvoiceId   Int?     @map("linked_invoice_id")
   partyId           Int?     @map("party_id")
   issueDate         DateTime @default(now()) @map("issue_date")
   taxableValue      Decimal  @map("taxable_value") @db.Decimal(10, 2)
@@ -1144,11 +1156,15 @@ model CreditNote {
   remainingBalance  Decimal  @map("remaining_balance") @db.Decimal(10, 2)
   // "YYYY-MM" — set only when type=GST; the GSTR period this note was declared in
   gstPeriodDeclared String?  @map("gst_period_declared")
+  // Set when a return would otherwise have qualified as a GST credit note but was
+  // forced to COMMERCIAL — either past the Section 34 deadline (see gst-fy.js) or
+  // because the accountant locked the declaration period (see GstPeriodLock).
+  gstBlockReason    String?  @map("gst_block_reason")
   reason            String?
   createdAt         DateTime @default(now()) @map("created_at")
 
   shop        Shop         @relation(fields: [shopId], references: [shopId])
-  invoice     Invoice      @relation(fields: [linkedInvoiceId], references: [invoiceId])
+  invoice     Invoice?     @relation(fields: [linkedInvoiceId], references: [invoiceId])
   party       Party?       @relation(fields: [partyId], references: [partyId])
   salesReturn SalesReturn?
 
@@ -1156,6 +1172,42 @@ model CreditNote {
   @@index([shopId, type])
   @@index([shopId, status])
   @@map("credit_notes")
+}
+
+// Category/brand-level return-window override. Shop.returnPolicyDays remains
+// the fallback default; a BRAND override wins over a CATEGORY override, which
+// wins over the shop default (see resolveReturnPolicyDays in salesReturns.js).
+model ReturnPolicyWindow {
+  id     Int    @id @default(autoincrement())
+  shopId Int    @map("shop_id")
+  // CATEGORY | BRAND
+  scope  String
+  // The MasterPart.categoryL1 or MasterPart.brand value this override applies to
+  value  String
+  days   Int
+
+  shop Shop @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
+
+  @@unique([shopId, scope, value])
+  @@map("return_policy_windows")
+}
+
+// A locked GST period (accountant/owner has already filed or reconciled it).
+// New credit notes that would otherwise declare into a locked period are
+// forced to type=COMMERCIAL instead of being blocked outright — same
+// "flagged, not blocked" philosophy as Shop.returnPolicyDays above; the
+// accountant can always unlock to make a genuine correction.
+model GstPeriodLock {
+  id       Int      @id @default(autoincrement())
+  shopId   Int      @map("shop_id")
+  period   String   // "YYYY-MM"
+  lockedBy Int?     @map("locked_by")
+  lockedAt DateTime @default(now()) @map("locked_at")
+
+  shop Shop @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
+
+  @@unique([shopId, period])
+  @@map("gst_period_locks")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

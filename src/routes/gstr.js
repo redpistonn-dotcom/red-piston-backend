@@ -5,6 +5,7 @@
  *
  * Routes:
  *   GET /api/billing/gstr1?from=YYYY-MM-DD&to=YYYY-MM-DD&format=json|excel
+ *   GET /api/billing/gstr1/credit-notes?from=YYYY-MM-DD&to=YYYY-MM-DD&format=json|excel
  *
  * GSTR-1 sections produced:
  *   B2B   — invoices with partyGstin, one row per invoice
@@ -12,6 +13,12 @@
  *   HSN   — invoice items grouped by HSN code
  *
  * Excel format: three sheets (B2B, B2CS, HSN) via the `xlsx` npm package.
+ *
+ * Credit notes are a SEPARATE endpoint (Table 9B of GSTR-1 / the 3.1(a)
+ * adjustment in GSTR-3B) — only type=GST credit notes are ever GST-relevant;
+ * COMMERCIAL notes (late returns, walk-in no-invoice returns, notes issued
+ * into a locked period — see gst-fy.js/GstPeriodLock) are excluded entirely,
+ * since including them would incorrectly reduce output GST liability.
  */
 
 import { Router } from 'express';
@@ -211,6 +218,97 @@ router.get('/gstr1', authenticate, requireShopOwner, async (req, res, next) => {
       b2cs,
       hsn,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Helper: build an xlsx workbook for the credit-note (Table 9B) export ────
+
+async function buildCreditNoteExcel(rows, periodLabel) {
+  const XLSX = (await import('xlsx')).default;
+  const wb = XLSX.utils.book_new();
+  const sheetRows = [
+    ['GSTIN of Recipient', 'Credit Note No', 'Note Date', 'Original Invoice No', 'Original Invoice Date', 'Taxable Value', 'CGST', 'SGST', 'IGST', 'Total Value'],
+    ...rows.map(r => [r.gstin || '', r.noteNumber, r.noteDate, r.originalInvoiceNumber || '', r.originalInvoiceDate || '', r.taxableValue, r.cgst, r.sgst, r.igst, r.totalAmount]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheetRows), 'Credit Notes (9B)');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+// ─── GET /api/billing/gstr1/credit-notes — GSTR-1 Table 9B / GSTR-3B 3.1(a) ──
+
+router.get('/gstr1/credit-notes', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const { format = 'json' } = req.query;
+    const shopId = req.shopId;
+
+    if (!req.query.from || !req.query.to) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'MISSING_DATES', message: 'from and to query params are required (YYYY-MM-DD)' },
+      });
+    }
+
+    const from = new Date(req.query.from);
+    const to   = new Date(req.query.to + 'T23:59:59.999Z');
+    if (isNaN(from) || isNaN(to) || from > to) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_DATES', message: 'from and to must be valid dates with from <= to' },
+      });
+    }
+
+    // Only GST-type notes — COMMERCIAL notes never affect GST returns.
+    const notes = await prisma.creditNote.findMany({
+      where: { shopId, type: 'GST', issueDate: { gte: from, lte: to } },
+      include: { invoice: { select: { invoiceNumber: true, createdAt: true, partyGstin: true } } },
+      orderBy: { issueDate: 'asc' },
+    });
+
+    const rows = notes.map(n => ({
+      gstin:                n.invoice?.partyGstin || null,
+      noteNumber:            n.creditNoteNo,
+      noteDate:              n.issueDate.toISOString().slice(0, 10),
+      originalInvoiceNumber: n.invoice?.invoiceNumber || null,
+      originalInvoiceDate:   n.invoice?.createdAt ? n.invoice.createdAt.toISOString().slice(0, 10) : null,
+      taxableValue:          Number(n.taxableValue),
+      cgst:                  Number(n.cgst),
+      sgst:                  Number(n.sgst),
+      igst:                  Number(n.igst),
+      totalAmount:           Number(n.totalAmount),
+      gstPeriodDeclared:     n.gstPeriodDeclared,
+    }));
+
+    // GSTR-3B 3.1(a) is a single net adjustment figure — sum everything declared
+    // in the requested window (accountant nets this against gross outward supply).
+    const summary = rows.reduce((s, r) => ({
+      taxableValue: s.taxableValue + r.taxableValue,
+      cgst: s.cgst + r.cgst,
+      sgst: s.sgst + r.sgst,
+      igst: s.igst + r.igst,
+      totalAmount: s.totalAmount + r.totalAmount,
+    }), { taxableValue: 0, cgst: 0, sgst: 0, igst: 0, totalAmount: 0 });
+
+    writeAudit(req, {
+      entityType: ET.BILL, entityId: null, action: ACT.EXPORT,
+      newValue: { report: 'gstr1-credit-notes', format, from: req.query.from, to: req.query.to, noteCount: rows.length },
+    });
+
+    if (format === 'excel') {
+      const periodLabel = `${String(from.getMonth() + 1).padStart(2, '0')}${from.getFullYear()}`;
+      try {
+        const buffer = await buildCreditNoteExcel(rows, periodLabel);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=GSTR1_9B_CreditNotes_${periodLabel}.xlsx`);
+        return res.send(buffer);
+      } catch (xlsxErr) {
+        console.error('[GSTR1-CreditNotes] xlsx build failed:', xlsxErr?.message);
+        res.setHeader('X-Warning', 'xlsx package unavailable; returning JSON');
+      }
+    }
+
+    res.json({ success: true, period: { from: req.query.from, to: req.query.to }, noteCount: rows.length, rows, summary });
   } catch (err) {
     next(err);
   }

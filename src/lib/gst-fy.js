@@ -41,3 +41,16 @@ export function currentGstPeriod(date = new Date()) {
   const d = new Date(date);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
+
+/**
+ * Whether the given shop has locked the GST period a credit note would
+ * declare into — e.g. the accountant already filed/reconciled that month.
+ * A locked period forces the note to COMMERCIAL regardless of the Section 34
+ * deadline check, same as isGstAdjustable() returning false.
+ */
+export async function isPeriodLocked(prisma, shopId, period) {
+  const lock = await prisma.gstPeriodLock.findUnique({
+    where: { shopId_period: { shopId, period } },
+  });
+  return !!lock;
+}

@@ -27,7 +27,7 @@
 import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate, requireShopOwner, requirePermission } from '../middleware/auth.js';
-import { createSalesReturn, VALID_REASONS } from './salesReturns.js';
+import { createSalesReturn, createWalkInSalesReturn, VALID_REASONS } from './salesReturns.js';
 import { createInvoice, computeItemTotals } from './billing.js';
 import { writeAudit, ET, ACT } from '../lib/audit.js';
 
@@ -37,7 +37,7 @@ const router = Router();
 router.post('/', authenticate, requireShopOwner, requirePermission('billing.create'), async (req, res, next) => {
   try {
     const {
-      originalInvoiceId, returnItems, returnReason, returnNotes,
+      originalInvoiceId, returnItems, walkInItems, walkInPartyId, returnReason, returnNotes,
       newItems, partyName, partyPhone, partyGstin,
       paymentMode, cashAmount, upiAmount, creditAmount,
       notes,
@@ -46,7 +46,15 @@ router.post('/', authenticate, requireShopOwner, requirePermission('billing.crea
     if (!VALID_REASONS.includes(returnReason)) {
       return res.status(400).json({ success: false, error: { message: `returnReason must be one of: ${VALID_REASONS.join(', ')}` } });
     }
-    if (!Array.isArray(returnItems) || returnItems.length === 0) {
+    // Exactly one of the two old-item sources: a matched invoice (normal path)
+    // or a manual walk-in item list (no invoice could be found — see
+    // NewReturnExchangeModal's "Process without one" fallback).
+    const isWalkIn = !originalInvoiceId;
+    if (isWalkIn) {
+      if (!Array.isArray(walkInItems) || walkInItems.length === 0) {
+        return res.status(400).json({ success: false, error: { message: 'At least one item being returned is required' } });
+      }
+    } else if (!Array.isArray(returnItems) || returnItems.length === 0) {
       return res.status(400).json({ success: false, error: { message: 'At least one item being returned is required' } });
     }
     if (!Array.isArray(newItems) || newItems.length === 0) {
@@ -56,10 +64,15 @@ router.post('/', authenticate, requireShopOwner, requirePermission('billing.crea
     // ── Leg 1: return the old item — always as store credit, consumed below ──
     let returnResult;
     try {
-      returnResult = await createSalesReturn(req, {
-        originalInvoiceId, items: returnItems, reason: returnReason,
-        refundMode: 'STORE_CREDIT', notes: returnNotes, forExchange: true,
-      });
+      returnResult = isWalkIn
+        ? await createWalkInSalesReturn(req, {
+            items: walkInItems, reason: returnReason,
+            refundMode: 'STORE_CREDIT', notes: returnNotes, partyId: walkInPartyId, forExchange: true,
+          })
+        : await createSalesReturn(req, {
+            originalInvoiceId, items: returnItems, reason: returnReason,
+            refundMode: 'STORE_CREDIT', notes: returnNotes, forExchange: true,
+          });
     } catch (err) {
       if (err.status) return res.status(err.status).json({ success: false, error: { message: `Return leg failed: ${err.message}` } });
       throw err;

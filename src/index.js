@@ -34,6 +34,8 @@ import exchangeRoutes from './routes/exchanges.js';
 import warrantyClaimRoutes from './routes/warrantyClaims.js';
 import returnsReportRoutes from './routes/returnsReports.js';
 import gstrRoutes from './routes/gstr.js';
+import gstPeriodRoutes from './routes/gstPeriods.js';
+import returnPolicyWindowRoutes from './routes/returnPolicyWindows.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authLimiter, pdfExtractLimiter } from './middleware/rateLimiter.js';
 import { startCleanupJob } from './lib/cleanup.js';
@@ -174,6 +176,8 @@ app.use('/api/shop/purchase-returns', purchaseReturnRoutes);
 app.use('/api/shop/exchanges', exchangeRoutes);
 app.use('/api/shop/warranty-claims', warrantyClaimRoutes);
 app.use('/api/shop/returns-reports', returnsReportRoutes);
+app.use('/api/shop/gst-periods', gstPeriodRoutes);
+app.use('/api/shop/return-policy-windows', returnPolicyWindowRoutes);
 // Bulk import needs a larger body — only applied to this path
 app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
 app.use('/api/admin', adminRoutes);

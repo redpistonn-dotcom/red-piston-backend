@@ -305,7 +305,7 @@ router.get('/credit-note-register', authenticate, requireShopOwner, requirePermi
     const rows = notes.map(n => ({
       creditNoteNo: n.creditNoteNo,
       issueDate: n.issueDate.toISOString().slice(0, 10),
-      invoiceNumber: n.invoice.invoiceNumber,
+      invoiceNumber: n.invoice?.invoiceNumber || null,
       party: n.party?.name || 'Walk-in',
       type: n.type,
       gstPeriodDeclared: n.gstPeriodDeclared || '',
@@ -346,6 +346,111 @@ router.get('/credit-note-register', authenticate, requireShopOwner, requirePermi
     }
 
     res.json({ success: true, summary, rows });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /exceptions — audit dashboard: things that need a human look ─────────
+// Three checks, per the Module 8 "audit dashboard" ask:
+//   1. Orphan movements  — a system-generated movement type with no reference
+//      back to the invoice/return/claim that caused it (should never happen;
+//      surfaces a bug or a row written outside the normal flows).
+//   2. Negative stock    — stockQty went below zero (should be prevented at
+//      write time, but this is the safety-net check for anything that slipped
+//      through).
+//   3. Stale open approvals — a return/claim flagged for manager review that's
+//      sat unreviewed past STALE_APPROVAL_DAYS.
+const TRACEABLE_MOVEMENT_TYPES = ['SALE', 'PURCHASE', 'SALES_RETURN_IN', 'SALES_RETURN_DAMAGED', 'PURCHASE_RETURN_OUT', 'WARRANTY_IN', 'WARRANTY_OUT'];
+const MANUAL_MOVEMENT_TYPES = ['ADJUSTMENT', 'DAMAGE', 'THEFT', 'AUDIT', 'OPENING', 'CREDIT_NOTE', 'DEBIT_NOTE', 'RETURN_IN', 'RETURN_OUT', 'TRANSFER_IN', 'TRANSFER_OUT', 'ADJUST'];
+const STALE_APPROVAL_DAYS = 3;
+
+router.get('/exceptions', authenticate, requireShopOwner, requirePermission('inventory.view'), async (req, res, next) => {
+  try {
+    const shopId = req.shopId;
+    const staleCutoff = new Date(Date.now() - STALE_APPROVAL_DAYS * 86400000);
+
+    const [systemOrphans, manualOrphans, negativeStockRows, staleReturns, staleWarranty, stalePurchaseReturns] = await Promise.all([
+      // System-generated movements that should always carry a reference but don't
+      prisma.movement.findMany({
+        where: { shopId, type: { in: TRACEABLE_MOVEMENT_TYPES }, referenceNumber: null },
+        include: { inventory: { include: { masterPart: { select: { partName: true } } } } },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+      // Manual adjustments with no reason recorded — no way to audit why stock moved
+      prisma.movement.findMany({
+        where: { shopId, type: { in: MANUAL_MOVEMENT_TYPES }, OR: [{ notes: null }, { notes: '' }] },
+        include: { inventory: { include: { masterPart: { select: { partName: true } } } } },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+      prisma.shopInventory.findMany({
+        where: { shopId, stockQty: { lt: 0 } },
+        include: { masterPart: { select: { partName: true } } },
+        take: 200,
+      }),
+      prisma.salesReturn.findMany({
+        where: { shopId, requiresApproval: true, approvedBy: null, createdAt: { lt: staleCutoff } },
+        select: { returnId: true, returnNo: true, reason: true, isWalkIn: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+        take: 200,
+      }),
+      prisma.warrantyClaim.findMany({
+        where: { shopId, status: { notIn: ['REJECTED', 'RETURNED_TO_CUSTOMER'] }, sentDate: { lt: staleCutoff } },
+        select: { claimId: true, claimNo: true, status: true, sentDate: true },
+        orderBy: { sentDate: 'asc' },
+        take: 200,
+      }),
+      prisma.purchaseReturn.findMany({
+        where: { shopId, resolution: 'PENDING', createdAt: { lt: staleCutoff } },
+        select: { returnId: true, returnNo: true, supplierName: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+        take: 200,
+      }),
+    ]);
+
+    const orphanMovements = [...systemOrphans, ...manualOrphans].map(m => ({
+      movementId: m.movementId,
+      createdAt: m.createdAt,
+      type: m.type,
+      partName: m.inventory?.masterPart?.partName || 'Unknown',
+      qty: m.qty,
+      referenceNumber: m.referenceNumber,
+      notes: m.notes,
+      reason: TRACEABLE_MOVEMENT_TYPES.includes(m.type) ? 'Missing reference number' : 'No reason recorded',
+    }));
+
+    const negativeStock = negativeStockRows.map(inv => ({
+      inventoryId: inv.inventoryId,
+      partName: inv.masterPart?.partName || 'Unknown',
+      stockQty: inv.stockQty,
+    }));
+
+    const staleApprovals = [
+      ...staleReturns.map(r => ({
+        kind: 'SALES_RETURN', id: r.returnId, reference: r.returnNo,
+        detail: r.isWalkIn ? 'Walk-in return — no invoice' : r.reason, since: r.createdAt,
+        daysOpen: Math.floor((Date.now() - r.createdAt.getTime()) / 86400000),
+      })),
+      ...staleWarranty.map(w => ({
+        kind: 'WARRANTY_CLAIM', id: w.claimId, reference: w.claimNo,
+        detail: w.status, since: w.sentDate,
+        daysOpen: Math.floor((Date.now() - w.sentDate.getTime()) / 86400000),
+      })),
+      ...stalePurchaseReturns.map(p => ({
+        kind: 'PURCHASE_RETURN', id: p.returnId, reference: p.returnNo,
+        detail: p.supplierName || 'Unknown supplier', since: p.createdAt,
+        daysOpen: Math.floor((Date.now() - p.createdAt.getTime()) / 86400000),
+      })),
+    ].sort((a, b) => b.daysOpen - a.daysOpen);
+
+    res.json({
+      success: true,
+      staleApprovalDays: STALE_APPROVAL_DAYS,
+      orphanMovements,
+      negativeStock,
+      staleApprovals,
+      counts: { orphanMovements: orphanMovements.length, negativeStock: negativeStock.length, staleApprovals: staleApprovals.length },
+    });
   } catch (err) { next(err); }
 });
 
