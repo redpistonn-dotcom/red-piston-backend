@@ -3,7 +3,7 @@ import prisma from '../../db/prisma.js';
 import { hashPassword, verifyPassword, validatePasswordStrength } from '../../services/password.js';
 import { sendEmailOtp, verifyEmailOtp, sendWelcomeEmail, sendShopOwnerVerificationAlert } from '../../services/email.js';
 import { createSession, ensureAuthProvider, findUserByEmailInsensitive, normalizeEmail, checkShopOwnerVerification, getUserTypeId, needsShopSetup, shopSetupResponse } from './helpers.js';
-import { emailLoginLimiter } from '../../middleware/rateLimiter.js';
+import { emailLoginLimiter, emailOtpSendLimiter, emailOtpVerifyLimiter } from '../../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -195,7 +195,7 @@ router.post('/login', emailLoginLimiter, async (req, res, next) => {
 });
 
 // POST /api/auth/verify-email — verify email OTP
-router.post('/verify-email', async (req, res, next) => {
+router.post('/verify-email', emailOtpVerifyLimiter, async (req, res, next) => {
   try {
     const { email, code } = req.body;
     const emailNormalized = normalizeEmail(email);
@@ -235,7 +235,7 @@ router.post('/verify-email', async (req, res, next) => {
 });
 
 // POST /api/auth/resend-verification — resend email verification OTP
-router.post('/resend-verification', async (req, res, next) => {
+router.post('/resend-verification', emailOtpSendLimiter, async (req, res, next) => {
   try {
     const { email } = req.body;
     const emailNormalized = normalizeEmail(email);
