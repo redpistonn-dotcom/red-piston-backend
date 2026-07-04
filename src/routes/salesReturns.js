@@ -26,7 +26,7 @@ import { writeLedgerEntry } from './parties.js';
 
 const router = Router();
 
-const VALID_REASONS      = ['WRONG_PART', 'DEFECTIVE', 'WARRANTY', 'CHANGED_MIND', 'OTHER'];
+export const VALID_REASONS = ['WRONG_PART', 'DEFECTIVE', 'WARRANTY', 'CHANGED_MIND', 'OTHER'];
 const VALID_CONDITIONS   = ['SEALED', 'GOOD', 'DAMAGED', 'USED'];
 const RESELLABLE_SET     = new Set(['SEALED', 'GOOD']);
 const VALID_REFUND_MODES = ['CASH', 'UPI', 'BANK', 'STORE_CREDIT'];
@@ -82,29 +82,39 @@ router.get('/invoice/:invoiceId/eligible-items', authenticate, requireShopOwner,
   } catch (err) { next(err); }
 });
 
-// ─── POST / — create a sales return + credit note ─────────────────────────────
-router.post('/', authenticate, requireShopOwner, requirePermission('billing.create'), async (req, res, next) => {
-  try {
-    const { originalInvoiceId, items, reason, refundMode, notes } = req.body;
-
+/**
+ * createSalesReturn — the full return + credit-note transaction, extracted so it
+ * can be called both from POST /api/shop/returns (below) AND from the Exchange
+ * flow (exchanges.js), which needs the "old item" leg to always settle as store
+ * credit that gets immediately redeemed against the "new item" invoice in the
+ * same request — never left as a dangling customer-facing balance.
+ *
+ * `forExchange: true` skips the "store credit requires a registered customer"
+ * check: an exchange's credit note is consumed synchronously via createInvoice's
+ * appliedCreditNoteId in the same request, so there's no risk of an unredeemable
+ * balance even when the customer has no Party record (a walk-in exchange).
+ * Throws { status, message } on validation failure — callers convert that to
+ * an HTTP response; anything else propagates as a real error.
+ */
+export async function createSalesReturn(req, { originalInvoiceId, items, reason, refundMode, notes, forExchange = false }) {
     if (!Number.isFinite(Number(originalInvoiceId))) {
-      return res.status(400).json({ success: false, error: { message: 'originalInvoiceId is required' } });
+      throw { status: 400, message: 'originalInvoiceId is required' };
     }
     if (!VALID_REASONS.includes(reason)) {
-      return res.status(400).json({ success: false, error: { message: `reason must be one of: ${VALID_REASONS.join(', ')}` } });
+      throw { status: 400, message: `reason must be one of: ${VALID_REASONS.join(', ')}` };
     }
     if (!VALID_REFUND_MODES.includes(refundMode)) {
-      return res.status(400).json({ success: false, error: { message: `refundMode must be one of: ${VALID_REFUND_MODES.join(', ')}` } });
+      throw { status: 400, message: `refundMode must be one of: ${VALID_REFUND_MODES.join(', ')}` };
     }
     if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ success: false, error: { message: 'At least one item is required' } });
+      throw { status: 400, message: 'At least one item is required' };
     }
     for (const it of items) {
       if (!Number.isFinite(Number(it.invoiceItemId)) || !Number.isInteger(Number(it.qty)) || Number(it.qty) <= 0) {
-        return res.status(400).json({ success: false, error: { message: 'Each item needs a valid invoiceItemId and a positive integer qty' } });
+        throw { status: 400, message: 'Each item needs a valid invoiceItemId and a positive integer qty' };
       }
       if (!VALID_CONDITIONS.includes(it.condition)) {
-        return res.status(400).json({ success: false, error: { message: `condition must be one of: ${VALID_CONDITIONS.join(', ')}` } });
+        throw { status: 400, message: `condition must be one of: ${VALID_CONDITIONS.join(', ')}` };
       }
     }
 
@@ -113,17 +123,17 @@ router.post('/', authenticate, requireShopOwner, requirePermission('billing.crea
       where: { invoiceId, shopId: req.shopId },
       include: { items: true },
     });
-    if (!invoice) return res.status(404).json({ success: false, error: { message: 'Original invoice not found' } });
+    if (!invoice) throw { status: 404, message: 'Original invoice not found' };
 
     const invoiceItemMap = new Map(invoice.items.map(i => [i.itemId, i]));
     for (const it of items) {
       if (!invoiceItemMap.has(parseInt(it.invoiceItemId, 10))) {
-        return res.status(400).json({ success: false, error: { message: `Invoice line ${it.invoiceItemId} does not belong to invoice ${invoice.invoiceNumber}` } });
+        throw { status: 400, message: `Invoice line ${it.invoiceItemId} does not belong to invoice ${invoice.invoiceNumber}` };
       }
     }
 
-    if (refundMode === 'STORE_CREDIT' && !invoice.partyId) {
-      return res.status(400).json({ success: false, error: { message: 'Store credit requires a registered customer — select a party on the return, or choose Cash/UPI/Bank instead' } });
+    if (refundMode === 'STORE_CREDIT' && !invoice.partyId && !forExchange) {
+      throw { status: 400, message: 'Store credit requires a registered customer — select a party on the return, or choose Cash/UPI/Bank instead' };
     }
 
     const shop = await prisma.shop.findUnique({ where: { shopId: req.shopId }, select: { returnPolicyDays: true } });
@@ -265,7 +275,9 @@ router.post('/', authenticate, requireShopOwner, requirePermission('billing.crea
       });
 
       // ── Store credit → Party.outstanding goes negative (= shop owes customer) ──
-      if (refundMode === 'STORE_CREDIT') {
+      // Skipped when there's no registered party (e.g. a walk-in exchange) — the
+      // credit note's own remainingBalance still tracks the amount correctly.
+      if (refundMode === 'STORE_CREDIT' && invoice.partyId) {
         await writeLedgerEntry(tx, {
           shopId:      req.shopId,
           partyId:     invoice.partyId,
@@ -286,6 +298,13 @@ router.post('/', authenticate, requireShopOwner, requirePermission('billing.crea
       newValue: { returnNo: result.returnNo, creditNoteNo: result.creditNoteNo, refundMode, reason },
     });
 
+    return result;
+}
+
+// ─── POST / — create a sales return + credit note ─────────────────────────────
+router.post('/', authenticate, requireShopOwner, requirePermission('billing.create'), async (req, res, next) => {
+  try {
+    const result = await createSalesReturn(req, req.body);
     res.status(201).json({ success: true, salesReturn: result.salesReturn, creditNote: result.creditNote });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ success: false, error: { message: err.message } });

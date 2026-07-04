@@ -39,25 +39,108 @@ async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAm
   return balanceAfter;
 }
 
-// ─── POST /api/billing/invoice ────────────────────────────────────────────────
-router.post('/invoice', authenticate, requireShopOwner, requirePermission('billing.create'), async (req, res, next) => {
-  try {
-    const {
-      items, customItems, partyId, partyName, partyPhone, partyGstin,
-      billingAddress,
-      invoiceType,
-      paymentMode, cashAmount, upiAmount, creditAmount,
-      upiReference,
-      marketplaceOrderId,
-      notes,
-      // Redeem an existing store-credit CreditNote (from a prior return) against this sale
-      appliedCreditNoteId, appliedCreditAmount,
-    } = req.body;
+/**
+ * computeItemTotals — the GST/discount math for a set of inventory line items.
+ * Extracted out of createInvoice so exchanges.js can price the "new item" leg
+ * of an exchange with the exact same formula, before it knows how much of the
+ * old item's credit note to apply — without duplicating the math.
+ */
+export async function computeItemTotals(shopId, items, invType) {
+  const inventoryIds = Array.isArray(items) ? items.map(i => parseInt(i.inventoryId)) : [];
+  const inventoryRows = inventoryIds.length > 0
+    ? await prisma.shopInventory.findMany({
+        where: { inventoryId: { in: inventoryIds }, shopId },
+        include: { masterPart: true },
+      })
+    : [];
+  const invMap = new Map(inventoryRows.map(r => [r.inventoryId, r]));
 
+  let subtotal = 0, cgst = 0, sgst = 0;
+  const processedItems = [];
+
+  for (const item of (items || [])) {
+    const inv = invMap.get(parseInt(item.inventoryId));
+    if (!inv) {
+      throw { status: 400, message: `Invalid inventory item: ${item.inventoryId}` };
+    }
+
+    // Pre-flight stock check — provides a user-friendly error message.
+    // NOTE: the authoritative atomic guard happens inside the transaction below via
+    // updateMany({ where: { stockQty: { gte: qty } } }) — this pre-flight check is
+    // only for early UX feedback; it does NOT prevent the race.
+    if (invType !== 'ESTIMATE' && inv.stockQty < item.qty) {
+      throw { status: 400, message: `Insufficient stock for ${inv.masterPart.partName}: have ${inv.stockQty}, need ${item.qty}` };
+    }
+
+    const itemQty = parseInt(item.qty);
+    if (!Number.isFinite(itemQty) || itemQty <= 0) {
+      throw { status: 400, message: `Invalid quantity for ${inv.masterPart.partName}` };
+    }
+    const unitPrice  = parseFloat(item.unitPrice || inv.sellingPrice);
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      throw { status: 400, message: `Invalid unit price for ${inv.masterPart.partName}` };
+    }
+    // Discount: non-negative, capped at 80 % of unit price (leaves at least 20 % value)
+    const maxDiscount = unitPrice * 0.8;
+    const discount    = Math.min(maxDiscount, Math.max(0, parseFloat(item.discount) || 0));
+    const taxableAmt  = (unitPrice - discount) * itemQty;
+    const gstRate    = parseFloat(inv.masterPart.gstRate || 18);
+    const itemCgst   = taxableAmt * (gstRate / 2 / 100);
+    const itemSgst   = itemCgst;
+    const itemTotal  = taxableAmt + itemCgst + itemSgst;
+
+    subtotal += taxableAmt;
+    cgst     += itemCgst;
+    sgst     += itemSgst;
+
+    processedItems.push({
+      inventoryId: item.inventoryId,
+      partName:    inv.masterPart.partName,
+      brand:       inv.masterPart.brand,
+      hsnCode:     inv.masterPart.hsnCode,
+      qty:         itemQty,
+      unitPrice,
+      discount,
+      taxableAmt,
+      gstRate,
+      cgst:        itemCgst,
+      sgst:        itemSgst,
+      total:       itemTotal,
+      buyingPrice: parseFloat(inv.buyingPrice || 0),
+    });
+  }
+
+  return { subtotal, cgst, sgst, processedItems };
+}
+
+/**
+ * createInvoice — the full invoice-creation transaction, extracted so it can be
+ * called both from POST /api/billing/invoice (below) AND from the Exchange flow
+ * (exchanges.js), which needs to create the "new item" sale as one leg of an
+ * exchange while redeeming the just-created credit note from the "old item"
+ * return. Throws { status, message } on validation failure — callers convert
+ * that to an HTTP response; anything else propagates as a real error.
+ *
+ * `correlationId`, if given, tags every Movement this invoice writes — a generic
+ * grouping hook for any caller that doesn't have its own header table to join
+ * through. Exchanges don't use it: ExchangeOrder's FKs to SalesReturn and Invoice
+ * already relate both legs, so no correlationId string-matching is needed there.
+ */
+export async function createInvoice(req, {
+  items, customItems, partyId, partyName, partyPhone, partyGstin,
+  billingAddress,
+  invoiceType,
+  paymentMode, cashAmount, upiAmount, creditAmount,
+  upiReference,
+  marketplaceOrderId,
+  notes,
+  appliedCreditNoteId, appliedCreditAmount,
+  correlationId,
+}) {
     const hasInventoryItems = Array.isArray(items) && items.length > 0;
     const hasCustomItems    = Array.isArray(customItems) && customItems.length > 0;
     if (!hasInventoryItems && !hasCustomItems) {
-      return res.status(400).json({ error: 'No items in invoice' });
+      throw { status: 400, message: 'No items in invoice' };
     }
 
     const invType = invoiceType && VALID_INVOICE_TYPES.includes(invoiceType)
@@ -68,70 +151,9 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
     // so the counter increment and the invoice INSERT are in the same atomic unit.
 
     // ── Validate stock + calculate line-item totals ───────────────────────────
-    // Batch-fetch all inventory rows in ONE query instead of N separate findUniques.
-    const inventoryIds = hasInventoryItems ? items.map(i => parseInt(i.inventoryId)) : [];
-    const inventoryRows = inventoryIds.length > 0
-      ? await prisma.shopInventory.findMany({
-          where: { inventoryId: { in: inventoryIds }, shopId: req.shopId },
-          include: { masterPart: true },
-        })
-      : [];
-    const invMap = new Map(inventoryRows.map(r => [r.inventoryId, r]));
-
-    let subtotal = 0, cgst = 0, sgst = 0;
-    const processedItems = [];
-
-    for (const item of (items || [])) {
-      const inv = invMap.get(parseInt(item.inventoryId));
-      if (!inv) {
-        throw { status: 400, message: `Invalid inventory item: ${item.inventoryId}` };
-      }
-
-      // Pre-flight stock check — provides a user-friendly error message.
-      // NOTE: the authoritative atomic guard happens inside the transaction below via
-      // updateMany({ where: { stockQty: { gte: qty } } }) — this pre-flight check is
-      // only for early UX feedback; it does NOT prevent the race.
-      if (invType !== 'ESTIMATE' && inv.stockQty < item.qty) {
-        throw { status: 400, message: `Insufficient stock for ${inv.masterPart.partName}: have ${inv.stockQty}, need ${item.qty}` };
-      }
-
-      const itemQty = parseInt(item.qty);
-      if (!Number.isFinite(itemQty) || itemQty <= 0) {
-        throw { status: 400, message: `Invalid quantity for ${inv.masterPart.partName}` };
-      }
-      const unitPrice  = parseFloat(item.unitPrice || inv.sellingPrice);
-      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
-        throw { status: 400, message: `Invalid unit price for ${inv.masterPart.partName}` };
-      }
-      // Discount: non-negative, capped at 80 % of unit price (leaves at least 20 % value)
-      const maxDiscount = unitPrice * 0.8;
-      const discount    = Math.min(maxDiscount, Math.max(0, parseFloat(item.discount) || 0));
-      const taxableAmt  = (unitPrice - discount) * itemQty;
-      const gstRate    = parseFloat(inv.masterPart.gstRate || 18);
-      const itemCgst   = taxableAmt * (gstRate / 2 / 100);
-      const itemSgst   = itemCgst;
-      const itemTotal  = taxableAmt + itemCgst + itemSgst;
-
-      subtotal += taxableAmt;
-      cgst     += itemCgst;
-      sgst     += itemSgst;
-
-      processedItems.push({
-        inventoryId: item.inventoryId,
-        partName:    inv.masterPart.partName,
-        brand:       inv.masterPart.brand,
-        hsnCode:     inv.masterPart.hsnCode,
-        qty:         itemQty,
-        unitPrice,
-        discount,
-        taxableAmt,
-        gstRate,
-        cgst:        itemCgst,
-        sgst:        itemSgst,
-        total:       itemTotal,
-        buyingPrice: parseFloat(inv.buyingPrice || 0),
-      });
-    }
+    const itemTotals = await computeItemTotals(req.shopId, hasInventoryItems ? items : [], invType);
+    let subtotal = itemTotals.subtotal, cgst = itemTotals.cgst, sgst = itemTotals.sgst;
+    const processedItems = itemTotals.processedItems;
 
     // ── Process custom items (no inventory lookup, no stock deduction) ───────
     const processedCustomItems = [];
@@ -168,7 +190,7 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
     const totalAmount  = subtotal + cgst + sgst;
     const creditAmt    = creditAmount ? Math.max(0, parseFloat(creditAmount)) : 0;
     if (creditAmt > totalAmount + 0.01) {
-      return res.status(400).json({ error: `Credit amount (₹${creditAmt.toFixed(2)}) cannot exceed invoice total (₹${totalAmount.toFixed(2)})` });
+      throw { status: 400, message: `Credit amount (₹${creditAmt.toFixed(2)}) cannot exceed invoice total (₹${totalAmount.toFixed(2)})` };
     }
     // If explicit cash + UPI amounts are provided, their combined sum must match the paid portion
     const cashAmt = cashAmount ? Math.max(0, parseFloat(cashAmount)) : 0;
@@ -180,17 +202,17 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
     let creditNoteRow = null;
     if (appliedCreditNoteId) {
       creditNoteRow = await prisma.creditNote.findFirst({ where: { creditNoteId: parseInt(appliedCreditNoteId, 10), shopId: req.shopId } });
-      if (!creditNoteRow) return res.status(400).json({ error: 'Credit note not found' });
+      if (!creditNoteRow) throw { status: 400, message: 'Credit note not found' };
       if (partyId && creditNoteRow.partyId && parseInt(partyId, 10) !== creditNoteRow.partyId) {
-        return res.status(400).json({ error: 'Credit note does not belong to this customer' });
+        throw { status: 400, message: 'Credit note does not belong to this customer' };
       }
       if (appliedAmt <= 0 || appliedAmt > Number(creditNoteRow.remainingBalance) + 0.01) {
-        return res.status(400).json({ error: `Credit note has only ₹${Number(creditNoteRow.remainingBalance).toFixed(2)} remaining` });
+        throw { status: 400, message: `Credit note has only ₹${Number(creditNoteRow.remainingBalance).toFixed(2)} remaining` };
       }
     }
 
     if ((cashAmt > 0 || upiAmt > 0 || appliedAmt > 0) && Math.abs(cashAmt + upiAmt + appliedAmt + creditAmt - totalAmount) > 1) {
-      return res.status(400).json({ error: `Payment breakdown (₹${(cashAmt + upiAmt + appliedAmt + creditAmt).toFixed(2)}) must match invoice total (₹${totalAmount.toFixed(2)})` });
+      throw { status: 400, message: `Payment breakdown (₹${(cashAmt + upiAmt + appliedAmt + creditAmt).toFixed(2)}) must match invoice total (₹${totalAmount.toFixed(2)})` };
     }
     const isCreditSale = creditAmt > 0;
     const paidAmount   = totalAmount - creditAmt;
@@ -276,6 +298,7 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
               invoiceNumber,
               partyName:    partyName || null,
               paymentMode:  paymentMode || 'CASH',
+              correlationId: correlationId || undefined,
               createdBy:    req.user.userId,
             },
           });
@@ -391,9 +414,16 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
       },
     });
 
-    res.json({ success: true, invoice });
     incrementCounter('invoicesCreated');
     incrementCounter('invoicesTotalAmount', totalAmount);
+    return invoice;
+}
+
+// ─── POST /api/billing/invoice ────────────────────────────────────────────────
+router.post('/invoice', authenticate, requireShopOwner, requirePermission('billing.create'), async (req, res, next) => {
+  try {
+    const invoice = await createInvoice(req, req.body);
+    res.json({ success: true, invoice });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);

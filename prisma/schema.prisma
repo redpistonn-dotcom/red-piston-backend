@@ -320,6 +320,7 @@ model Shop {
   salesReturns       SalesReturn[]
   creditNotes        CreditNote[]
   purchaseReturns    PurchaseReturn[]
+  exchangeOrders     ExchangeOrder[]
 
   @@map("shops")
 }
@@ -913,6 +914,7 @@ model Invoice {
   ledgerEntries PartyLedger[]
   salesReturns  SalesReturn[]
   creditNotes   CreditNote[]
+  exchangeOrder ExchangeOrder?
 
   @@index([shopId, createdAt(sort: Desc)])
   @@index([shopId, status]) // filter PAID / CREDIT / ESTIMATE invoices
@@ -992,11 +994,12 @@ model SalesReturn {
   createdBy         Int?     @map("created_by")
   createdAt         DateTime @default(now()) @map("created_at")
 
-  shop       Shop              @relation(fields: [shopId], references: [shopId])
-  invoice    Invoice           @relation(fields: [originalInvoiceId], references: [invoiceId])
-  party      Party?            @relation(fields: [partyId], references: [partyId])
-  items      SalesReturnItem[]
-  creditNote CreditNote?       @relation(fields: [creditNoteId], references: [creditNoteId])
+  shop          Shop              @relation(fields: [shopId], references: [shopId])
+  invoice       Invoice           @relation(fields: [originalInvoiceId], references: [invoiceId])
+  party         Party?            @relation(fields: [partyId], references: [partyId])
+  items         SalesReturnItem[]
+  creditNote    CreditNote?       @relation(fields: [creditNoteId], references: [creditNoteId])
+  exchangeOrder ExchangeOrder?
 
   @@index([shopId, createdAt(sort: Desc)])
   @@index([originalInvoiceId])
@@ -1029,6 +1032,34 @@ model SalesReturnItem {
   @@index([returnId])
   @@index([invoiceItemId]) // sum-returned-so-far check per invoice line
   @@map("sales_return_items")
+}
+
+// Exchange = a SalesReturn (old item, always settled as store credit) + a normal
+// Invoice (new item) that immediately redeems that credit note. No separate ledger
+// or pricing engine here — it's pure orchestration over what already exists.
+// Both legs' Movement rows share correlationId = exchangeNo so they can be
+// reconstructed as one event without a join through this table.
+model ExchangeOrder {
+  exchangeId      Int      @id @default(autoincrement()) @map("exchange_id")
+  exchangeNo      String   @unique @map("exchange_no") // EXC-S{shopId}-{FY}-NNNNN
+  shopId          Int      @map("shop_id")
+  salesReturnId   Int      @unique @map("sales_return_id")
+  newInvoiceId    Int      @unique @map("new_invoice_id")
+  priceDifference Decimal  @map("price_difference") @db.Decimal(10, 2) // new taxable − old taxable
+  gstDifference   Decimal  @map("gst_difference") @db.Decimal(10, 2)
+  // positive = customer owed the shop more; negative = shop owed the customer a refund
+  netAmount       Decimal  @map("net_amount") @db.Decimal(10, 2)
+  // COLLECT (customer paid more) | REFUND (customer paid less) | EVEN
+  settlementType  String   @map("settlement_type")
+  createdBy       Int?     @map("created_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  shop        Shop        @relation(fields: [shopId], references: [shopId])
+  salesReturn SalesReturn @relation(fields: [salesReturnId], references: [returnId])
+  newInvoice  Invoice     @relation(fields: [newInvoiceId], references: [invoiceId])
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@map("exchange_orders")
 }
 
 model CreditNote {
