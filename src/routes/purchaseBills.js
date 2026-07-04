@@ -205,10 +205,16 @@ router.post('/:id/import', authenticate, requireShopOwner, async (req, res, next
             });
             movementType = 'OPENING';
           }
+          // GST breakup — needed downstream for ITC reversal on a purchase return.
+          // Uses the matched MasterPart's gstRate since the bill import has no per-item GST field.
+          const gstRate      = parseFloat(master.gstRate ?? 18);
+          const taxableAmount = rate * qty;
+          const gstAmount     = taxableAmount * (gstRate / 100);
           await tx.movement.create({
             data: {
               shopId: req.shopId, inventoryId: inv.inventoryId, createdBy: req.user.userId,
-              type: movementType, qty, unitPrice: rate, totalAmount: rate * qty,
+              type: movementType, qty, unitPrice: rate, gstRate, taxableAmount,
+              totalAmount: taxableAmount + gstAmount, gstAmount,
               referenceNumber: bill.invoiceNumber || null,
               notes: supplierNote || 'Imported from uploaded bill',
             },

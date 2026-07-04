@@ -319,6 +319,7 @@ model Shop {
   batches            StockBatch[]
   salesReturns       SalesReturn[]
   creditNotes        CreditNote[]
+  purchaseReturns    PurchaseReturn[]
 
   @@map("shops")
 }
@@ -343,8 +344,9 @@ model PurchaseBill {
   importedAt    DateTime? @map("imported_at")
   createdAt     DateTime  @default(now()) @map("created_at")
 
-  shop                 Shop            @relation(fields: [shopId], references: [shopId])
+  shop                 Shop             @relation(fields: [shopId], references: [shopId])
   linkedPurchaseOrders PurchaseOrder[]
+  purchaseReturns      PurchaseReturn[]
 
   @@index([shopId, createdAt])
   @@index([shopId, status])
@@ -680,6 +682,7 @@ model ShopInventory {
   reviews               MarketplaceReview[]
   batches               StockBatch[]
   salesReturnItems      SalesReturnItem[]
+  purchaseReturnItems   PurchaseReturnItem[]
 
   @@unique([shopId, masterPartId])
   @@index([shopId])
@@ -746,6 +749,8 @@ model Movement {
   invoice   Invoice?       @relation(fields: [invoiceId], references: [invoiceId])
   party     Party?         @relation(fields: [partyId], references: [partyId])
 
+  purchaseReturnItems PurchaseReturnItem[]
+
   @@index([shopId, createdAt(sort: Desc)])
   @@index([inventoryId])
   @@index([inventoryId, createdAt(sort: Desc)]) // composite for WHERE inventoryId + ORDER BY createdAt
@@ -809,13 +814,14 @@ model Party {
   version     Int       @default(0) @map("version")
   shop        Shop      @relation(fields: [shopId], references: [shopId])
 
-  invoices       Invoice[]
-  movements      Movement[]
-  purchaseOrders PurchaseOrder[]
-  ledgerEntries  PartyLedger[]
-  shopVehicles   ShopVehicle[]
-  salesReturns   SalesReturn[]
-  creditNotes    CreditNote[]
+  invoices        Invoice[]
+  movements       Movement[]
+  purchaseOrders  PurchaseOrder[]
+  ledgerEntries   PartyLedger[]
+  shopVehicles    ShopVehicle[]
+  salesReturns    SalesReturn[]
+  creditNotes     CreditNote[]
+  purchaseReturns PurchaseReturn[]
 
   @@index([shopId])
   @@index([shopId, type]) // filter CUSTOMER vs SUPPLIER
@@ -1056,6 +1062,75 @@ model CreditNote {
   @@index([shopId, type])
   @@index([shopId, status])
   @@map("credit_notes")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PURCHASE RETURNS (SUPPLIER RETURNS)
+//
+// Design: linked to the original PurchaseBill — "opens the original purchase bill"
+// per spec. PurchaseBill has no structured line-item table (it stores only a raw
+// `extracted` JSON blob), so returnable lines are derived from the Movement rows
+// that bill-import/PO-receive already wrote (type PURCHASE/OPENING). Each
+// PurchaseReturnItem points at the specific source Movement it's returning against,
+// mirroring how SalesReturnItem points at a specific InvoiceItem. There is no
+// credit-note engine here — the supplier's own credit note is just a reference
+// string; the shop isn't issuing a GST document to itself.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model PurchaseReturn {
+  returnId             Int      @id @default(autoincrement()) @map("return_id")
+  returnNo             String   @unique @map("return_no") // PR-S{shopId}-{FY}-NNNNN
+  shopId               Int      @map("shop_id")
+  originalBillId       Int      @map("original_bill_id")
+  partyId              Int?     @map("party_id") // supplier, only if registered as a Party
+  // Snapshot from the bill — a supplier isn't always a registered Party
+  supplierName         String?  @map("supplier_name")
+  supplierGstin        String?  @map("supplier_gstin")
+  // DAMAGED | WRONG_ITEM | EXCESS_SUPPLY | QUALITY_ISSUE
+  reason               String
+  // PENDING | SUPPLIER_REFUND | SUPPLIER_CREDIT | REPLACEMENT — evolves as the supplier responds
+  resolution           String   @default("PENDING")
+  supplierCreditNoteNo String?  @map("supplier_credit_note_no")
+  status               String   @default("COMPLETED") // COMPLETED | CANCELLED
+  notes                String?
+  // Optimistic lock — resolution is updated later via PATCH, days/weeks after creation
+  version              Int      @default(0)
+  createdBy            Int?     @map("created_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  shop  Shop                 @relation(fields: [shopId], references: [shopId])
+  bill  PurchaseBill         @relation(fields: [originalBillId], references: [billId])
+  party Party?               @relation(fields: [partyId], references: [partyId])
+  items PurchaseReturnItem[]
+
+  @@index([shopId, createdAt(sort: Desc)])
+  @@index([originalBillId])
+  @@index([shopId, resolution])
+  @@map("purchase_returns")
+}
+
+model PurchaseReturnItem {
+  itemId           Int     @id @default(autoincrement()) @map("item_id")
+  returnId         Int     @map("return_id")
+  inventoryId      Int     @map("inventory_id")
+  // The specific receiving Movement this return is drawn against — enforces
+  // "can't return more than was received" per receiving event.
+  sourceMovementId Int     @map("source_movement_id")
+  qty              Int
+  unitPrice        Decimal @map("unit_price") @db.Decimal(10, 2)
+  taxableValue     Decimal @map("taxable_value") @db.Decimal(10, 2)
+  gstRate          Decimal @map("gst_rate") @db.Decimal(5, 2)
+  cgst             Decimal @db.Decimal(10, 2)
+  sgst             Decimal @db.Decimal(10, 2)
+  igst             Decimal @default(0) @db.Decimal(10, 2)
+
+  return         PurchaseReturn @relation(fields: [returnId], references: [returnId], onDelete: Cascade)
+  inventory      ShopInventory  @relation(fields: [inventoryId], references: [inventoryId])
+  sourceMovement Movement       @relation(fields: [sourceMovementId], references: [movementId])
+
+  @@index([returnId])
+  @@index([sourceMovementId]) // sum-returned-so-far check per source movement
+  @@map("purchase_return_items")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
