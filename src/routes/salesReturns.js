@@ -331,7 +331,12 @@ router.get('/', authenticate, requireShopOwner, requirePermission('billing.view'
     const [returns, total] = await Promise.all([
       prisma.salesReturn.findMany({
         where,
-        include: { items: true, creditNote: true, invoice: { select: { invoiceNumber: true } } },
+        include: {
+          items: true, creditNote: true, invoice: { select: { invoiceNumber: true } },
+          // Lets the frontend show one unified Returns & Exchange list — a return with
+          // an exchangeOrder attached renders as "Exchange" instead of a plain return.
+          exchangeOrder: { include: { newInvoice: { select: { invoiceNumber: true, items: { select: { partName: true } } } } } },
+        },
         orderBy: { createdAt: 'desc' },
         take:    limit,
         skip:    offset,

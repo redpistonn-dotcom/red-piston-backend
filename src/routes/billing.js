@@ -433,7 +433,7 @@ router.post('/invoice', authenticate, requireShopOwner, requirePermission('billi
 // ─── GET /api/billing/invoices ────────────────────────────────────────────────
 router.get('/invoices', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const { startDate, endDate, partyId, paymentMode, invoiceType, status, limit = 50, offset = 0 } = req.query;
+    const { startDate, endDate, partyId, paymentMode, invoiceType, status, search, limit = 50, offset = 0 } = req.query;
     const where = { shopId: req.shopId };
 
     if (startDate)   where.createdAt = { gte: new Date(startDate) };
@@ -442,6 +442,14 @@ router.get('/invoices', authenticate, requireShopOwner, async (req, res, next) =
     if (paymentMode) where.paymentMode = paymentMode;
     if (invoiceType) where.invoiceType = invoiceType;
     if (status)      where.status     = status;
+    // Used by the Returns/Exchange invoice picker — find an invoice by number or customer name/phone
+    if (search) {
+      where.OR = [
+        { invoiceNumber: { contains: search, mode: 'insensitive' } },
+        { partyName:      { contains: search, mode: 'insensitive' } },
+        { partyPhone:      { contains: search } },
+      ];
+    }
 
     const [invoices, total] = await Promise.all([
       prisma.invoice.findMany({
