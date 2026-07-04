@@ -321,6 +321,7 @@ model Shop {
   creditNotes        CreditNote[]
   purchaseReturns    PurchaseReturn[]
   exchangeOrders     ExchangeOrder[]
+  warrantyClaims     WarrantyClaim[]
 
   @@map("shops")
 }
@@ -543,6 +544,10 @@ model MasterPart {
   partType            String    @default("OEM") @map("part_type")
   isUniversal         Boolean   @default(false) @map("is_universal")
   requiresFitment     Boolean   @default(true) @map("requires_fitment")
+  // Nullable — unset for virtually every catalog row today (never populated on bulk import).
+  // Null means "unknown", not "no warranty" — warranty claim creation treats it permissively
+  // (flags days-since-sale for staff judgment, never blocks) rather than against a false null.
+  warrantyMonths      Int?      @map("warranty_months")
   status              String    @default("PENDING")
   source              String    @default("MANUAL")
   // Shop that first contributed this part to the catalog
@@ -684,6 +689,7 @@ model ShopInventory {
   batches               StockBatch[]
   salesReturnItems      SalesReturnItem[]
   purchaseReturnItems   PurchaseReturnItem[]
+  warrantyClaims        WarrantyClaim[]
 
   @@unique([shopId, masterPartId])
   @@index([shopId])
@@ -785,6 +791,8 @@ model StockBatch {
   shop      Shop          @relation(fields: [shopId], references: [shopId])
   inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
 
+  warrantyClaims WarrantyClaim[]
+
   @@index([shopId, inventoryId])
   @@index([shopId, batchNumber])
   @@map("stock_batches")
@@ -823,6 +831,7 @@ model Party {
   salesReturns    SalesReturn[]
   creditNotes     CreditNote[]
   purchaseReturns PurchaseReturn[]
+  warrantyClaims  WarrantyClaim[]
 
   @@index([shopId])
   @@index([shopId, type]) // filter CUSTOMER vs SUPPLIER
@@ -905,16 +914,17 @@ model Invoice {
   version            Int       @default(0) @map("version")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
-  shop          Shop             @relation(fields: [shopId], references: [shopId])
-  party         Party?           @relation(fields: [partyId], references: [partyId])
-  creator       User?            @relation("InvoiceCreatedBy", fields: [createdBy], references: [userId])
-  items         InvoiceItem[]
-  movements     Movement[]
-  payments      InvoicePayment[]
-  ledgerEntries PartyLedger[]
-  salesReturns  SalesReturn[]
-  creditNotes   CreditNote[]
-  exchangeOrder ExchangeOrder?
+  shop           Shop             @relation(fields: [shopId], references: [shopId])
+  party          Party?           @relation(fields: [partyId], references: [partyId])
+  creator        User?            @relation("InvoiceCreatedBy", fields: [createdBy], references: [userId])
+  items          InvoiceItem[]
+  movements      Movement[]
+  payments       InvoicePayment[]
+  ledgerEntries  PartyLedger[]
+  salesReturns   SalesReturn[]
+  creditNotes    CreditNote[]
+  exchangeOrder  ExchangeOrder?
+  warrantyClaims WarrantyClaim[]
 
   @@index([shopId, createdAt(sort: Desc)])
   @@index([shopId, status]) // filter PAID / CREDIT / ESTIMATE invoices
@@ -943,6 +953,7 @@ model InvoiceItem {
   inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
 
   salesReturnItems SalesReturnItem[]
+  warrantyClaims   WarrantyClaim[]
 
   @@index([invoiceId])
   @@index([inventoryId])
@@ -1060,6 +1071,51 @@ model ExchangeOrder {
 
   @@index([shopId, createdAt(sort: Desc)])
   @@map("exchange_orders")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WARRANTY CLAIMS
+//
+// Differs from a Sales Return: the item isn't simply refunded — it moves through
+// a claim lifecycle (Sent to Supplier → Approved/Rejected → Replacement Received
+// → Returned to Customer) before resolution. Status evolves over days/weeks, so
+// it uses optimistic `version` locking like PurchaseReturn.resolution. Stock only
+// moves at REPLACEMENT_RECEIVED (in) and RETURNED_TO_CUSTOMER (out) — the claimed
+// unit itself was never part of counted stock (it left at the original sale) and
+// isn't added back, since it's neither sellable nor sitting in the shop's own
+// damaged bin while a third party (the OEM) has it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model WarrantyClaim {
+  claimId           Int       @id @default(autoincrement()) @map("claim_id")
+  claimNo           String    @unique @map("claim_no") // WC-S{shopId}-{FY}-NNNNN
+  shopId            Int       @map("shop_id")
+  originalInvoiceId Int       @map("original_invoice_id")
+  invoiceItemId     Int       @map("invoice_item_id")
+  inventoryId       Int       @map("inventory_id")
+  batchId           Int?      @map("batch_id") // set when the claimed unit is serial/batch-tracked
+  qty               Int       @default(1)
+  // SENT_TO_SUPPLIER | APPROVED | REJECTED | REPLACEMENT_RECEIVED | RETURNED_TO_CUSTOMER
+  status            String    @default("SENT_TO_SUPPLIER")
+  partyId           Int?      @map("party_id") // supplier/OEM, if registered as a Party
+  sentDate          DateTime  @default(now()) @map("sent_date")
+  resolvedDate      DateTime? @map("resolved_date")
+  notes             String?
+  // Optimistic lock — status is updated later via PATCH, days/weeks after creation
+  version           Int       @default(0)
+  createdBy         Int?      @map("created_by")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  shop        Shop          @relation(fields: [shopId], references: [shopId])
+  invoice     Invoice       @relation(fields: [originalInvoiceId], references: [invoiceId])
+  invoiceItem InvoiceItem   @relation(fields: [invoiceItemId], references: [itemId])
+  inventory   ShopInventory @relation(fields: [inventoryId], references: [inventoryId])
+  batch       StockBatch?   @relation(fields: [batchId], references: [batchId])
+  party       Party?        @relation(fields: [partyId], references: [partyId])
+
+  @@index([shopId, status])
+  @@index([originalInvoiceId])
+  @@map("warranty_claims")
 }
 
 model CreditNote {
