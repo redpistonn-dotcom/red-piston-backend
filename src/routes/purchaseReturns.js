@@ -23,6 +23,7 @@ import { runSerializable } from '../lib/serializable-tx.js';
 import { nextSeq } from '../lib/sequence.js';
 import { financialYearKey } from '../lib/gst-fy.js';
 import { writeAudit, ET, ACT } from '../lib/audit.js';
+import { writeLedgerEntry } from './parties.js';
 
 const router = Router();
 
@@ -278,6 +279,11 @@ router.get('/:id', authenticate, requireShopOwner, requirePermission('purchase.v
 });
 
 // ─── PATCH /:id/resolution — update resolution once the supplier responds ─────
+// When resolution lands on SUPPLIER_CREDIT, this also posts a PartyLedger entry
+// that raises the supplier's Party.outstanding (positive = party owes shop) —
+// mirroring the customer-side CREDIT_NOTE_APPLIED pattern in billing.js, so the
+// credit is a real, trackable balance rather than just a status label. Guarded
+// by creditLedgerPosted so re-PATCHing the same return never double-posts.
 router.patch('/:id/resolution', authenticate, requireShopOwner, requirePermission('purchase.create'), async (req, res, next) => {
   try {
     const returnId = parseInt(req.params.id, 10);
@@ -289,18 +295,50 @@ router.patch('/:id/resolution', authenticate, requireShopOwner, requirePermissio
       return res.status(400).json({ success: false, error: { message: 'version is required for optimistic concurrency' } });
     }
 
-    const updated = await prisma.purchaseReturn.updateMany({
-      where: { returnId, shopId: req.shopId, version: parseInt(version, 10) },
-      data:  { resolution, supplierCreditNoteNo: supplierCreditNoteNo || undefined, version: { increment: 1 } },
-    });
-    if (updated.count === 0) {
-      return res.status(409).json({ success: false, error: { message: 'This return was updated elsewhere — reload and try again' } });
-    }
+    let ledgerBalanceAfter = null;
+    let ledgerSkippedReason = null;
 
-    const purchaseReturn = await prisma.purchaseReturn.findUnique({ where: { returnId } });
+    const purchaseReturn = await prisma.$transaction(async (tx) => {
+      const updated = await tx.purchaseReturn.updateMany({
+        where: { returnId, shopId: req.shopId, version: parseInt(version, 10) },
+        data:  { resolution, supplierCreditNoteNo: supplierCreditNoteNo || undefined, version: { increment: 1 } },
+      });
+      if (updated.count === 0) {
+        throw { status: 409, message: 'This return was updated elsewhere — reload and try again' };
+      }
+
+      const current = await tx.purchaseReturn.findUnique({ where: { returnId }, include: { items: true } });
+
+      if (resolution === 'SUPPLIER_CREDIT' && !current.creditLedgerPosted) {
+        if (!current.partyId) {
+          ledgerSkippedReason = 'Supplier is not a registered party — no ledger entry was posted. Register the supplier as a party to track this credit.';
+        } else {
+          const total = current.items.reduce(
+            (sum, it) => sum + Number(it.taxableValue) + Number(it.cgst) + Number(it.sgst) + Number(it.igst || 0),
+            0,
+          );
+          ledgerBalanceAfter = await writeLedgerEntry(tx, {
+            shopId:      req.shopId,
+            partyId:     current.partyId,
+            entryType:   'PURCHASE_RETURN_CREDIT',
+            debitAmount: total,
+            referenceNo: current.returnNo,
+            notes:       `Supplier credit from purchase return ${current.returnNo}`,
+            createdBy:   req.user.userId,
+          });
+          await tx.purchaseReturn.update({ where: { returnId }, data: { creditLedgerPosted: true } });
+        }
+      }
+
+      return current;
+    });
+
     writeAudit(req, { entityType: ET.BILL, entityId: returnId, action: ACT.UPDATE, newValue: { resolution, supplierCreditNoteNo } });
-    res.json({ success: true, purchaseReturn });
-  } catch (err) { next(err); }
+    res.json({ success: true, purchaseReturn, ledgerBalanceAfter, ledgerSkippedReason });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ success: false, error: { message: err.message } });
+    next(err);
+  }
 });
 
 export default router;

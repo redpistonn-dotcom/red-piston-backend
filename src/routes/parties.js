@@ -326,6 +326,51 @@ router.post('/:id/payment', authenticate, requireShopOwner, async (req, res, nex
   } catch (err) { next(err); }
 });
 
+// ─── POST /:id/apply-supplier-credit — consume a supplier's owed credit ──────
+// A PurchaseReturn resolved as SUPPLIER_CREDIT raises this party's outstanding
+// (positive = supplier owes shop, via PURCHASE_RETURN_CREDIT in purchaseReturns.js).
+// This endpoint is how that credit actually gets used — "applied against the
+// next purchase from that supplier" per the spec — instead of just sitting as a
+// status label. PurchaseBill has no amount-payable/paid tracking in this app, so
+// there's no bill to auto-deduct from; this is the shop owner's explicit record
+// that they've netted the credit off (e.g. paid the supplier that much less).
+router.post('/:id/apply-supplier-credit', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { amount, notes } = req.body;
+
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ success: false, error: { message: 'Amount must be a positive number' } });
+    }
+
+    const party = await prisma.party.findFirst({ where: { partyId: id, shopId: req.shopId } });
+    if (!party) return res.status(404).json({ success: false, error: { message: 'Party not found' } });
+    if (!['SUPPLIER', 'BOTH'].includes(party.type)) {
+      return res.status(400).json({ success: false, error: { message: 'Only a supplier party can have supplier credit applied' } });
+    }
+    const available = Number(party.outstanding);
+    if (available <= 0 || parsedAmount > available + 0.01) {
+      return res.status(400).json({ success: false, error: { message: `Only ₹${Math.max(available, 0).toFixed(2)} of supplier credit is available` } });
+    }
+
+    let newOutstanding;
+    await prisma.$transaction(async (tx) => {
+      newOutstanding = await writeLedgerEntry(tx, {
+        shopId:       req.shopId,
+        partyId:      id,
+        entryType:    'SUPPLIER_CREDIT_APPLIED',
+        creditAmount: parsedAmount,
+        notes:        notes || `Applied ₹${parsedAmount.toFixed(2)} supplier credit against a purchase`,
+        createdBy:    req.user.userId,
+      });
+    });
+
+    writeAudit(req, { entityType: ET.PARTY, entityId: id, action: ACT.UPDATE, newValue: { appliedSupplierCredit: parsedAmount } });
+    res.json({ success: true, newOutstanding });
+  } catch (err) { next(err); }
+});
+
 // ─── GET /summary/overdue — parties past their credit days ───────────────────
 // WHY the rewrite: the original code ran 1 query for all parties, then 1 query
 // PER party to find its oldest invoice — an N+1 that causes 100+ DB round-trips

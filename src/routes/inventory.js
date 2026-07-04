@@ -112,9 +112,9 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
 router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const {
-      masterPartId, sellingPrice, buyingPrice, stockQty,
+      masterPartId, sellingPrice, buyingPrice, mrp, stockQty,
       rackLocation, minStockAlert, maxStockLevel,
-      customPartName, barcode,
+      customPartName, nickname, barcode,
       shopSpecificNotes, isMarketplaceListed, supplierName, images,
       supplierGstin, supplierPhone, supplierInvoiceNo,
     } = req.body;
@@ -128,6 +128,9 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
     // Buying price, when provided, must be a positive amount (0 is not valid).
     if (buyingPrice !== undefined && buyingPrice !== null && buyingPrice !== '' && parseFloat(buyingPrice) <= 0) {
       return res.status(400).json({ error: 'Buying price must be greater than 0' });
+    }
+    if (mrp !== undefined && mrp !== null && mrp !== '' && (!Number.isFinite(parseFloat(mrp)) || parseFloat(mrp) <= 0)) {
+      return res.status(400).json({ error: 'MRP must be greater than 0' });
     }
 
     const existing = await prisma.shopInventory.findUnique({
@@ -146,11 +149,13 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
         masterPartId,
         sellingPrice:        parseFloat(sellingPrice),
         buyingPrice:         buyingPrice     ? parseFloat(buyingPrice) : null,
+        mrp:                 mrp             ? parseFloat(mrp) : null,
         stockQty:            parsedInitialQty,
         rackLocation:        rackLocation    || null,
         minStockAlert:       minStockAlert   || 5,
         maxStockLevel:       maxStockLevel   ? parseInt(maxStockLevel) : null,
         customPartName:      customPartName  || null,
+        nickname:            nickname        || null,
         barcode:             barcode         || null,
         shopSpecificNotes:   shopSpecificNotes || null,
         // New inventory is NOT auto-listed on the marketplace — going live is an
@@ -244,9 +249,9 @@ router.post('/', authenticate, requireShopOwner, async (req, res, next) => {
 router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
   try {
     const {
-      sellingPrice, buyingPrice, rackLocation,
+      sellingPrice, buyingPrice, mrp, rackLocation,
       minStockAlert, maxStockLevel,
-      customPartName, barcode,
+      customPartName, nickname, barcode,
       shopSpecificNotes, isMarketplaceListed, imageUrl, images,
       customCategoryL1, customIcon,
       stockQty,
@@ -260,10 +265,12 @@ router.put('/:id', authenticate, requireShopOwner, async (req, res, next) => {
     const metaData = {
       ...(sellingPrice        !== undefined && { sellingPrice:        parseFloat(sellingPrice) }),
       ...(buyingPrice         !== undefined && { buyingPrice:         parseFloat(buyingPrice) }),
+      ...(mrp                 !== undefined && { mrp:                 mrp ? parseFloat(mrp) : null }),
       ...(rackLocation        !== undefined && { rackLocation }),
       ...(minStockAlert       !== undefined && { minStockAlert:       parseInt(minStockAlert) }),
       ...(maxStockLevel       !== undefined && { maxStockLevel:       maxStockLevel ? parseInt(maxStockLevel) : null }),
       ...(customPartName      !== undefined && { customPartName:      customPartName || null }),
+      ...(nickname            !== undefined && { nickname:            nickname || null }),
       ...(barcode             !== undefined && { barcode:             barcode || null }),
       ...(shopSpecificNotes   !== undefined && { shopSpecificNotes:   shopSpecificNotes || null }),
       ...(isMarketplaceListed !== undefined && { isMarketplaceListed }),

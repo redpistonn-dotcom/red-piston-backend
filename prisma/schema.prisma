@@ -649,6 +649,8 @@ model ShopInventory {
   masterPartId        Int        @map("master_part_id")
   sellingPrice        Decimal    @map("selling_price") @db.Decimal(10, 2)
   buyingPrice         Decimal?   @map("buying_price") @db.Decimal(10, 2)
+  // Maximum Retail Price — printed ceiling price, independent of sellingPrice
+  mrp                 Decimal?   @db.Decimal(10, 2)
   stockQty            Int        @default(0) @map("stock_qty")
   // Returned units confirmed damaged/unsellable — separate bucket from stockQty so a shop
   // can carry both sellable and damaged units of the same part at once. Never shown in
@@ -661,6 +663,9 @@ model ShopInventory {
   rackLocation        String?    @map("rack_location")
   // Shop's own name override for the part (if different from MasterPart.partName)
   customPartName      String?    @map("custom_part_name")
+  // Customer-facing nickname — distinct from customPartName; set only from the
+  // Manual Entry "Part Name" field (MasterPart.partName there holds the OEM name)
+  nickname            String?
   // Shop-specific barcode (sticker/label printed in-store)
   barcode             String?
   shopSpecificNotes   String?    @map("shop_specific_notes")
@@ -1182,6 +1187,10 @@ model PurchaseReturn {
   supplierCreditNoteNo String?  @map("supplier_credit_note_no")
   status               String   @default("COMPLETED") // COMPLETED | CANCELLED
   notes                String?
+  // Guards the PartyLedger PURCHASE_RETURN_CREDIT entry so it's written exactly
+  // once, the first time resolution transitions to SUPPLIER_CREDIT — resolution
+  // can otherwise be re-PATCHed freely without double-posting to the ledger.
+  creditLedgerPosted   Boolean  @default(false) @map("credit_ledger_posted")
   // Optimistic lock — resolution is updated later via PATCH, days/weeks after creation
   version              Int      @default(0)
   createdBy            Int?     @map("created_by")
