@@ -42,7 +42,10 @@ function getResendClient() {
 
 function baseTemplate(content, { accentColor = '#8B1A0F', accentLabel = null } = {}) {
   const appUrl = getFrontendAppUrl();
-  const logoUrl = `${appUrl}/logo.png`;
+  // EMAIL_LOGO_URL takes priority (set it to the full CDN/public URL of logo.png).
+  // Falls back to ${appUrl}/logo.png but MUST be an absolute public URL —
+  // email clients cannot load localhost or relative paths.
+  const logoUrl = process.env.EMAIL_LOGO_URL || `${appUrl}/logo.png`;
   const year = new Date().getFullYear();
   const accentBadge = accentLabel
     ? `<tr><td style="padding:20px 40px 0;"><div style="display:inline-block;background:${accentColor}18;border:1px solid ${accentColor}55;border-radius:6px;padding:5px 14px;"><span style="font-size:11px;font-weight:700;color:${accentColor};text-transform:uppercase;letter-spacing:0.09em;">${accentLabel}</span></div></td></tr>`
@@ -89,7 +92,13 @@ function baseTemplate(content, { accentColor = '#8B1A0F', accentLabel = null } =
             <table role="presentation" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="line-height:0;vertical-align:middle;">
-                  <img src="${logoUrl}" width="48" height="48" alt="RedPiston" style="display:block;width:48px;height:48px;object-fit:contain;" />
+                  <!--[if !mso]><!-->
+                  <img src="${logoUrl}" width="48" height="48" alt="RedPiston"
+                    style="display:block;width:48px;height:48px;border-radius:10px;object-fit:contain;"
+                    onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" />
+                  <div style="display:none;width:48px;height:48px;border-radius:10px;background:#8B1A0F;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:900;font-family:-apple-system,sans-serif;">RP</div>
+                  <!--<![endif]-->
+                  <!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" style="width:48px;height:48px;" arcsize="20%" fillcolor="#8B1A0F" strokecolor="none"><v:textbox inset="0,0,0,0"><center style="color:#FFFFFF;font-family:Arial;font-size:18px;font-weight:900;line-height:48px;">RP</center></v:textbox></v:roundrect><![endif]-->
                 </td>
                 <td style="padding-left:12px;vertical-align:middle;">
                   <span style="font-size:18px;font-weight:800;color:#111111;letter-spacing:-0.3px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">RedPiston</span>
@@ -496,6 +505,82 @@ export async function sendShopOwnerUnderReviewEmail(email, ownerName) {
     html,
     text: `Thank you for registering. Your shop profile is currently under review. You will receive another email once approved — usually within 24 hours.`,
   });
+}
+
+/**
+ * Send a Purchase Order to a supplier via email, with the PO PDF attached.
+ * Throws with code NO_SUPPLIER_EMAIL if the party has no email on file.
+ * Throws with code EMAIL_SEND_FAILED on a Resend delivery error.
+ */
+export async function sendPurchaseOrderEmail(po, pdfBuffer) {
+  const supplierEmail = po.party?.email || po.supplierEmail || null;
+  if (!supplierEmail) {
+    const err = new Error('Supplier has no email address on file. Add one in Parties first.');
+    err.code = 'NO_SUPPLIER_EMAIL';
+    throw err;
+  }
+
+  const shopName   = po.shop?.name || process.env.RESEND_SENDER_NAME || 'RedPiston Shop';
+  const poNumber   = po.poNumber;
+  const itemCount  = (po.items || []).length;
+  const total      = Number(po.totalAmount).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+
+  const html = baseTemplate(`
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Purchase Order ${poNumber}</h1>
+    <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
+      Please find our Purchase Order attached. Kindly confirm availability and expected delivery date.
+    </p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;margin-bottom:24px;">
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">PO Number</span>
+          <span style="font-size:15px;font-weight:700;color:#8B1A0F;">${poNumber}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">From</span>
+          <span style="font-size:14px;color:#374151;">${shopName}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;border-bottom:1px solid #E5E7EB;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Items</span>
+          <span style="font-size:14px;color:#374151;">${itemCount} line item${itemCount !== 1 ? 's' : ''}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 18px;">
+          <span style="font-size:12px;color:#9CA3AF;display:block;margin-bottom:2px;">Total Value</span>
+          <span style="font-size:16px;font-weight:800;color:#111111;">&#x20B9;${total}</span>
+        </td>
+      </tr>
+    </table>
+    ${po.notes ? `<div style="background:#FFFBEB;border:1px solid #FCD34D;border-radius:8px;padding:14px 18px;margin-bottom:24px;"><p style="margin:0;font-size:14px;color:#92400E;line-height:1.6;"><strong>Remarks:</strong> ${po.notes}</p></div>` : ''}
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">
+      The PO PDF is attached to this email. Please reply to confirm acceptance or raise any queries.
+    </p>
+  `, { accentColor: '#8B1A0F', accentLabel: `PO ${poNumber}` });
+
+  const resend      = getResendClient();
+  const senderEmail = process.env.RESEND_SENDER_EMAIL;
+  const senderName  = process.env.RESEND_SENDER_NAME || shopName;
+  if (!senderEmail) throw new Error('Missing RESEND_SENDER_EMAIL in backend environment');
+
+  const { error } = await resend.emails.send({
+    from:    `${senderName} <${senderEmail}>`,
+    to:      supplierEmail,
+    subject: `Purchase Order ${poNumber} from ${shopName}`,
+    html,
+    text:    `Purchase Order ${poNumber} from ${shopName}\n\nItems: ${itemCount}\nTotal: ₹${total}\n\n${po.notes ? `Remarks: ${po.notes}\n\n` : ''}Please confirm availability and expected delivery date. The PO PDF is attached to this email.`,
+    attachments: [{ filename: `${poNumber}.pdf`, content: pdfBuffer }],
+  });
+
+  if (error) {
+    const err = new Error(`Email delivery failed: ${error.message || JSON.stringify(error)}`);
+    err.code = 'EMAIL_SEND_FAILED';
+    throw err;
+  }
 }
 
 /**
