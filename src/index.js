@@ -32,6 +32,7 @@ import creditNoteRoutes from './routes/creditNotes.js';
 import purchaseReturnRoutes from './routes/purchaseReturns.js';
 import exchangeRoutes from './routes/exchanges.js';
 import warrantyClaimRoutes from './routes/warrantyClaims.js';
+import returnsReportRoutes from './routes/returnsReports.js';
 import gstrRoutes from './routes/gstr.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authLimiter, pdfExtractLimiter } from './middleware/rateLimiter.js';
@@ -172,6 +173,7 @@ app.use('/api/shop/credit-notes', creditNoteRoutes);
 app.use('/api/shop/purchase-returns', purchaseReturnRoutes);
 app.use('/api/shop/exchanges', exchangeRoutes);
 app.use('/api/shop/warranty-claims', warrantyClaimRoutes);
+app.use('/api/shop/returns-reports', returnsReportRoutes);
 // Bulk import needs a larger body — only applied to this path
 app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
 app.use('/api/admin', adminRoutes);

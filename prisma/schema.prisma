@@ -76,6 +76,7 @@ model User {
   createdMovements      Movement[]           @relation("MovementCreatedBy")
   createdJobCards       JobCard[]            @relation("JobCardCreatedBy")
   createdPurchaseOrders PurchaseOrder[]      @relation("PurchaseOrderCreatedBy")
+  createdSalesReturns   SalesReturn[]        @relation("SalesReturnCreatedBy")
   marketplaceOrders     MarketplaceOrder[]   @relation("OrderCustomer")
   reviews               MarketplaceReview[]
   confirmFitRequests    ConfirmFitRequest[]
@@ -1011,6 +1012,7 @@ model SalesReturn {
   items         SalesReturnItem[]
   creditNote    CreditNote?       @relation(fields: [creditNoteId], references: [creditNoteId])
   exchangeOrder ExchangeOrder?
+  creator       User?             @relation("SalesReturnCreatedBy", fields: [createdBy], references: [userId])
 
   @@index([shopId, createdAt(sort: Desc)])
   @@index([originalInvoiceId])
