@@ -107,7 +107,7 @@ model OtpCode {
   phone      String?
   email      String?
   code       String
-  // PHONE_OTP | EMAIL_VERIFY | EMAIL_LOGIN
+  // PHONE_OTP | EMAIL_VERIFY | EMAIL_LOGIN | STAFF_INVITE
   type       String    @default("PHONE_OTP")
   attempts   Int       @default(0)
   ipAddress  String?   @map("ip_address")
@@ -325,6 +325,7 @@ model Shop {
   warrantyClaims     WarrantyClaim[]
   gstPeriodLocks     GstPeriodLock[]
   returnPolicyWindows ReturnPolicyWindow[]
+  staffInvites       StaffInvite[]
 
   @@map("shops")
 }
@@ -359,13 +360,25 @@ model PurchaseBill {
 }
 
 model ShopUser {
-  id           Int       @id @default(autoincrement())
-  shopId       Int       @map("shop_id")
-  userId       Int       @map("user_id")
-  // OWNER | MANAGER | CASHIER | MECHANIC | DELIVERY
-  role         String    @default("CASHIER")
+  id        Int    @id @default(autoincrement())
+  shopId    Int    @map("shop_id")
+  userId    Int    @map("user_id")
+  // OWNER | MANAGER | CASHIER | MECHANIC | DELIVERY | STAFF (STAFF = sections-driven
+  // invite below, intentionally not in ROLE_DEFAULTS so hasPermission() falls back
+  // to deny-by-default rather than an unrelated legacy role's grants)
+  role      String @default("CASHIER")
+  // Free-text label shown in the UI ("Electrician", "Mechanic"...) — cosmetic only,
+  // does not affect access. Set for invites created via the section-picker flow.
+  roleLabel String? @map("role_label")
+  // Sidebar section keys this member can see/reach (see ERPShell.tsx NAV_ITEMS keys
+  // and src/lib/section-permissions.js SECTION_KEYS) — the authoritative source for
+  // nav visibility + frontend route access.
+  sections     String[] @default([])
+  // Dot-namespace permission overrides (e.g. {"inventory.*": true}) — derived from
+  // `sections` at invite time via section-permissions.js, consumed by hasPermission()
+  // for the existing API-level requirePermission() gates. See src/lib/permissions.js.
   permissions  Json      @default("{}")
-  invitedBy    String?   @map("invited_by")
+  invitedBy    Int?      @map("invited_by")
   isActive     Boolean   @default(true) @map("is_active")
   joinedAt     DateTime  @default(now()) @map("joined_at")
   lastActiveAt DateTime? @map("last_active_at")
@@ -375,6 +388,35 @@ model ShopUser {
   @@unique([shopId, userId])
   @@index([shopId])
   @@map("shop_users")
+}
+
+// A pending staff invitation — created when the shop owner submits the invite
+// form, consumed (deleted/marked VERIFIED) once the invitee enters the emailed
+// code. Deliberately separate from ShopUser: ShopUser represents ACCEPTED
+// membership; this represents an unaccepted offer that may expire or be
+// cancelled before ever becoming one.
+model StaffInvite {
+  id           Int       @id @default(autoincrement())
+  shopId       Int       @map("shop_id")
+  name         String
+  email        String
+  phone        String?
+  roleLabel    String    @map("role_label")
+  sections     String[]  @default([])
+  // PENDING | VERIFIED | EXPIRED | CANCELLED
+  status       String    @default("PENDING")
+  invitedBy    Int?      @map("invited_by")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  verifiedAt   DateTime? @map("verified_at")
+
+  shop Shop @relation(fields: [shopId], references: [shopId], onDelete: Cascade)
+
+  // Re-inviting the same email at the same shop updates the existing row
+  // (upsert) instead of accumulating duplicate pending invites.
+  @@unique([shopId, email])
+  @@index([shopId])
+  @@index([email])
+  @@map("staff_invites")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

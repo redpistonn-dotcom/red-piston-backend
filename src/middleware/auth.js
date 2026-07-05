@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import prisma from '../db/prisma.js';
+import prisma, { shopContext } from '../db/prisma.js';
 import { hasPermission } from '../lib/permissions.js';
 
 export const authenticate = async (req, res, next) => {
@@ -30,7 +30,13 @@ export const authenticate = async (req, res, next) => {
     req.user = user;
     req.impersonatedBy = decoded.impersonatedBy || null;
     req.shopId = user.shopId;
-    next();
+    // Bind shopId to AsyncLocalStorage so the Prisma safety-net middleware
+    // can scope tenant queries without needing it passed through params.
+    if (user.shopId) {
+      shopContext.run({ shopId: user.shopId }, next);
+    } else {
+      next();
+    }
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({
@@ -45,16 +51,22 @@ export const authenticate = async (req, res, next) => {
   }
 };
 
+// Despite the name (kept for the many existing call sites), this is really
+// "belongs to a shop, not a bare customer" — SHOP_STAFF is included. Most
+// routes have no finer-grained check below this, so a SHOP_STAFF who passes
+// here gets full access to that endpoint; section-scoped routes additionally
+// wrap requireSection() at their app.use() mount point (see index.js) to cut
+// that down to only the sections they were actually granted.
 export const requireShopOwner = (req, res, next) => {
   const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();
-  if (!['SHOP_OWNER', 'PLATFORM_ADMIN'].includes(slug)) {
+  if (!['SHOP_OWNER', 'SHOP_STAFF', 'PLATFORM_ADMIN'].includes(slug)) {
     return res.status(403).json({
       success: false,
       error: { code: 'FORBIDDEN', message: 'Shop owner access required' },
     });
   }
-  // Both SHOP_OWNER and PLATFORM_ADMIN need a non-null shopId to query shop-scoped data.
-  // Passing null to Prisma on a non-nullable Int field throws PrismaClientValidationError (500).
+  // All three need a non-null shopId to query shop-scoped data. Passing null
+  // to Prisma on a non-nullable Int field throws PrismaClientValidationError (500).
   if (!req.shopId) {
     return res.status(403).json({
       success: false,
@@ -63,6 +75,29 @@ export const requireShopOwner = (req, res, next) => {
   }
   next();
 };
+
+/**
+ * Section-scoped gate — layered on top of requireShopOwner at the app.use()
+ * mount point (see index.js) for routes that map ~1:1 to a sidebar section.
+ * SHOP_OWNER/PLATFORM_ADMIN always pass; SHOP_STAFF must hold at least one of
+ * the given section(s) in their ShopUser.sections array.
+ */
+export function requireSection(...sectionKeys) {
+  return async (req, res, next) => {
+    const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();
+    if (slug === 'SHOP_OWNER' || slug === 'PLATFORM_ADMIN' || slug === 'ADMIN') return next();
+    try {
+      const shopUser = await prisma.shopUser.findUnique({
+        where: { shopId_userId: { shopId: req.shopId, userId: req.user.userId } },
+        select: { sections: true, isActive: true },
+      });
+      if (!shopUser || !shopUser.isActive || !sectionKeys.some((k) => shopUser.sections.includes(k))) {
+        return res.status(403).json({ success: false, error: { code: 'SECTION_NOT_GRANTED', message: 'You do not have access to this section' } });
+      }
+      next();
+    } catch (err) { next(err); }
+  };
+}
 
 export const requireAdmin = async (req, res, next) => {
   const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();

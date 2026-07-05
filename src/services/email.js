@@ -161,6 +161,39 @@ function otpEmailHtml(code) {
   `);
 }
 
+function staffInviteEmailHtml(code, shopName, roleLabel, acceptUrl) {
+  return baseTemplate(`
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">You've been invited to join ${shopName}</h1>
+    <p style="margin:0 0 28px;font-size:15px;color:#6B7280;line-height:1.7;">
+      ${shopName} added you as <strong style="color:#111111;">${roleLabel}</strong> on RedPiston. Enter the code below to verify your email and activate your access. It's valid for <strong style="color:#111111;">30 minutes</strong>.
+    </p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr>
+        <td align="center" style="background:#FBF4F4;border:2px solid #8B1A0F;border-radius:12px;padding:28px 20px;">
+          <div style="font-size:11px;font-weight:700;color:#8B1A0F;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:12px;">Your verification code</div>
+          <div class="otp-code" style="font-size:42px;font-weight:800;letter-spacing:14px;color:#8B1A0F;font-family:'Courier New',Courier,monospace;line-height:1;">${code}</div>
+        </td>
+      </tr>
+    </table>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+      <tr>
+        <td align="center">
+          <a href="${acceptUrl}" class="btn-cta"
+             style="display:inline-block;background:#8B1A0F;color:#FFFFFF;font-size:15px;font-weight:700;padding:15px 40px;border-radius:8px;text-decoration:none;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+            Enter Code &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0 0 6px;font-size:13px;color:#9CA3AF;line-height:1.6;">
+      Do not share this code with anyone. RedPiston will never ask for it.
+    </p>
+    <p style="margin:0;font-size:13px;color:#9CA3AF;">
+      Weren't expecting this? You can ignore this email — no account changes will be made.
+    </p>
+  `, { accentLabel: 'STAFF INVITE' });
+}
+
 function passwordResetHtml(resetUrl, isFirstPassword = false) {
   const heading = isFirstPassword ? 'Set your password' : 'Reset your password';
   const subtext = isFirstPassword
@@ -304,6 +337,68 @@ export async function verifyEmailOtp(email, code) {
       email,
       code,
       type: 'EMAIL_VERIFY',
+      used: false,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (!otp) return { valid: false };
+
+  await prisma.otpCode.update({
+    where: { id: otp.id },
+    data: { used: true },
+  });
+
+  return { valid: true };
+}
+
+/**
+ * Send the staff-invite verification code. Separate OTP type (STAFF_INVITE)
+ * from account-signup EMAIL_VERIFY — an invite may target an email with no
+ * account yet, and must not collide with or be consumable by the signup flow.
+ */
+export async function sendStaffInviteOtp(email, { shopName, roleLabel }) {
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+
+  await prisma.otpCode.updateMany({
+    where: { email, type: 'STAFF_INVITE', used: false },
+    data: { used: true },
+  });
+
+  await prisma.otpCode.create({
+    data: {
+      email,
+      code,
+      type: 'STAFF_INVITE',
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000), // 30 min — longer than signup OTP since the invitee may not check email right away
+    },
+  });
+
+  // Deliberately NOT getFrontendAppUrl() — that fn prioritizes RESET_PASSWORD_URL,
+  // which may be a reset-specific path, wrong for a general app link here.
+  const appUrl = (process.env.FRONTEND_APP_URL || (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0]).trim().replace(/\/$/, '');
+  const acceptUrl = `${appUrl}/accept-invite?email=${encodeURIComponent(email)}`;
+
+  await sendMail({
+    to: email,
+    subject: `${code} — Your invite to join ${shopName} on RedPiston`,
+    html: staffInviteEmailHtml(code, shopName, roleLabel, acceptUrl),
+    text: `${shopName} invited you to join RedPiston as ${roleLabel}.\n\nYour verification code is: ${code}\n\nEnter it at: ${acceptUrl}\n\nThis code expires in 30 minutes.`,
+  });
+
+  return code;
+}
+
+/**
+ * Verify a staff-invite OTP code.
+ */
+export async function verifyStaffInviteOtp(email, code) {
+  const otp = await prisma.otpCode.findFirst({
+    where: {
+      email,
+      code,
+      type: 'STAFF_INVITE',
       used: false,
       expiresAt: { gt: new Date() },
     },

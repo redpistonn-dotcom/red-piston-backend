@@ -156,12 +156,28 @@ export async function createSession(res, user, { isNewUser = false, req = null }
 
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, REFRESH_COOKIE_OPTIONS);
 
+  const formattedUser = formatUserResponse(user);
+  // SHOP_STAFF's actual access is section-driven (see lib/section-permissions.js) —
+  // attach it here, in the one function every login/refresh path funnels through,
+  // so the frontend has what it needs to filter nav/routes without an extra call.
+  if (user.role === 'SHOP_STAFF' && user.shopId) {
+    const shopUser = await prisma.shopUser.findUnique({
+      where: { shopId_userId: { shopId: user.shopId, userId: user.userId } },
+      select: { role: true, roleLabel: true, sections: true, isActive: true },
+    });
+    if (shopUser?.isActive) {
+      formattedUser.shopUserRole = shopUser.role;
+      formattedUser.roleLabel = shopUser.roleLabel;
+      formattedUser.sections = shopUser.sections;
+    }
+  }
+
   return {
     success: true,
     accessToken,
     refreshToken,
     isNewUser,
-    user: formatUserResponse(user),
+    user: formattedUser,
   };
 }
 

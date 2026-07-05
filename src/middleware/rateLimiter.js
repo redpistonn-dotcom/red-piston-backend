@@ -98,6 +98,22 @@ export const emailOtpVerifyLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Staff-invite accept: 10 attempts per email per 10 minutes — same 6-digit
+// brute-force concern as emailOtpVerifyLimiter above, separate bucket since
+// it's keyed off a different flow/OTP type.
+export const staffInviteVerifyLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.body?.email?.toLowerCase() || req.ip,
+  store: makeStore('rl:staff-invite-verify:'),
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many verification attempts. Please wait 10 minutes before trying again.' },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // General auth endpoints (login, refresh, firebase): 20 req / 15 min per IP
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

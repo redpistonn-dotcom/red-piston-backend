@@ -8,6 +8,7 @@ import compression from 'compression';
 import { httpLogger } from './lib/logger.js';
 import cookieParser from 'cookie-parser';
 import prisma from './db/prisma.js';
+import { authenticate, requireSection } from './middleware/auth.js';
 import authRoutes from './routes/auth/index.js';
 import catalogRoutes from './routes/catalog.js';
 import inventoryRoutes from './routes/inventory.js';
@@ -16,7 +17,7 @@ import partiesRoutes from './routes/parties.js';
 import dashboardRoutes from './routes/dashboard.js';
 import marketplaceRoutes from './routes/marketplace.js';
 import customerRoutes from './routes/customer.js';
-import staffRoutes from './routes/staff.js';
+import staffRoutes, { publicStaffInviteRouter } from './routes/staff.js';
 import adminRoutes from './routes/admin.js';
 import fitmentRoutes from './routes/fitments.js';
 import shopProfileRoutes from './routes/shop.js';
@@ -154,29 +155,56 @@ app.get('/health', async (req, res) => {
 });
 
 // Routes
+//
+// Section gates (requireSection): a SHOP_STAFF account now passes the generic
+// requireShopOwner check used inside most route files (see middleware/auth.js),
+// so without an extra gate here they'd get full access to every one of these
+// resource areas regardless of which sections they were actually granted at
+// invite time. Inserted as their own middleware layer ahead of the resource's
+// router(s) — SHOP_OWNER/ADMIN always pass through untouched. Areas without a
+// clean 1:1 section mapping (dashboard, purchase-orders, marketplace/orders,
+// audit, vehicles) are intentionally left ungated for now — a granted SHOP_STAFF
+// account gets the same access an owner would there; only nav visibility
+// (frontend) restricts them from finding those pages. `/api/billing` is shared
+// by two different sections (POS billing + GSTR export) since billing.js and
+// gstr.js are both mounted at that prefix — gated by either, not a precise split.
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/catalog', catalogRoutes);
+app.use('/api/shop/inventory', authenticate, requireSection('inventory'));
 app.use('/api/shop/inventory', inventoryRoutes);
 app.use('/api/shop/inventory', stockBatchRoutes);
+app.use('/api/billing', authenticate, requireSection('pos', 'gstr'));
 app.use('/api/billing', billingRoutes);
 app.use('/api/billing', gstrRoutes);
+app.use('/api/shop/parties', authenticate, requireSection('parties'));
 app.use('/api/shop/parties', partiesRoutes);
 app.use('/api/shop/dashboard', dashboardRoutes);
 app.use('/api/marketplace', marketplaceRoutes);
 app.use('/api/customer', customerRoutes);
+app.use('/api/shop/staff-invite', publicStaffInviteRouter);
+app.use('/api/shop/staff', authenticate, requireSection('staff'));
 app.use('/api/shop/staff', staffRoutes);
 app.use('/api/shop/profile', shopProfileRoutes);
+app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'));
 app.use('/api/shop/workshop', workshopRoutes);
 app.use('/api/shop/vehicles', shopVehicleRoutes);
 app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
 app.use('/api/shop/purchase-bills', purchaseBillRoutes);
+app.use('/api/shop/returns', authenticate, requireSection('returns'));
 app.use('/api/shop/returns', salesReturnRoutes);
+app.use('/api/shop/credit-notes', authenticate, requireSection('returns'));
 app.use('/api/shop/credit-notes', creditNoteRoutes);
+app.use('/api/shop/purchase-returns', authenticate, requireSection('purchase-returns'));
 app.use('/api/shop/purchase-returns', purchaseReturnRoutes);
+app.use('/api/shop/exchanges', authenticate, requireSection('returns'));
 app.use('/api/shop/exchanges', exchangeRoutes);
+app.use('/api/shop/warranty-claims', authenticate, requireSection('warranty'));
 app.use('/api/shop/warranty-claims', warrantyClaimRoutes);
+app.use('/api/shop/returns-reports', authenticate, requireSection('reports'));
 app.use('/api/shop/returns-reports', returnsReportRoutes);
+app.use('/api/shop/gst-periods', authenticate, requireSection('gstr'));
 app.use('/api/shop/gst-periods', gstPeriodRoutes);
+app.use('/api/shop/return-policy-windows', authenticate, requireSection('shop-settings'));
 app.use('/api/shop/return-policy-windows', returnPolicyWindowRoutes);
 // Bulk import needs a larger body — only applied to this path
 app.use('/api/admin/catalog/bulk-import', express.json({ limit: '5mb' }));
