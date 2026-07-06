@@ -114,12 +114,9 @@ router.get('/invites', authenticate, requireShopOwner, async (req, res, next) =>
 // nothing is granted until they verify via POST /accept-invite.
 router.post('/invite', authenticate, requireShopOwner, async (req, res, next) => {
   try {
-    const { name, email: rawEmail, phone, roleLabel, sections } = req.body;
+    const { email: rawEmail, roleLabel, sections } = req.body;
     const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
 
-    if (!name?.trim()) {
-      return res.status(400).json({ success: false, error: { code: 'MISSING_NAME', message: 'Name is required' } });
-    }
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_EMAIL', message: 'A valid email is required' } });
     }
@@ -156,17 +153,26 @@ router.post('/invite', authenticate, requireShopOwner, async (req, res, next) =>
     const invite = await prisma.staffInvite.upsert({
       where: { shopId_email: { shopId: req.user.shopId, email } },
       create: {
-        shopId: req.user.shopId, name: name.trim(), email, phone: phone?.trim() || null,
+        shopId: req.user.shopId, email,
         roleLabel: roleLabel.trim(), sections, invitedBy: req.user.userId, status: 'PENDING',
       },
       update: {
-        name: name.trim(), phone: phone?.trim() || null, roleLabel: roleLabel.trim(),
-        sections, invitedBy: req.user.userId, status: 'PENDING', verifiedAt: null,
+        roleLabel: roleLabel.trim(), sections, invitedBy: req.user.userId, status: 'PENDING', verifiedAt: null,
       },
     });
 
     const shop = await prisma.shop.findUnique({ where: { shopId: req.user.shopId }, select: { name: true } });
-    await sendStaffInviteOtp(email, { shopName: shop?.name || 'your shop', roleLabel: roleLabel.trim() });
+    try {
+      await sendStaffInviteOtp(email, { shopName: shop?.name || 'your shop', roleLabel: roleLabel.trim() });
+    } catch (emailErr) {
+      console.error('[staff/invite] Email send failed', emailErr);
+      // The invite row stays PENDING so "Resend" can retry — but tell the
+      // owner right away instead of showing a false "invite sent" success.
+      return res.status(502).json({
+        success: false,
+        error: { code: emailErr.code || 'EMAIL_SEND_FAILED', message: `Invite was saved, but the email could not be sent: ${emailErr.message}` },
+      });
+    }
 
     writeAudit(req, { entityType: ET.SHOP, entityId: req.user.shopId, action: ACT.CREATE, newValue: { staffInvite: { email, roleLabel, sections } } });
 
@@ -186,7 +192,15 @@ router.post('/invite/:id/resend', authenticate, requireShopOwner, async (req, re
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Pending invite not found' } });
     }
     const shop = await prisma.shop.findUnique({ where: { shopId: req.user.shopId }, select: { name: true } });
-    await sendStaffInviteOtp(invite.email, { shopName: shop?.name || 'your shop', roleLabel: invite.roleLabel });
+    try {
+      await sendStaffInviteOtp(invite.email, { shopName: shop?.name || 'your shop', roleLabel: invite.roleLabel });
+    } catch (emailErr) {
+      console.error('[staff/invite/resend] Email send failed', emailErr);
+      return res.status(502).json({
+        success: false,
+        error: { code: emailErr.code || 'EMAIL_SEND_FAILED', message: `Could not send the email: ${emailErr.message}` },
+      });
+    }
     res.json({ success: true });
   } catch (err) {
     next(err);
@@ -224,6 +238,10 @@ publicStaffInviteRouter.post('/accept', staffInviteVerifyLimiter, async (req, re
     const rawEmail = req.body?.email;
     const code = req.body?.code;
     const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
+    // The shop owner no longer supplies these — the invitee provides their own
+    // name + mobile number right here, at verification time.
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
 
     if (!email || !code || !/^\d{6}$/.test(code)) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'Email and 6-digit code are required' } });
@@ -232,6 +250,24 @@ publicStaffInviteRouter.post('/accept', staffInviteVerifyLimiter, async (req, re
     const invite = await prisma.staffInvite.findFirst({ where: { email, status: 'PENDING' } });
     if (!invite) {
       return res.status(404).json({ success: false, error: { code: 'INVITE_NOT_FOUND', message: 'No pending invite found for this email' } });
+    }
+
+    // Only required for a brand-new account — an existing account already has
+    // these, so don't force the invitee to re-enter (or overwrite) them.
+    const existingForCheck = await prisma.user.findUnique({ where: { email }, select: { name: true, phone: true } });
+    if (!existingForCheck?.name && !name) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_NAME', message: 'Your name is required' } });
+    }
+    if (!existingForCheck?.phone && !phone) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_PHONE', message: 'Your mobile number is required' } });
+    }
+    // User.phone is unique — check up front for a friendly error instead of
+    // letting a raw Prisma constraint violation reach the client.
+    if (!existingForCheck?.phone && phone) {
+      const phoneOwner = await prisma.user.findUnique({ where: { phone }, select: { email: true } });
+      if (phoneOwner && phoneOwner.email !== email) {
+        return res.status(409).json({ success: false, error: { code: 'PHONE_IN_USE', message: 'This mobile number is already linked to another account.' } });
+      }
     }
 
     const { valid } = await verifyStaffInviteOtp(email, code);
@@ -252,13 +288,13 @@ publicStaffInviteRouter.post('/accept', staffInviteVerifyLimiter, async (req, re
         }
         user = await tx.user.update({
           where: { userId: user.userId },
-          data: { role: 'SHOP_STAFF', shopId: invite.shopId, emailVerified: true, name: user.name || invite.name, phone: user.phone || invite.phone },
+          data: { role: 'SHOP_STAFF', shopId: invite.shopId, emailVerified: true, name: user.name || name, phone: user.phone || phone },
           include: { userType: { select: { id: true, name: true, slug: true } } },
         });
       } else {
         user = await tx.user.create({
           data: {
-            email, name: invite.name, phone: invite.phone || null,
+            email, name, phone: phone || null,
             role: 'SHOP_STAFF', shopId: invite.shopId, emailVerified: true,
           },
           include: { userType: { select: { id: true, name: true, slug: true } } },

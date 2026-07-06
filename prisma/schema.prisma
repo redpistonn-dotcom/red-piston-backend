@@ -398,7 +398,9 @@ model ShopUser {
 model StaffInvite {
   id           Int       @id @default(autoincrement())
   shopId       Int       @map("shop_id")
-  name         String
+  // Nullable — the shop owner no longer provides these upfront. The invitee
+  // fills in their own name + phone when they verify the OTP (accept-invite).
+  name         String?
   email        String
   phone        String?
   roleLabel    String    @map("role_label")

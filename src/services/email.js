@@ -24,13 +24,25 @@ function getResendClient() {
           throw new Error('Missing RESEND_SENDER_EMAIL in backend environment');
         }
 
-        await resend.emails.send({
+        // Resend's Node SDK does NOT throw on API-level rejections (unverified
+        // sender domain, sandbox-mode "can only send to your own address"
+        // restriction, invalid recipient, etc.) — it resolves normally with
+        // `error` populated instead. Without this check, every one of those
+        // failures looked like a successful send: the OTP row was written and
+        // the API returned success, but no email ever left Resend's servers.
+        const { error } = await resend.emails.send({
           from: `${senderName} <${senderEmail}>`,
           to,
           subject,
           html,
           text,
         });
+        if (error) {
+          const err = new Error(error.message || 'Resend rejected the email');
+          err.code = 'EMAIL_SEND_FAILED';
+          err.resendError = error;
+          throw err;
+        }
       } catch (err) {
         console.error(`[EMAIL] Failed to send email to ${to}:`, err?.message || err);
         if (err?.statusCode) console.error(`[EMAIL] Resend status: ${err.statusCode}`, err?.message);
