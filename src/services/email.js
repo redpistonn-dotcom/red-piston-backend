@@ -55,9 +55,13 @@ function getResendClient() {
 function baseTemplate(content, { accentColor = '#8B1A0F', accentLabel = null } = {}) {
   const appUrl = getFrontendAppUrl();
   // EMAIL_LOGO_URL takes priority (set it to the full CDN/public URL of logo.png).
-  // Falls back to ${appUrl}/logo.png but MUST be an absolute public URL —
+  // Falls back to the app's ORIGIN + /logo.png — NOT getFrontendAppUrl(), which
+  // prioritizes RESET_PASSWORD_URL and may return a path like ".../reset-password".
+  // Appending "/logo.png" to a path (not an origin) produced a broken image in
+  // emails whenever RESET_PASSWORD_URL was set. Must be an absolute public URL —
   // email clients cannot load localhost or relative paths.
-  const logoUrl = process.env.EMAIL_LOGO_URL || `${appUrl}/logo.png`;
+  const logoBase = (process.env.FRONTEND_APP_URL || (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0]).trim().replace(/\/$/, '');
+  const logoUrl = process.env.EMAIL_LOGO_URL || `${logoBase}/logo.png`;
   const year = new Date().getFullYear();
   const accentBadge = accentLabel
     ? `<tr><td style="padding:20px 40px 0;"><div style="display:inline-block;background:${accentColor}18;border:1px solid ${accentColor}55;border-radius:6px;padding:5px 14px;"><span style="font-size:11px;font-weight:700;color:${accentColor};text-transform:uppercase;letter-spacing:0.09em;">${accentLabel}</span></div></td></tr>`

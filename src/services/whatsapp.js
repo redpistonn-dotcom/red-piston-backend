@@ -11,7 +11,7 @@ export const sendWhatsAppMessage = async (phone, templateName, params = []) => {
       `${process.env.WATI_API_URL}/sendTemplateMessage?whatsappNumber=91${phone}`,
       {
         template_name: templateName,
-        broadcast_name: 'AutoSpace',
+        broadcast_name: 'RedPiston',
         parameters: params.map(p => ({ name: p.name, value: p.value })),
       },
       {

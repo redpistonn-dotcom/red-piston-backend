@@ -1,7 +1,7 @@
 {
   "name": "autospace-backend",
   "version": "1.0.0",
-  "description": "AutoSpace ERP + Marketplace Backend",
+  "description": "RedPiston ERP + Marketplace Backend",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
