@@ -229,6 +229,58 @@ export async function createInvoice(req, {
       // Format: S{shopId}-YYYYMM-NNNN  e.g. S3-202606-0001
       const invoiceNumber = `S${req.shopId}-${yyyymm}-${String(seq).padStart(4, '0')}`;
 
+      // ── Materialize custom items into real MasterPart + ShopInventory rows ────
+      // so they're regular InvoiceItems from here on — same PDF rendering, same
+      // Movement/stock-decrement path, and (critically) eligible for returns via
+      // the normal getEligibleReturnItems query, which requires a real
+      // InvoiceItem -> ShopInventory link. status/source 'CUSTOM' keeps them out
+      // of every catalog search (those filter to status='VERIFIED') and out of
+      // this shop's own browsable inventory (see inventory.js's masterPart.source
+      // exclusion) — they only ever surface via this specific invoice/return.
+      const materializedCustomItems = [];
+      for (const ci of processedCustomItems) {
+        const customPart = await tx.masterPart.create({
+          data: {
+            partName:           ci.name,
+            gstRate:            ci.gstRate,
+            status:             'CUSTOM',
+            source:             'CUSTOM',
+            unitOfSale:         'Piece',
+            contributedByShopId: req.shopId,
+            isUniversal:        true,
+            requiresFitment:    false,
+          },
+        });
+        const customInv = await tx.shopInventory.create({
+          data: {
+            shopId:         req.shopId,
+            masterPartId:   customPart.masterPartId,
+            sellingPrice:   ci.unitPrice,
+            buyingPrice:    ci.buyingPrice || null,
+            // Seeded to exactly this sale's qty so the standard atomic decrement
+            // below zeroes it out cleanly — custom items were never "stocked".
+            stockQty:       ci.qty,
+            customPartName: ci.name,
+          },
+        });
+        materializedCustomItems.push({
+          inventoryId: customInv.inventoryId,
+          partName:    ci.name,
+          brand:       null,
+          hsnCode:     null,
+          qty:         ci.qty,
+          unitPrice:   ci.unitPrice,
+          discount:    ci.discount,
+          taxableAmt:  ci.taxableAmt,
+          gstRate:     ci.gstRate,
+          cgst:        ci.cgst,
+          sgst:        ci.sgst,
+          total:       ci.total,
+          buyingPrice: ci.buyingPrice,
+        });
+      }
+      const allItems = [...processedItems, ...materializedCustomItems];
+
       const inv = await tx.invoice.create({
         data: {
           invoiceNumber,
@@ -254,10 +306,13 @@ export async function createInvoice(req, {
           marketplaceOrderId: marketplaceOrderId || null,
           status:            isCreditSale ? 'CREDIT' : 'PAID',
           notes:             notes             || null,
+          // Kept for audit/back-compat even though allItems above is now the
+          // source of truth for display/returns — cheap to keep, nothing reads
+          // it back today.
           customItemsMeta:   processedCustomItems.length > 0 ? processedCustomItems : undefined,
           createdBy:         req.user.userId,
           items: {
-            create: processedItems.map(item => ({
+            create: allItems.map(item => ({
               inventoryId: item.inventoryId,
               partName:    item.partName,
               brand:       item.brand,
@@ -278,7 +333,7 @@ export async function createInvoice(req, {
 
       // ── Create SALE movements + decrement stock (skip for ESTIMATE) ─────────
       if (invType !== 'ESTIMATE') {
-        for (const item of processedItems) {
+        for (const item of allItems) {
           const profit = item.taxableAmt - (item.buyingPrice * item.qty);
           await tx.movement.create({
             data: {
@@ -321,35 +376,6 @@ export async function createInvoice(req, {
               throw { status: 400, message: `Insufficient stock for ${item.partName} — it was just sold to another customer` };
             }
           }
-        }
-      }
-
-      // ── Create movements for custom items (no stock deduction, no FK) ───────
-      if (invType !== 'ESTIMATE' && processedCustomItems.length > 0) {
-        for (const ci of processedCustomItems) {
-          const profit = ci.taxableAmt - (ci.buyingPrice * ci.qty);
-          await tx.movement.create({
-            data: {
-              shopId:          req.shopId,
-              inventoryId:     null,
-              type:            'SALE',
-              qty:             ci.qty,
-              unitPrice:       ci.unitPrice,
-              gstRate:         ci.gstRate,
-              taxableAmount:   ci.taxableAmt,
-              totalAmount:     ci.total,
-              gstAmount:       ci.cgst + ci.sgst,
-              profit,
-              invoiceId:       inv.invoiceId,
-              partyId:         partyId || null,
-              referenceNumber: invoiceNumber,
-              invoiceNumber,
-              partyName:       partyName || null,
-              paymentMode:     paymentMode || 'CASH',
-              notes:           ci.name,
-              createdBy:       req.user.userId,
-            },
-          });
         }
       }
 

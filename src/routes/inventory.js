@@ -49,6 +49,10 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
     const where = {
       shopId,
       deletedAt: null,
+      // Custom (non-catalog) items materialized at sale time for return/PDF
+      // support (see billing.js createInvoice) are one-off and were never
+      // "stocked" — they should never appear as browsable/manageable inventory.
+      masterPart: { source: { not: 'CUSTOM' } },
       ...(andConditions.length > 0 ? { AND: andConditions } : {}),
     };
 
