@@ -215,6 +215,176 @@ export const generateInvoicePdf = async (invoice) => {
   });
 };
 
+// ─── Exchange Invoice PDF — old item(s) + new item(s) + price-difference summary ──
+// Unlike generateInvoicePdf (one item table, one totals block), an exchange has two
+// legs that must appear on the SAME document: what the customer returned (credited)
+// and what they took instead (sold). Built directly with pdfmake rather than
+// buildReceiptDef, which only supports a single item table.
+export const generateExchangeInvoicePdf = async (exchangeOrder) => {
+  const { salesReturn, newInvoice, shop } = exchangeOrder;
+  const creditNote = salesReturn.creditNote;
+
+  const logoUrl = shop?.logoUrl || shop?.photoUrl || null;
+  const logoDataUri = await fetchImageAsDataUri(logoUrl);
+
+  const shopName = shop?.name || 'RedPiston Shop';
+  const addrParts = [shop?.address, shop?.city, shop?.state, shop?.pincode].filter(Boolean);
+  const shopAddr = addrParts.join(', ');
+  const shopPhone = shop?.phone || shop?.whatsappNumber || '';
+  const shopGstin = shop?.gstin || '';
+
+  const oldItemRows = salesReturn.items.map(item => {
+    const name = item.invoiceItem?.partName || item.inventory?.masterPart?.partName || 'Item';
+    const hsn  = item.invoiceItem?.hsnCode || item.inventory?.masterPart?.hsnCode || '-';
+    return [
+      { text: String(item.qty), alignment: 'center' },
+      name,
+      { text: hsn, alignment: 'center' },
+      { text: `₹${Number(item.unitPrice).toFixed(2)}`, alignment: 'right' },
+      { text: `${Number(item.gstRate)}%`, alignment: 'center' },
+      { text: `₹${(Number(item.taxableValue) + Number(item.cgst) + Number(item.sgst)).toFixed(2)}`, alignment: 'right' },
+    ];
+  });
+
+  const newItemRows = newInvoice.items.map(item => [
+    { text: String(item.qty), alignment: 'center' },
+    [item.partName, item.brand].filter(Boolean).join(' — '),
+    { text: item.hsnCode || '-', alignment: 'center' },
+    { text: `₹${Number(item.unitPrice).toFixed(2)}`, alignment: 'right' },
+    { text: `${Number(item.gstRate)}%`, alignment: 'center' },
+    { text: `₹${Number(item.total).toFixed(2)}`, alignment: 'right' },
+  ]);
+
+  const itemTableHeader = [
+    { text: 'Qty', bold: true, alignment: 'center', fillColor: '#F3F4F6' },
+    { text: 'Description', bold: true, fillColor: '#F3F4F6' },
+    { text: 'HSN', bold: true, alignment: 'center', fillColor: '#F3F4F6' },
+    { text: 'Rate', bold: true, alignment: 'right', fillColor: '#F3F4F6' },
+    { text: 'GST%', bold: true, alignment: 'center', fillColor: '#F3F4F6' },
+    { text: 'Amount', bold: true, alignment: 'right', fillColor: '#F3F4F6' },
+  ];
+  const itemTableLayout = {
+    hLineColor: () => '#E5E7EB', vLineColor: () => '#E5E7EB',
+    hLineWidth: () => 0.5, vLineWidth: () => 0.5,
+  };
+
+  const dateStr = new Date(newInvoice.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const originalInvoiceLine = salesReturn.invoice
+    ? `Original Invoice: ${salesReturn.invoice.invoiceNumber} (${new Date(salesReturn.invoice.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })})`
+    : 'Original Invoice: Walk-in — no invoice on file';
+
+  const partyName  = newInvoice.partyName || salesReturn.party?.name || 'Walk-in Customer';
+  const partyGstin = newInvoice.partyGstin || salesReturn.party?.gstin;
+
+  const netAmount = Number(exchangeOrder.netAmount);
+  const settlementLabel = exchangeOrder.settlementType === 'COLLECT'
+    ? 'Additional Amount Collected'
+    : exchangeOrder.settlementType === 'REFUND'
+    ? 'Refund / Credit Balance'
+    : 'Even Exchange — No Balance Due';
+
+  const oldTotal = Number(creditNote.totalAmount);
+  const newTotal = Number(newInvoice.totalAmount);
+
+  const summaryRows = [
+    ['Old Item Value (Credited)', `₹${oldTotal.toFixed(2)}`],
+    ['New Item Value (Charged)',  `₹${newTotal.toFixed(2)}`],
+    [settlementLabel, `₹${Math.abs(netAmount).toFixed(2)}`, true],
+  ];
+
+  const docDef = {
+    pageSize: 'A4',
+    pageMargins: [40, 40, 40, 40],
+    content: [
+      logoDataUri
+        ? { image: logoDataUri, width: 90, alignment: 'center', margin: [0, 0, 0, 8] }
+        : null,
+      { text: shopName, style: 'shopName' },
+      shopAddr ? { text: shopAddr, style: 'shopAddr' } : null,
+      shopPhone ? { text: `Ph: ${shopPhone}`, style: 'shopAddr' } : null,
+      shopGstin ? { text: `GSTIN: ${shopGstin}`, style: 'shopAddr' } : null,
+      { canvas: [{ type: 'line', x1: 0, y1: 4, x2: 515, y2: 4, lineWidth: 0.5, lineColor: '#CCCCCC' }] },
+      { text: 'EXCHANGE INVOICE', style: 'invoiceTitle', margin: [0, 6, 0, 4] },
+      { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 0.5, lineColor: '#CCCCCC' }] },
+      { text: ' ', margin: [0, 0, 0, 4] },
+      {
+        columns: [
+          {
+            width: '55%', fontSize: 9,
+            stack: [
+              { text: `Exchange No: ${exchangeOrder.exchangeNo}`, bold: true },
+              { text: `Date: ${dateStr}` },
+              { text: `New Invoice No: ${newInvoice.invoiceNumber}` },
+              { text: `Return No: ${salesReturn.returnNo}` },
+              { text: originalInvoiceLine },
+              { text: `Reason: ${salesReturn.reason.replace(/_/g, ' ')}` },
+            ],
+          },
+          {
+            width: '45%', fontSize: 9, alignment: 'right',
+            stack: [
+              { text: 'Customer:', bold: true },
+              { text: partyName },
+              partyGstin ? { text: `GSTIN: ${partyGstin}` } : null,
+            ].filter(Boolean),
+          },
+        ],
+        margin: [0, 0, 0, 10],
+      },
+      { text: 'RETURNED ITEM(S)', style: 'sectionLabel' },
+      {
+        table: { headerRows: 1, widths: [30, '*', 45, 60, 38, 65], body: [itemTableHeader, ...oldItemRows] },
+        layout: itemTableLayout,
+        margin: [0, 4, 0, 14],
+      },
+      { text: 'NEW ITEM(S) ISSUED', style: 'sectionLabel' },
+      {
+        table: { headerRows: 1, widths: [30, '*', 45, 60, 38, 65], body: [itemTableHeader, ...newItemRows] },
+        layout: itemTableLayout,
+        margin: [0, 4, 0, 14],
+      },
+      {
+        columns: [
+          { text: '', width: '*' },
+          {
+            width: 240,
+            table: {
+              widths: ['*', 90],
+              body: summaryRows.map(([label, value, isBold]) => [
+                { text: label, bold: !!isBold, fontSize: isBold ? 10 : 9, border: [false, isBold ? true : false, false, false] },
+                { text: value, bold: !!isBold, fontSize: isBold ? 10 : 9, alignment: 'right', border: [false, isBold ? true : false, false, false] },
+              ]),
+            },
+            layout: 'noBorders',
+          },
+        ],
+        margin: [0, 0, 0, 12],
+      },
+      { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 0.5, lineColor: '#CCCCCC' }] },
+      { text: 'Thank you for your business!', style: 'thankYou', margin: [0, 10, 0, 0] },
+      { text: 'This is a computer-generated invoice.', style: 'footer' },
+    ].filter(Boolean),
+    styles: {
+      shopName:    { fontSize: 20, bold: true, alignment: 'center', color: '#111827', margin: [0, 0, 0, 2] },
+      shopAddr:    { fontSize: 9,  alignment: 'center', color: '#6B7280', margin: [0, 0, 0, 1] },
+      invoiceTitle:{ fontSize: 13, bold: true, alignment: 'center', color: '#8B1E1E', letterSpacing: 1 },
+      sectionLabel:{ fontSize: 10, bold: true, color: '#8B1E1E', margin: [0, 4, 0, 0] },
+      thankYou:    { fontSize: 11, bold: true, alignment: 'center', color: '#374151' },
+      footer:      { fontSize: 8,  alignment: 'center', color: '#9CA3AF', margin: [0, 2, 0, 0] },
+    },
+    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#374151' },
+  };
+
+  return new Promise((resolve, reject) => {
+    const doc = printer.createPdfKitDocument(docDef);
+    const chunks = [];
+    doc.on('data', chunk => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    doc.end();
+  });
+};
+
 // ─── Purchase Order PDF — shared with suppliers ─────────────────────────────
 export const generatePurchaseOrderPdf = async (po) => {
   const { items, shop, party } = po;

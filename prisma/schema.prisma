@@ -929,7 +929,7 @@ model Invoice {
   shopId             Int       @map("shop_id")
   partyId            Int?      @map("party_id")
   createdBy          Int?      @map("created_by")
-  // RETAIL | CREDIT | ESTIMATE | RETURN | WORKSHOP
+  // RETAIL | CREDIT | ESTIMATE | RETURN | WORKSHOP | EXCHANGE
   invoiceType        String    @default("RETAIL") @map("invoice_type")
   partyName          String?   @map("party_name")
   partyPhone         String?   @map("party_phone")

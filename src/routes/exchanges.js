@@ -30,6 +30,7 @@ import { authenticate, requireShopOwner, requirePermission } from '../middleware
 import { createSalesReturn, createWalkInSalesReturn, VALID_REASONS } from './salesReturns.js';
 import { createInvoice, computeItemTotals } from './billing.js';
 import { writeAudit, ET, ACT } from '../lib/audit.js';
+import { generateExchangeInvoicePdf } from '../services/pdf.js';
 
 const router = Router();
 
@@ -80,18 +81,21 @@ router.post('/', authenticate, requireShopOwner, requirePermission('billing.crea
     const { salesReturn, creditNote, returnNo } = returnResult;
 
     // ── Price the new item(s) with the exact same math a normal sale uses ────
-    const { subtotal: newSubtotal, cgst: newCgst, sgst: newSgst } = await computeItemTotals(req.shopId, newItems, 'RETAIL');
+    const { subtotal: newSubtotal, cgst: newCgst, sgst: newSgst } = await computeItemTotals(req.shopId, newItems, 'EXCHANGE');
     const newTotal = newSubtotal + newCgst + newSgst;
     const appliedCreditAmount = Math.min(Number(creditNote.totalAmount), newTotal);
 
     // ── Leg 2: sell the new item, redeeming the credit note from leg 1 ───────
+    // invoiceType: 'EXCHANGE' (not 'RETAIL') so the printed/PDF document is
+    // clearly labeled and distinguishable from an ordinary sale — see
+    // GET /:id/pdf below for the combined old-item/new-item Exchange Invoice.
     let newInvoice;
     try {
       newInvoice = await createInvoice(req, {
         items: newItems,
         partyId:   salesReturn.partyId || undefined,
         partyName, partyPhone, partyGstin,
-        invoiceType: 'RETAIL',
+        invoiceType: 'EXCHANGE',
         paymentMode: paymentMode || 'CASH',
         cashAmount, upiAmount, creditAmount,
         notes: notes || `Exchange ${returnNo}`,
@@ -165,19 +169,61 @@ router.get('/', authenticate, requireShopOwner, requirePermission('billing.view'
   } catch (err) { next(err); }
 });
 
+// Shared include shape for both the JSON detail endpoint and the PDF route —
+// pulls everything a combined "Exchange Invoice" document needs: the old
+// item(s) (with product name resolved from either the original invoice line
+// or, for a walk-in return, the inventory/master-part record), the credit
+// note that paid for them, the original invoice reference, and the new
+// item(s) sold.
+const EXCHANGE_DETAIL_INCLUDE = {
+  salesReturn: {
+    include: {
+      items: {
+        include: {
+          invoiceItem: { select: { partName: true, hsnCode: true, brand: true } },
+          inventory:   { include: { masterPart: { select: { partName: true, hsnCode: true, brand: true } } } },
+        },
+      },
+      creditNote: true,
+      invoice:  { select: { invoiceNumber: true, createdAt: true } },
+      party:    { select: { name: true, phone: true, gstin: true } },
+    },
+  },
+  newInvoice: { include: { items: true } },
+  shop: true,
+};
+
 // ─── GET /:id — single exchange detail ─────────────────────────────────────────
 router.get('/:id', authenticate, requireShopOwner, requirePermission('billing.view'), async (req, res, next) => {
   try {
     const exchangeId = parseInt(req.params.id, 10);
     const exchangeOrder = await prisma.exchangeOrder.findFirst({
       where: { exchangeId, shopId: req.shopId },
-      include: {
-        salesReturn: { include: { items: true, creditNote: true } },
-        newInvoice:  { include: { items: true } },
-      },
+      include: EXCHANGE_DETAIL_INCLUDE,
     });
     if (!exchangeOrder) return res.status(404).json({ success: false, error: { message: 'Exchange not found' } });
     res.json({ success: true, exchangeOrder });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /:id/pdf — printable Exchange Invoice ─────────────────────────────────
+// Combines the old item (returned, credited) and the new item (issued) with a
+// price-difference / settlement summary into one document — distinct from the
+// generic per-invoice PDF at /api/billing/invoice/:id/pdf, which only ever
+// knows about one side of the transaction.
+router.get('/:id/pdf', authenticate, requireShopOwner, requirePermission('billing.view'), async (req, res, next) => {
+  try {
+    const exchangeId = parseInt(req.params.id, 10);
+    const exchangeOrder = await prisma.exchangeOrder.findFirst({
+      where: { exchangeId, shopId: req.shopId },
+      include: EXCHANGE_DETAIL_INCLUDE,
+    });
+    if (!exchangeOrder) return res.status(404).json({ error: 'Exchange not found' });
+
+    const pdfBuffer = await generateExchangeInvoicePdf(exchangeOrder);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="exchange-${exchangeOrder.exchangeNo}.pdf"`);
+    res.send(pdfBuffer);
   } catch (err) { next(err); }
 });
 

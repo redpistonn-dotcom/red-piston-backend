@@ -20,7 +20,7 @@ import { incrementCounter } from '../lib/metrics.js';
 
 const router = Router();
 
-const VALID_INVOICE_TYPES = ['RETAIL', 'CREDIT', 'ESTIMATE', 'RETURN', 'WORKSHOP'];
+const VALID_INVOICE_TYPES = ['RETAIL', 'CREDIT', 'ESTIMATE', 'RETURN', 'WORKSHOP', 'EXCHANGE'];
 
 // ─── Helper: write one PartyLedger debit row (mirrors parties.js helper) ─────
 async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAmount = 0, invoiceId, entryType, notes, createdBy }) {
