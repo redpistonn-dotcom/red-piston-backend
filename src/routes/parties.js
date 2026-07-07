@@ -201,7 +201,15 @@ router.delete('/:id', authenticate, requireShopOwner, async (req, res, next) => 
 });
 
 // ─── GET /:id/ledger — full udhaar trail ─────────────────────────────────────
-router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next) => {
+// Exported (not just router.get'd here) for the same reason as
+// inventory.js's getMovements: Purchase Returns needs to read a supplier's
+// ledger to resolve a return, but doesn't need full Parties access. index.js
+// registers this exact path with requireSection('parties', 'purchase-returns')
+// ahead of the blanket requireSection('parties') that gates everything else
+// in this router (create/edit/delete a party, record a payment, etc. stay
+// 'parties'-only — this is read access to one party's ledger, not a general
+// Parties grant).
+export async function getPartyLedger(req, res, next) {
   try {
     const id = parseInt(req.params.id, 10);
     const party = await prisma.party.findFirst({
@@ -231,7 +239,7 @@ router.get('/:id/ledger', authenticate, requireShopOwner, async (req, res, next)
       total,
     });
   } catch (err) { next(err); }
-});
+}
 
 // ─── POST /:id/ledger — manual opening balance / adjustment ──────────────────
 router.post('/:id/ledger', authenticate, requireShopOwner, async (req, res, next) => {

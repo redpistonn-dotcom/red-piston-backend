@@ -13,7 +13,7 @@ import authRoutes from './routes/auth/index.js';
 import catalogRoutes from './routes/catalog.js';
 import inventoryRoutes, { getMovements } from './routes/inventory.js';
 import billingRoutes from './routes/billing.js';
-import partiesRoutes from './routes/parties.js';
+import partiesRoutes, { getPartyLedger } from './routes/parties.js';
 import dashboardRoutes from './routes/dashboard.js';
 import marketplaceRoutes from './routes/marketplace.js';
 import customerRoutes from './routes/customer.js';
@@ -181,6 +181,11 @@ app.use('/api/shop/inventory', stockBatchRoutes);
 app.use('/api/billing', authenticate, requireSection('pos', 'gstr'));
 app.use('/api/billing', billingRoutes);
 app.use('/api/billing', gstrRoutes);
+// Purchase Returns needs to read a supplier's ledger to resolve a return —
+// same pattern as movements above: exact-path route ahead of the blanket
+// gate, its own combined section check, rest of this router stays
+// 'parties'-only.
+app.get('/api/shop/parties/:id/ledger', authenticate, requireSection('parties', 'purchase-returns'), getPartyLedger);
 app.use('/api/shop/parties', authenticate, requireSection('parties'));
 app.use('/api/shop/parties', partiesRoutes);
 app.use('/api/shop/dashboard', dashboardRoutes);
@@ -197,7 +202,11 @@ app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
 app.use('/api/shop/purchase-bills', purchaseBillRoutes);
 app.use('/api/shop/returns', authenticate, requireSection('returns'));
 app.use('/api/shop/returns', salesReturnRoutes);
-app.use('/api/shop/credit-notes', authenticate, requireSection('returns'));
+// Also reachable from POS Billing (applying a customer's store credit at
+// checkout) — same bug class as History/Inventory: a cashier granted only
+// "pos" would otherwise 403 fetching available credit notes and silently
+// never see the "apply credit" option work.
+app.use('/api/shop/credit-notes', authenticate, requireSection('returns', 'pos'));
 app.use('/api/shop/credit-notes', creditNoteRoutes);
 app.use('/api/shop/purchase-returns', authenticate, requireSection('purchase-returns'));
 app.use('/api/shop/purchase-returns', purchaseReturnRoutes);
