@@ -58,6 +58,27 @@ export function formatUserResponse(user) {
   };
 }
 
+/**
+ * SHOP_STAFF's actual access is section-driven (see lib/section-permissions.js) —
+ * attach the live values here so every caller (login, refresh, /me) that hands
+ * a user object to the frontend can filter nav/routes off the same shape,
+ * without each having to re-derive it. Mutates and returns `formattedUser`.
+ */
+export async function attachStaffSections(formattedUser, user) {
+  if (user.role === 'SHOP_STAFF' && user.shopId) {
+    const shopUser = await prisma.shopUser.findUnique({
+      where: { shopId_userId: { shopId: user.shopId, userId: user.userId } },
+      select: { role: true, roleLabel: true, sections: true, isActive: true },
+    });
+    if (shopUser?.isActive) {
+      formattedUser.shopUserRole = shopUser.role;
+      formattedUser.roleLabel = shopUser.roleLabel;
+      formattedUser.sections = shopUser.sections;
+    }
+  }
+  return formattedUser;
+}
+
 export function normalizeEmail(email) {
   if (typeof email !== 'string') return null;
   const normalized = email.trim().toLowerCase();
@@ -156,21 +177,7 @@ export async function createSession(res, user, { isNewUser = false, req = null }
 
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, REFRESH_COOKIE_OPTIONS);
 
-  const formattedUser = formatUserResponse(user);
-  // SHOP_STAFF's actual access is section-driven (see lib/section-permissions.js) —
-  // attach it here, in the one function every login/refresh path funnels through,
-  // so the frontend has what it needs to filter nav/routes without an extra call.
-  if (user.role === 'SHOP_STAFF' && user.shopId) {
-    const shopUser = await prisma.shopUser.findUnique({
-      where: { shopId_userId: { shopId: user.shopId, userId: user.userId } },
-      select: { role: true, roleLabel: true, sections: true, isActive: true },
-    });
-    if (shopUser?.isActive) {
-      formattedUser.shopUserRole = shopUser.role;
-      formattedUser.roleLabel = shopUser.roleLabel;
-      formattedUser.sections = shopUser.sections;
-    }
-  }
+  const formattedUser = await attachStaffSections(formatUserResponse(user), user);
 
   return {
     success: true,

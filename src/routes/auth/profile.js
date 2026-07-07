@@ -3,7 +3,7 @@ import prisma from '../../db/prisma.js';
 import { authenticate } from '../../middleware/auth.js';
 import { hashPassword, verifyPassword, validatePasswordStrength } from '../../services/password.js';
 import { sendPasswordChangedEmail } from '../../services/email.js';
-import { findUserByEmailInsensitive, formatUserResponse, normalizeEmail } from './helpers.js';
+import { findUserByEmailInsensitive, formatUserResponse, normalizeEmail, attachStaffSections } from './helpers.js';
 import { writeAudit, ET, ACT } from '../../lib/audit.js';
 
 const router = Router();
@@ -23,7 +23,7 @@ router.get('/me', authenticate, async (req, res, next) => {
     });
 
     const base = {
-      ...formatUserResponse(user),
+      ...(await attachStaffSections(formatUserResponse(user), user)),
       profile: user.profile,
       settings: user.settings,
       providers: user.authProviders,
