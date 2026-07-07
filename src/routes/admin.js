@@ -6,7 +6,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import prisma from '../db/prisma.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
-import { formatUserResponse } from './auth/helpers.js';
+import { formatUserResponse, attachStaffSections } from './auth/helpers.js';
 import { sendShopOwnerApprovedEmail, sendShopOwnerRejectedEmail } from '../services/email.js';
 import { generateResetToken, hashResetToken } from '../services/password.js';
 import {
@@ -105,9 +105,16 @@ router.post('/impersonate/:userId', authenticate, requireAdmin, async (req, res,
       { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
     );
 
+    // Same enrichment login/refresh/GET-me use — without it, a SHOP_STAFF
+    // target's sections come back empty, breaking their nav/routes for the
+    // whole impersonation session (they'd see barely more than Dashboard,
+    // and any section-gated data the frontend skips fetching without a
+    // granted section would look "empty" even though it exists).
+    const impersonatedUser = await attachStaffSections(formatUserResponse(target), target);
+
     res.json({
       success: true,
-      data: { accessToken, user: formatUserResponse(target), impersonatedBy: { userId: req.user.userId, name: req.user.name } },
+      data: { accessToken, user: impersonatedUser, impersonatedBy: { userId: req.user.userId, name: req.user.name } },
     });
   } catch (err) { next(err); }
 });

@@ -162,7 +162,7 @@ router.patch('/me', authenticate, async (req, res, next) => {
       newValue: updateData,
     });
 
-    res.json({ success: true, data: formatUserResponse(updated) });
+    res.json({ success: true, data: await attachStaffSections(formatUserResponse(updated), updated) });
   } catch (err) {
     next(err);
   }

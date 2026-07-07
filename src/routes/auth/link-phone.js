@@ -2,7 +2,7 @@ import { Router } from 'express';
 import prisma from '../../db/prisma.js';
 import { authenticate } from '../../middleware/auth.js';
 import { verifyFirebaseToken } from '../../services/firebase.js';
-import { ensureAuthProvider, formatUserResponse } from './helpers.js';
+import { ensureAuthProvider, formatUserResponse, attachStaffSections } from './helpers.js';
 
 const router = Router();
 
@@ -69,7 +69,7 @@ router.post('/link-phone', authenticate, async (req, res, next) => {
     return res.json({
       success: true,
       message: 'Phone number linked successfully',
-      user: formatUserResponse(updatedUser),
+      user: await attachStaffSections(formatUserResponse(updatedUser), updatedUser),
     });
   } catch (err) {
     next(err);
