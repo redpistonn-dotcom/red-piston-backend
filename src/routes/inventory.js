@@ -514,9 +514,20 @@ router.get('/low-stock', authenticate, requireShopOwner, async (req, res, next) 
 // GET /api/shop/movements — paginated movement ledger with filters
 // Query params: limit (max 500), offset, type, from (ISO date), to (ISO date),
 //               search (product/party name / invoice no), partyId
+//
+// Exported (not just router.get'd here) because this needs its own section
+// gate distinct from the rest of this router: History is its own granted
+// section, separate from Inventory, but movements live physically under this
+// inventory-mounted router. index.js registers this exact path with
+// requireSection('inventory', 'history') BEFORE the blanket
+// requireSection('inventory') that gates everything else here — a staff
+// member granted only "history" would otherwise always see an empty
+// History page despite real data existing, since the blanket gate would
+// 403 them (silently, on the frontend, since a 403 there is treated as an
+// expected "no access" state rather than an error).
 const ADJUSTMENT_TYPES = ['RETURN_IN','RETURN_OUT','CREDIT_NOTE','DEBIT_NOTE','DAMAGE','THEFT','AUDIT','OPENING','TRANSFER_IN','TRANSFER_OUT','ADJUST'];
 
-router.get('/movements', authenticate, requireShopOwner, async (req, res, next) => {
+export async function getMovements(req, res, next) {
   try {
     const { limit = 500, offset = 0, type, from, to, search, partyId } = req.query;
     const parsedLimit  = Math.min(Math.max(parseInt(limit)  || 500, 1), 500);
@@ -573,7 +584,7 @@ router.get('/movements', authenticate, requireShopOwner, async (req, res, next) 
     console.error('[GET /shop/movements]', err);
     next(err);
   }
-});
+}
 
 // POST /api/shop/inventory/bulk-stock-in
 // Cart/bucket procurement — receives entire purchase session in one call.

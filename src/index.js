@@ -11,7 +11,7 @@ import prisma from './db/prisma.js';
 import { authenticate, requireSection } from './middleware/auth.js';
 import authRoutes from './routes/auth/index.js';
 import catalogRoutes from './routes/catalog.js';
-import inventoryRoutes from './routes/inventory.js';
+import inventoryRoutes, { getMovements } from './routes/inventory.js';
 import billingRoutes from './routes/billing.js';
 import partiesRoutes from './routes/parties.js';
 import dashboardRoutes from './routes/dashboard.js';
@@ -170,6 +170,11 @@ app.get('/health', async (req, res) => {
 // gstr.js are both mounted at that prefix — gated by either, not a precise split.
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/catalog', catalogRoutes);
+// History is its own granted section, distinct from Inventory, but the
+// movements endpoint lives under this router — registered here, ahead of
+// the blanket inventory gate below, so a staff member with only "history"
+// granted isn't 403'd (and shown a silently-empty History page for it).
+app.get('/api/shop/inventory/movements', authenticate, requireSection('inventory', 'history'), getMovements);
 app.use('/api/shop/inventory', authenticate, requireSection('inventory'));
 app.use('/api/shop/inventory', inventoryRoutes);
 app.use('/api/shop/inventory', stockBatchRoutes);
