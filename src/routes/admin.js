@@ -8,6 +8,7 @@ import prisma from '../db/prisma.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { formatUserResponse } from './auth/helpers.js';
 import { sendShopOwnerApprovedEmail, sendShopOwnerRejectedEmail } from '../services/email.js';
+import { generateResetToken, hashResetToken } from '../services/password.js';
 import {
   getScraperState, setScraperRunning, setScraperStopped,
   appendScraperLog, setScraperError,
@@ -215,7 +216,19 @@ router.post('/users/:userId/verify', authenticate, requireAdmin, async (req, res
 
     // Send email notification
     if (action === 'APPROVE') {
-      sendShopOwnerApprovedEmail(updated).catch(e => console.error('[EMAIL] Approval email failed:', e));
+      // Fire-and-forget, same pattern as staff welcome email — reuses the
+      // forgot-password token mechanism so the "set/reset password" link in
+      // this email lands on the existing /reset-password page.
+      (async () => {
+        try {
+          await prisma.passwordResetToken.updateMany({ where: { userId: updated.userId, used: false }, data: { used: true } });
+          const rawToken = generateResetToken();
+          await prisma.passwordResetToken.create({
+            data: { userId: updated.userId, tokenHash: hashResetToken(rawToken), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+          });
+          await sendShopOwnerApprovedEmail(updated, rawToken);
+        } catch (e) { console.error('[EMAIL] Approval email failed:', e); }
+      })();
     } else {
       sendShopOwnerRejectedEmail(updated, reason).catch(e => console.error('[EMAIL] Rejection email failed:', e));
     }

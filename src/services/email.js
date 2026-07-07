@@ -591,15 +591,46 @@ export async function sendShopOwnerVerificationAlert(shopOwner, adminEmails) {
 /**
  * Notify shop owner their account has been approved.
  */
-export async function sendShopOwnerApprovedEmail(shopOwner) {
+/**
+ * @param {object} shopOwner
+ * @param {string} [resetToken] - raw token from generateResetToken(), same
+ *   mechanism as forgot-password. If provided, the email offers a "set/reset
+ *   password" link alongside the normal login CTA — covers shop owners who
+ *   signed up via Google/phone and never set one, without breaking those who
+ *   already have a password (the reset-password endpoint handles both).
+ */
+export async function sendShopOwnerApprovedEmail(shopOwner, resetToken) {
   if (!shopOwner.email) return;
   const appUrl = getFrontendAppUrl();
+  const isFirstPassword = !shopOwner.passwordHash;
+  let passwordBlock = '';
+  let passwordText = '';
+  if (resetToken) {
+    const frontendUrl = getFrontendAppUrl();
+    const resetPath = frontendUrl.toLowerCase().includes('/reset-password') ? frontendUrl : `${frontendUrl}/reset-password`;
+    const setPasswordUrl = `${resetPath}?token=${resetToken}`;
+    const label = isFirstPassword ? 'Set a password' : 'Reset your password';
+    const desc = isFirstPassword
+      ? 'Prefer email + password over Google? Set one now — link expires in 1 hour.'
+      : "Need to change your password? You can reset it now — link expires in 1 hour.";
+    passwordBlock = `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+      <tr>
+        <td style="padding:16px 18px;border:1px solid #E5E7EB;border-radius:10px;">
+          <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#111111;">${label}</p>
+          <p style="margin:0 0 14px;font-size:13px;color:#6B7280;line-height:1.6;">${desc}</p>
+          <a href="${setPasswordUrl}" style="display:inline-block;font-size:13px;font-weight:700;color:#8B1A0F;text-decoration:none;">${label} &rarr;</a>
+        </td>
+      </tr>
+    </table>`;
+    passwordText = `\n\n${label}: ${setPasswordUrl} (expires in 1 hour)`;
+  }
   const html = baseTemplate(`
     <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">Your Shop is Approved!</h1>
     <p style="margin:0 0 28px;font-size:15px;color:#6B7280;line-height:1.7;">
       Hey ${shopOwner.name || 'there'}, great news! Your shop owner account on RedPiston has been verified and approved. You can now log in and start managing your shop.
     </p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
       <tr>
         <td align="center">
           <a href="${appUrl}/login" class="btn-cta"
@@ -609,13 +640,14 @@ export async function sendShopOwnerApprovedEmail(shopOwner) {
         </td>
       </tr>
     </table>
+    ${passwordBlock}
     <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">Need help getting started? Reply to this email and our team will assist you.</p>
   `, { accentColor: '#16A34A', accentLabel: '&#10003; Account Approved' });
   await sendMail({
     to: shopOwner.email,
     subject: 'Your RedPiston Shop Account is Approved!',
     html,
-    text: `Great news! Your RedPiston shop owner account has been approved. Log in at: ${appUrl}/login`,
+    text: `Great news! Your RedPiston shop owner account has been approved. Log in at: ${appUrl}/login${passwordText}`,
   });
 }
 
