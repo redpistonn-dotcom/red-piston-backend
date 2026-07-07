@@ -432,6 +432,61 @@ export async function verifyStaffInviteOtp(email, code) {
 }
 
 /**
+ * Sent once, right after a staff member finishes verifying their invite
+ * (see routes/staff.js's POST /accept). They're already logged in at that
+ * point via OTP — this just gives them the other two ways in for next time:
+ * Google (works immediately, same email) and a password (needs setting).
+ * @param {string} email
+ * @param {string} name
+ * @param {string} shopName
+ * @param {string} resetToken - raw token from generateResetToken(), same
+ *   mechanism as forgot-password (see routes/auth/password.js) — this
+ *   function builds the /reset-password?token= URL itself.
+ */
+export async function sendStaffWelcomeEmail(email, name, shopName, resetToken) {
+  if (!email) return;
+  const appUrl = (process.env.FRONTEND_APP_URL || (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0]).trim().replace(/\/$/, '');
+  const frontendUrl = getFrontendAppUrl();
+  const resetPath = frontendUrl.toLowerCase().includes('/reset-password') ? frontendUrl : `${frontendUrl}/reset-password`;
+  const setPasswordUrl = `${resetPath}?token=${resetToken}`;
+  const html = baseTemplate(`
+    <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">You're in, ${name || 'there'}!</h1>
+    <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
+      You've been given access to <strong>${shopName}</strong> on RedPiston. You can sign in either way, whenever suits you:
+    </p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+      <tr>
+        <td style="padding:16px 18px;border:1px solid #E5E7EB;border-radius:10px;">
+          <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#111111;">Continue with Google</p>
+          <p style="margin:0 0 12px;font-size:13px;color:#6B7280;line-height:1.6;">Already works with this email address — no setup needed.</p>
+          <a href="${appUrl}/login" style="display:inline-block;font-size:13px;font-weight:700;color:#8B1A0F;text-decoration:none;">Go to login &rarr;</a>
+        </td>
+      </tr>
+    </table>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+      <tr>
+        <td style="padding:16px 18px;border:1px solid #E5E7EB;border-radius:10px;">
+          <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#111111;">Or set a password</p>
+          <p style="margin:0 0 14px;font-size:13px;color:#6B7280;line-height:1.6;">Prefer email + password? Set one now — link expires in 1 hour.</p>
+          <a href="${setPasswordUrl}" class="btn-cta"
+             style="display:inline-block;background:#8B1A0F;color:#FFFFFF;font-size:14px;font-weight:700;padding:12px 28px;border-radius:8px;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+            Set my password &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;font-size:13px;color:#9CA3AF;line-height:1.6;">Didn't request this? You can ignore this email — your account stays exactly as it is.</p>
+  `, { accentColor: '#16A34A', accentLabel: '&#10003; Access Granted' });
+
+  await sendMail({
+    to: email,
+    subject: `You've been given access to ${shopName} on RedPiston`,
+    html,
+    text: `You've been given access to ${shopName} on RedPiston.\n\nContinue with Google: ${appUrl}/login\n\nOr set a password to sign in directly: ${setPasswordUrl} (expires in 1 hour)`,
+  });
+}
+
+/**
  * Send password reset (or first-time set) email with a tokenized link.
  * @param {string} email
  * @param {string} token - raw reset token

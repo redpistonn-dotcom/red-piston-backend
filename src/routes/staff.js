@@ -34,7 +34,8 @@ import { Router } from 'express';
 import prisma from '../db/prisma.js';
 import { authenticate } from '../middleware/auth.js';
 import { staffInviteVerifyLimiter } from '../middleware/rateLimiter.js';
-import { sendStaffInviteOtp, verifyStaffInviteOtp } from '../services/email.js';
+import { sendStaffInviteOtp, verifyStaffInviteOtp, sendStaffWelcomeEmail } from '../services/email.js';
+import { generateResetToken, hashResetToken } from '../services/password.js';
 import { createSession } from './auth/helpers.js';
 import { SECTION_KEYS, isValidSection, permissionsFromSections } from '../lib/section-permissions.js';
 import { writeAudit, ET, ACT } from '../lib/audit.js';
@@ -321,6 +322,25 @@ publicStaffInviteRouter.post('/accept', staffInviteVerifyLimiter, async (req, re
     const payload = await createSession(res, user, { isNewUser: !user.lastLoginAt, req });
 
     writeAudit(req, { entityType: ET.SHOP, entityId: invite.shopId, action: ACT.CREATE, newValue: { staffInviteAccepted: email } });
+
+    // Fire-and-forget welcome email — reuses the exact forgot-password token
+    // mechanism so "Set my password" in the email lands on the same
+    // /reset-password flow already used everywhere else. Never blocks the
+    // response: the invite is fully accepted and the user is logged in
+    // (via OTP) regardless of whether this email goes out.
+    (async () => {
+      try {
+        const shop = await prisma.shop.findUnique({ where: { shopId: invite.shopId }, select: { name: true } });
+        await prisma.passwordResetToken.updateMany({ where: { userId: user.userId, used: false }, data: { used: true } });
+        const rawToken = generateResetToken();
+        await prisma.passwordResetToken.create({
+          data: { userId: user.userId, tokenHash: hashResetToken(rawToken), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+        });
+        await sendStaffWelcomeEmail(email, user.name, shop?.name || 'your shop', rawToken);
+      } catch (emailErr) {
+        console.error('[staff/accept-invite] welcome email failed:', emailErr);
+      }
+    })();
 
     res.json(payload);
   } catch (err) {
