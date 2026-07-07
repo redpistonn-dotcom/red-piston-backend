@@ -73,6 +73,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
               unitOfSale:   true,
               imageUrl:     true,
               oemNumbers:   true,
+              primaryOemNumber: true,
             },
           },
         },
