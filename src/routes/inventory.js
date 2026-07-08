@@ -30,6 +30,11 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
     const showAll = req.query.all === 'true';
     // ?search=... filters by part name, OEM number, or custom name (useful with all=true)
     const search  = req.query.search?.trim() || '';
+    // ?letter=A — jump-to-letter filter for the Parts Catalog's A-Z strip
+    const letter  = req.query.letter?.trim().slice(0, 1) || '';
+    // ?sort=name — alphabetical browsing for the Parts Catalog (default stays
+    // newest-first for the shop's own managed inventory list)
+    const sortByName = req.query.sort === 'name';
 
     // Build AND conditions so configured-only filter and search can coexist
     const andConditions = [];
@@ -42,6 +47,14 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
           { customPartName: { contains: search, mode: 'insensitive' } },
           { masterPart: { partName:   { contains: search, mode: 'insensitive' } } },
           { masterPart: { oemNumbers: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
+    }
+    if (letter) {
+      andConditions.push({
+        OR: [
+          { customPartName: { startsWith: letter, mode: 'insensitive' } },
+          { masterPart: { partName: { startsWith: letter, mode: 'insensitive' } } },
         ],
       });
     }
@@ -77,7 +90,13 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
             },
           },
         },
-        orderBy: { createdAt: 'desc' },
+        // Alphabetical sort keys off the catalog part name — the common case
+        // (most items are sold under their catalog name; a nicknamed item
+        // sorts by its underlying catalog name too, since coalescing
+        // nickname/customPartName/masterPart.partName into one DB-level sort
+        // key isn't expressible without raw SQL, and this is close enough
+        // for "jump to a letter" browsing).
+        orderBy: sortByName ? { masterPart: { partName: 'asc' } } : { createdAt: 'desc' },
         take:    limit,
         skip:    offset,
       }),
