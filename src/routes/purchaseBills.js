@@ -278,9 +278,17 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
 // Extract the Cloudinary public_id from a delivery URL.
 // Handles both /image/upload/ and /raw/upload/ with optional version segment.
 // Decodes %2F so folder paths like "bills/shop-1/file" are preserved correctly.
+// Returns BOTH forms because Cloudinary treats them differently: for `image`/
+// `video` resources the extension is a separate "format" from the public_id,
+// but for `raw` resources (what bill PDFs are uploaded as) the extension is
+// part of the public_id itself — passing the stripped id + format:'pdf' for a
+// raw resource looks up "...pdf.pdf" and 404s.
 function cloudinaryPublicId(url) {
   const m = url.match(/\/(?:image|raw|video)\/upload\/(?:v\d+\/)?(.+?)(\.[^./]+)?$/);
-  return m ? decodeURIComponent(m[1]) : null;
+  if (!m) return null;
+  const withoutExt = decodeURIComponent(m[1]);
+  const withExt = decodeURIComponent(m[1] + (m[2] || ''));
+  return { withoutExt, withExt };
 }
 
 // ─── GET /api/shop/purchase-bills/pdf-proxy — server-side PDF fetch ──────────
@@ -333,13 +341,18 @@ router.get('/pdf-proxy', authenticate, requireShopOwner, async (req, res) => {
     //    link authenticated entirely via URL params (no Authorization header needed;
     //    adding one actually breaks signature verification → 404).
     if (!result) {
-      const pid = cloudinaryPublicId(url);
-      if (pid) {
+      const pids = cloudinaryPublicId(url);
+      if (pids) {
         try {
-          // Try as raw first, then as image (old uploads)
-          for (const rtype of ['raw', 'image']) {
-            const dlUrl = cloudinary.utils.private_download_url(pid, 'pdf', {
-              resource_type: rtype,
+          // raw: public_id already includes the extension, so format must be
+          // empty. image (old uploads): public_id excludes it, format:'pdf'.
+          const attempts = [
+            { resource_type: 'raw', public_id: pids.withExt, format: '' },
+            { resource_type: 'image', public_id: pids.withoutExt, format: 'pdf' },
+          ];
+          for (const { resource_type, public_id, format } of attempts) {
+            const dlUrl = cloudinary.utils.private_download_url(public_id, format, {
+              resource_type,
               type: 'upload',
               expires_at: Math.floor(Date.now() / 1000) + 120,
             });
