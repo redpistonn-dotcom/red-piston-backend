@@ -174,13 +174,13 @@ function sellerStack(shop) {
   const shopStateCode = shop?.stateCode || '';
 
   const lines = [
-    { text: shopName, bold: true, fontSize: 9 },
+    { text: shopName, bold: true, fontSize: 10, margin: [0, 0, 0, 3] },
   ];
-  if (shopAddr) lines.push({ text: shopAddr, fontSize: 8 });
-  if (shopPhone) lines.push({ text: `Ph : ${shopPhone}`, fontSize: 8 });
-  if (shopGstin) lines.push({ text: `GSTIN/UIN : ${shopGstin}`, fontSize: 8 });
-  if (shopState) lines.push({ text: `State Name : ${shopState}${shopStateCode ? ', Code : ' + shopStateCode : ''}`, fontSize: 8 });
-  if (shopEmail) lines.push({ text: `E-Mail : ${shopEmail}`, fontSize: 8 });
+  if (shopAddr) lines.push({ text: shopAddr, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shopPhone) lines.push({ text: `Ph : ${shopPhone}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shopGstin) lines.push({ text: `GSTIN/UIN : ${shopGstin}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shopState) lines.push({ text: `State Name : ${shopState}${shopStateCode ? ', Code : ' + shopStateCode : ''}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shopEmail) lines.push({ text: `E-Mail : ${shopEmail}`, fontSize: 8, margin: [0, 1, 0, 1] });
   return lines;
 }
 
