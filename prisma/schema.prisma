@@ -936,6 +936,8 @@ model Invoice {
   partyGstin         String?   @map("party_gstin")
   // Separate billing address (if different from party address)
   billingAddress     String?   @map("billing_address")
+  // Vehicle registration number (auto-parts context)
+  vehicleReg         String?   @map("vehicle_reg")
   subtotal           Decimal   @db.Decimal(10, 2)
   discountAmount     Decimal   @default(0) @map("discount_amount") @db.Decimal(10, 2)
   taxableAmount      Decimal   @map("taxable_amount") @db.Decimal(10, 2)
