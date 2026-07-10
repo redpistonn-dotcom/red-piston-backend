@@ -344,7 +344,7 @@ function buildLastPageSummary(invoice, totalQty) {
           { text: 'Total', bold: true, fontSize: 9, border: [true, true, false, true] },
           { text: '', border: [false, true, false, true] },
           { text: '', border: [false, true, false, true] },
-          { text: `${totalQty} NOS`, bold: true, fontSize: 9, alignment: 'center', border: [false, true, false, true] },
+          { text: `${totalQty}`, bold: true, fontSize: 9, alignment: 'center', border: [false, true, false, true] },
           { text: '', border: [false, true, false, true] },
           { text: '', border: [false, true, false, true] },
           { text: '', border: [false, true, false, true] },
@@ -432,39 +432,73 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     ['', ''],
   ];
 
-  // Buyer block
+  // Buyer block — rendered as a label/value table so every colon lines up and
+  // the spacing stays even regardless of label length.
+  const buyerRows = [];
+  if (invoice.partyPhone) buyerRows.push(['Phone', invoice.partyPhone]);
+  if (invoice.billingAddress || invoice.customerAddress) buyerRows.push(['Address', invoice.billingAddress || invoice.customerAddress]);
+  if (invoice.partyGstin) buyerRows.push(['GSTIN/UIN', invoice.partyGstin]);
+  if (shop?.state) buyerRows.push(['State Name', `${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`]);
+  if (invoice.vehicleReg) buyerRows.push(['Vehicle Reg', invoice.vehicleReg, true]);
+  if (invoice.notes) buyerRows.push(['Remarks', invoice.notes]);
   const buyerBlock = [
     { text: 'Buyer (Bill to)', bold: true, fontSize: 8 },
-    { text: invoice.partyName || 'Walk-in Customer', bold: true, fontSize: 9, margin: [0, 1, 0, 2] },
+    { text: invoice.partyName || 'Walk-in Customer', bold: true, fontSize: 9, margin: [0, 2, 0, 3] },
   ];
-  if (invoice.partyPhone)     buyerBlock.push({ text: `Phone        :  ${invoice.partyPhone}`, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (invoice.billingAddress || invoice.customerAddress) buyerBlock.push({ text: invoice.billingAddress || invoice.customerAddress, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (invoice.partyGstin)     buyerBlock.push({ text: `GSTIN/UIN    :  ${invoice.partyGstin}`, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (shop?.state)            buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (invoice.vehicleReg)     buyerBlock.push({ text: `Vehicle Reg  :  ${invoice.vehicleReg}`, fontSize: 8, bold: true, margin: [0, 1, 0, 1] });
-  if (invoice.notes)          buyerBlock.push({ text: `Remarks      :  ${invoice.notes}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (buyerRows.length) buyerBlock.push({
+    table: {
+      widths: [58, '*'],
+      body: buyerRows.map(([label, value, boldVal]) => [
+        { text: label, fontSize: 8, color: '#555555', margin: [0, 1.5, 0, 1.5] },
+        { text: `:  ${value}`, fontSize: 8, bold: !!boldVal, margin: [0, 1.5, 0, 1.5] },
+      ]),
+    },
+    layout: 'noBorders',
+  });
+
+  // Column config: base Rate first, then Rate incl. GST. When every line shares
+  // one GST rate, the incl. column names the rate ("Incl. GST 18%"). A Disc %
+  // column appears only when at least one line actually has a discount.
+  const uniformRate = items.length && items.every(it => Number(it.gstRate) === Number(items[0].gstRate)) ? Number(items[0].gstRate) : null;
+  const inclHeader  = uniformRate != null ? `Rate\n(Incl. GST ${fmtPct(uniformRate)}%)` : 'Rate\n(Incl. Tax)';
+  const hasDiscount = items.some(it => Number(it.discount) > 0);
+
+  const hcell = (text, align = 'center') => ({ text, bold: true, alignment: align, fontSize: 8, fillColor: '#F3F4F6' });
+  const tableHeader = [ hcell('Sl\nNo.'), hcell('Description of Goods', 'left') ];
+  if (showOem) tableHeader.push(hcell('OEM No.'));
+  tableHeader.push(hcell('HSN/SAC'), hcell('Qty'), hcell('Rate', 'right'), hcell(inclHeader, 'right'));
+  if (showMrp) tableHeader.push(hcell('MRP', 'right'));
+  if (hasDiscount) tableHeader.push(hcell('Disc %'));
+  tableHeader.push(hcell('Amount', 'right'));
+
+  const tableWidths = [22, '*'];
+  if (showOem) tableWidths.push(54);
+  tableWidths.push(46, 26, 52, 58);
+  if (showMrp) tableWidths.push(46);
+  if (hasDiscount) tableWidths.push(32);
+  tableWidths.push(62);
 
   // Product rows
   const itemRows = items.map((item, idx) => {
     const oemVal = item.oemNumber || item.inventory?.masterPart?.primaryOemNumber || (Array.isArray(item.inventory?.masterPart?.oemNumbers) ? item.inventory.masterPart.oemNumbers[0] : '') || '—';
     const mrpVal = item.mrp !== undefined && item.mrp !== null ? Number(item.mrp).toFixed(2) : (item.inventory?.masterPart?.mrp ? Number(item.inventory.masterPart.mrp).toFixed(2) : '—');
+    const qty = Number(item.qty) || 0;
+    const rateIncl = qty > 0 ? (Number(item.total) / qty).toFixed(2) : Number(item.total).toFixed(2);
+    const discPct  = Number(item.discount) > 0 && Number(item.unitPrice) > 0 ? Math.round((Number(item.discount) / Number(item.unitPrice)) * 100) : 0;
     const row = [
       { text: String(idx + 1),                           alignment: 'center', fontSize: 8 },
       { text: [item.partName, item.brand].filter(Boolean).join(' — '), fontSize: 8 },
     ];
     if (showOem) row.push({ text: oemVal, alignment: 'center', fontSize: 8 });
     row.push(
-      { text: item.hsnCode || '',                        alignment: 'center', fontSize: 8 },
-      { text: `${item.qty} NOS`,                         alignment: 'center', fontSize: 8, bold: true },
-      { text: (Number(item.total) / Number(item.qty)).toFixed(2), alignment: 'right', fontSize: 8 }
+      { text: item.hsnCode || '',                alignment: 'center', fontSize: 8 },
+      { text: String(qty),                       alignment: 'center', fontSize: 8, bold: true },
+      { text: Number(item.unitPrice).toFixed(2), alignment: 'right',  fontSize: 8 },
+      { text: rateIncl,                          alignment: 'right',  fontSize: 8 }
     );
     if (showMrp) row.push({ text: mrpVal, alignment: 'right', fontSize: 8 });
-    row.push(
-      { text: Number(item.unitPrice).toFixed(2),         alignment: 'right',  fontSize: 8 },
-      { text: 'NOS',                                     alignment: 'center', fontSize: 8 },
-      { text: item.discountPercent ? `${item.discountPercent}` : '', alignment: 'center', fontSize: 8 },
-      { text: Number(item.total).toFixed(2),             alignment: 'right',  fontSize: 8 }
-    );
+    if (hasDiscount) row.push({ text: discPct ? `${discPct}%` : '', alignment: 'center', fontSize: 8 });
+    row.push({ text: Number(item.total).toFixed(2), alignment: 'right', fontSize: 8 });
     return row;
   });
 
@@ -473,6 +507,9 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
   const pageHeader = buildPageHeader(shop, invoiceFields, buyerBlock, 1, 'TAX INVOICE', invoice.invoiceNumber, dateStr);
 
   const docDef = {
+    // PDF title metadata → the browser's PDF-viewer download uses it as the
+    // filename, so blob previews save as the invoice number instead of a UUID.
+    info: { title: String(invoice.invoiceNumber || 'Invoice'), author: shop?.name || 'RedPiston' },
     pageSize: 'A4',
     pageMargins: [30, 175, 30, 60],
 
@@ -494,8 +531,8 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
       {
         table: {
           headerRows: 1,
-          widths: getTableWidths({ showOem, showMrp }),
-          body: [productTableHeader({ showOem, showMrp }), ...itemRows],
+          widths: tableWidths,
+          body: [tableHeader, ...itemRows],
           dontBreakRows: false,
           keepWithHeaderRows: 1,
         },
@@ -612,6 +649,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
   const totalQtyNew = (newInvoice?.items || []).reduce((s, i) => s + Number(i.qty || 0), 0);
 
   const pageHeader = buildPageHeader(shop, invoiceFields, buyerBlock, 1, 'EXCHANGE INVOICE', exchangeOrder.exchangeNo, dateStr);
+  const docTitle = String(exchangeOrder?.exchangeNo || 'Exchange');
 
   const tableLayout = {
     hLineColor: () => '#000000',
@@ -621,6 +659,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
   };
 
   const docDef = {
+    info: { title: docTitle, author: shop?.name || 'RedPiston' },
     pageSize: 'A4',
     pageMargins: [30, 175, 30, 60],
 
@@ -834,6 +873,7 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
   };
 
   const docDef = {
+    info: { title: String(salesReturn?.returnNo || salesReturn?.returnId || 'Credit-Note'), author: shop?.name || 'RedPiston' },
     pageSize: 'A4',
     pageMargins: [30, 175, 30, 60],
 
@@ -987,6 +1027,7 @@ export const generatePurchaseOrderPdf = async (po) => {
   };
 
   const docDef = {
+    info: { title: String(po.poNumber || 'Purchase-Order'), author: shop?.name || 'RedPiston' },
     pageSize: 'A4',
     pageMargins: [30, 175, 30, 60],
 
