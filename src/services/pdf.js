@@ -26,43 +26,6 @@ function fmtDateIST(value, opts = { day: '2-digit', month: 'short', year: 'numer
   return new Date(value).toLocaleDateString('en-IN', { ...opts, timeZone: 'Asia/Kolkata' });
 }
 
-// ─── GST breakup helper ───────────────────────────────────────────────────────
-// Groups line items by their GST rate and returns CGST/SGST rows carrying the
-// applicable percentage, e.g. [ ['OUTPUT CGST @ 9%', '245.00'], ['OUTPUT SGST @ 9%', '245.00'] ].
-// For a single-rate invoice this yields one CGST + one SGST row; mixed-rate
-// invoices produce a labelled pair per rate. Falls back to the invoice-level
-// totals (with a derived rate) when line items lack per-item tax fields.
-function gstSummaryRows(items, invoiceCgst, invoiceSgst, subtotal) {
-  const byRate = new Map();
-  for (const it of (items || [])) {
-    const rate = Number(it.gstRate || 0);
-    if (rate <= 0) continue;
-    const cur = byRate.get(rate) || { cgst: 0, sgst: 0 };
-    cur.cgst += Number(it.cgst || 0);
-    cur.sgst += Number(it.sgst || 0);
-    byRate.set(rate, cur);
-  }
-
-  // Fallback: no usable per-item tax data → derive a single rate from totals.
-  if (byRate.size === 0) {
-    const derived = subtotal > 0 ? (Number(invoiceCgst) / subtotal) * 100 : 0;
-    const half = fmtPct(derived);
-    return [
-      [`OUTPUT CGST${half ? ` @ ${half}%` : ''}`, Number(invoiceCgst).toFixed(2)],
-      [`OUTPUT SGST${half ? ` @ ${half}%` : ''}`, Number(invoiceSgst).toFixed(2)],
-    ];
-  }
-
-  const rows = [];
-  for (const rate of [...byRate.keys()].sort((a, b) => a - b)) {
-    const { cgst, sgst } = byRate.get(rate);
-    const half = fmtPct(rate / 2);
-    rows.push([`OUTPUT CGST @ ${half}%`, cgst.toFixed(2)]);
-    rows.push([`OUTPUT SGST @ ${half}%`, sgst.toFixed(2)]);
-  }
-  return rows;
-}
-
 // Format a percentage without trailing ".00" (9 not 9.00, 2.5 stays 2.5).
 function fmtPct(n) {
   const v = Number(n) || 0;
@@ -106,7 +69,83 @@ function numberToWords(num) {
     if (n < 10000000) return convert(Math.floor(n / 100000)) + ' Lakh' + (n % 100000 ? ' ' + convert(n % 100000) : '');
     return convert(Math.floor(n / 10000000)) + ' Crore' + (n % 10000000 ? ' ' + convert(n % 10000000) : '');
   }
-  return 'INR ' + convert(n) + ' Only';
+  const paise = Math.round((Math.abs(num) - n) * 100);
+  const rupeeWords = n === 0 ? 'Zero' : convert(n);
+  const paiseWords = paise > 0 ? ' and ' + convert(paise) + ' Paise' : '';
+  return 'INR ' + rupeeWords + paiseWords + ' Only';
+}
+
+// ─── GST tax-analysis table (Tally-style) ────────────────────────────────────
+// Renders the standard summary grouped by GST rate:
+//   Taxable Value | CGST (Rate | Amount) | SGST/UTGST (Rate | Amount) | Total Tax
+// followed by a Total row. Returns pdfmake content (table + tax-in-words line).
+function buildTaxAnalysisTable(items) {
+  const byRate = new Map();
+  for (const it of (items || [])) {
+    const taxable = Number(it.taxableAmt ?? it.taxableValue ?? 0);
+    const itemCgst = Number(it.cgst || 0);
+    // Prefer the stored gstRate; otherwise derive it from the tax amounts
+    // (cgst is half the total rate: rate = cgst / taxable * 200).
+    let rate = Number(it.gstRate || 0);
+    if (rate <= 0 && taxable > 0 && itemCgst > 0) rate = Math.round((itemCgst / taxable) * 200 * 100) / 100;
+    const cur = byRate.get(rate) || { taxable: 0, cgst: 0, sgst: 0 };
+    cur.taxable += taxable;
+    cur.cgst    += itemCgst;
+    cur.sgst    += Number(it.sgst || 0);
+    byRate.set(rate, cur);
+  }
+  const rates = [...byRate.keys()].sort((a, b) => a - b);
+  let sumTaxable = 0, tCgst = 0, tSgst = 0;
+
+  const hdrCell = (text, extra = {}) => ({ text, bold: true, fontSize: 7.5, alignment: 'center', fillColor: '#F3F4F6', ...extra });
+  const cell    = (text, align = 'right') => ({ text, fontSize: 7.5, alignment: align });
+
+  const body = [
+    // Two-row header
+    [
+      hdrCell('Taxable\nValue', { rowSpan: 2 }),
+      hdrCell('CGST', { colSpan: 2 }), {},
+      hdrCell('SGST/UTGST', { colSpan: 2 }), {},
+      hdrCell('Total\nTax Amount', { rowSpan: 2 }),
+    ],
+    [ {}, hdrCell('Rate'), hdrCell('Amount'), hdrCell('Rate'), hdrCell('Amount'), {} ],
+  ];
+
+  for (const rate of rates) {
+    const { taxable, cgst, sgst } = byRate.get(rate);
+    sumTaxable += taxable; tCgst += cgst; tSgst += sgst;
+    const half = fmtPct(rate / 2);
+    body.push([
+      cell(taxable.toFixed(2)),
+      cell(`${half}%`, 'center'), cell(cgst.toFixed(2)),
+      cell(`${half}%`, 'center'), cell(sgst.toFixed(2)),
+      cell((cgst + sgst).toFixed(2)),
+    ]);
+  }
+  // Total row
+  body.push([
+    { text: sumTaxable.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+    { text: 'Total', bold: true, fontSize: 7.5, alignment: 'right' },
+    { text: tCgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+    { text: '', fontSize: 7.5 },
+    { text: tSgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+    { text: (tCgst + tSgst).toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+  ]);
+
+  return [
+    {
+      table: { headerRows: 2, widths: ['*', 34, '*', 34, '*', '*'], body },
+      layout: {
+        hLineColor: () => '#000000', vLineColor: () => '#000000',
+        hLineWidth: () => 0.4, vLineWidth: () => 0.4,
+      },
+      margin: [0, 2, 0, 2],
+    },
+    {
+      text: `Tax Amount (in words) :  ${numberToWords(tCgst + tSgst)}`,
+      fontSize: 8, bold: true, margin: [0, 2, 0, 6],
+    },
+  ];
 }
 
 // ─── Shared seller block (top-left of header) ─────────────────────────────────
@@ -267,36 +306,20 @@ function buildLastPageSummary(invoice, totalQty) {
   const roundOff    = Number(invoice.roundOff    || 0);
   const pan         = invoice.shop?.pan || '';
 
-  const summaryRows = [
-    ...gstSummaryRows(invoice.items, cgst, sgst, subtotal),
-    ['ROUND OFF',    `${roundOff !== 0 ? (roundOff > 0 ? '' : '(-)') + Math.abs(roundOff).toFixed(2) : '0.00'}`],
-    ['Total',        `${totalAmount.toFixed(2)}`, true],
-  ];
-
   return [
-    // Summary rows (right-aligned, spanning the last column area)
-    {
+    // ROUND OFF row (only shown when there is a rounding adjustment)
+    ...(roundOff !== 0 ? [{
       table: {
         widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
-        body: summaryRows.map(([label, value, bold]) => [
-          { text: '', border: [true, false, false, false] },
-          { text: '', border: [false, false, false, false] },
-          { text: '', border: [false, false, false, false] },
-          { text: '', border: [false, false, false, false] },
-          { text: '', border: [false, false, false, false] },
-          { text: label, bold: !!bold, fontSize: bold ? 9 : 8, italics: !bold, border: [false, false, false, bold ? true : false], colSpan: 3 },
-          {}, {},
-          { text: value, bold: !!bold, fontSize: bold ? 9 : 8, alignment: 'right', border: [false, false, true, bold ? true : false] },
-        ]),
+        body: [[
+          { text: '', border: [true, false, false, false] }, {}, {}, {}, {},
+          { text: 'Less: ROUND OFF', italics: true, fontSize: 8, alignment: 'right', border: [false, false, false, false], colSpan: 3 }, {}, {},
+          { text: `${roundOff > 0 ? '' : '(-)'}${Math.abs(roundOff).toFixed(2)}`, fontSize: 8, alignment: 'right', border: [false, false, true, false] },
+        ]],
       },
-      layout: {
-        hLineColor: () => '#000000',
-        vLineColor: () => '#000000',
-        hLineWidth: () => 0.4,
-        vLineWidth: () => 0.4,
-      },
+      layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0.4 },
       margin: [0, 0, 0, 0],
-    },
+    }] : []),
     // Total row
     {
       table: {
@@ -329,6 +352,8 @@ function buildLastPageSummary(invoice, totalQty) {
       ],
       margin: [0, 4, 0, 4],
     },
+    // GST tax-analysis table (Taxable Value | CGST | SGST/UTGST | Total Tax) + tax in words
+    ...buildTaxAnalysisTable(invoice.items),
     // PAN + Declaration + Signatory
     {
       table: {
@@ -784,10 +809,6 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
   const totalAmount = Number(creditNote?.totalAmount || 0);
   const cgst        = Number(creditNote?.cgst || 0);
   const sgst        = Number(creditNote?.sgst || 0);
-  const retTaxable  = totalAmount - cgst - sgst;
-  const retPct      = retTaxable > 0 ? fmtPct((cgst / retTaxable) * 100) : '';
-  const cgstLabel   = `OUTPUT CGST${retPct ? ` @ ${retPct}%` : ''}`;
-  const sgstLabel   = `OUTPUT SGST${retPct ? ` @ ${retPct}%` : ''}`;
 
   const tableLayout = {
     hLineColor: () => '#000000',
@@ -820,39 +841,12 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
         layout: tableLayout,
         margin: [0, 0, 0, 0],
       },
-      // Summary rows
-      {
-        table: {
-          widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
-          body: [
-            [
-              { text: '', border: [true, false, false, false] }, {}, {}, {},
-              { text: cgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
-              { text: '', border: [false, false, false, false] },
-              { text: cgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
-            ],
-            [
-              { text: '', border: [true, false, false, false] }, {}, {}, {},
-              { text: sgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
-              { text: '', border: [false, false, false, false] },
-              { text: sgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
-            ],
-            [
-              { text: '', border: [true, false, false, true] }, {}, {}, {},
-              { text: 'Total Credit', bold: true, fontSize: 9, border: [false, false, false, true], colSpan: 3 }, {}, {},
-              { text: '', border: [false, false, false, true] },
-              { text: totalAmount.toFixed(2), bold: true, fontSize: 9, alignment: 'right', border: [false, false, true, true] },
-            ],
-          ],
-        },
-        layout: tableLayout,
-        margin: [0, 0, 0, 0],
-      },
+      // Total row
       {
         table: {
           widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
           body: [[
-            { text: 'Total', bold: true, fontSize: 9, border: [true, true, false, true] },
+            { text: 'Total Credit', bold: true, fontSize: 9, border: [true, true, false, true] },
             {}, {}, { text: `${totalQty} NOS`, bold: true, alignment: 'center', fontSize: 9, border: [false, true, false, true] },
             {}, {}, {}, {},
             { text: `₹ ${totalAmount.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 9, border: [false, true, true, true] },
@@ -868,6 +862,8 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
         ],
         margin: [0, 4, 0, 4],
       },
+      // GST tax-analysis table + tax in words
+      ...buildTaxAnalysisTable(items),
       {
         table: {
           widths: ['60%', '40%'],
@@ -961,10 +957,9 @@ export const generatePurchaseOrderPdf = async (po) => {
   const totalAmount = Number(po.totalAmount || 0);
   const cgst        = Number(po.cgst || 0);
   const sgst        = Number(po.sgst || 0);
-  const poTaxable   = totalAmount - cgst - sgst;
-  const poPct       = poTaxable > 0 ? fmtPct((cgst / poTaxable) * 100) : '';
-  const poCgstLabel = `CGST${poPct ? ` @ ${poPct}%` : ''}`;
-  const poSgstLabel = `SGST${poPct ? ` @ ${poPct}%` : ''}`;
+  // PO line items don't carry per-line tax, so summarise from PO-level totals
+  // (buildTaxAnalysisTable derives the rate from cgst/taxable).
+  const poTaxItems  = [{ taxableAmt: totalAmount - cgst - sgst, cgst, sgst }];
 
   const pageHeader = buildPageHeader(shop, invoiceFields, buyerBlock, 1, 'PURCHASE ORDER', po.poNumber, dateStr);
 
@@ -999,32 +994,7 @@ export const generatePurchaseOrderPdf = async (po) => {
         layout: tableLayout,
         margin: [0, 0, 0, 0],
       },
-      // PO summary
-      {
-        table: {
-          widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
-          body: [
-            [
-              { text: '', border: [true, false, false, false] },
-              {}, {}, {},
-              { text: poCgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 },
-              {}, {},
-              { text: '', border: [false, false, false, false] },
-              { text: cgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
-            ],
-            [
-              { text: '', border: [true, false, false, false] },
-              {}, {}, {},
-              { text: poSgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 },
-              {}, {},
-              { text: '', border: [false, false, false, false] },
-              { text: sgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
-            ],
-          ],
-        },
-        layout: tableLayout,
-        margin: [0, 0, 0, 0],
-      },
+      // Total row
       {
         table: {
           widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
@@ -1045,6 +1015,8 @@ export const generatePurchaseOrderPdf = async (po) => {
         ],
         margin: [0, 4, 0, 4],
       },
+      // GST tax-analysis table + tax in words
+      ...buildTaxAnalysisTable(poTaxItems),
       {
         table: {
           widths: ['60%', '40%'],
