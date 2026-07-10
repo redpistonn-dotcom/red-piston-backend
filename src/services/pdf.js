@@ -361,7 +361,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     row.push(
       { text: item.hsnCode || '',                        alignment: 'center', fontSize: 8 },
       { text: `${item.qty} NOS`,                         alignment: 'center', fontSize: 8, bold: true },
-      { text: Number(item.unitPrice).toFixed(2),         alignment: 'right',  fontSize: 8 }
+      { text: (Number(item.total) / Number(item.qty)).toFixed(2), alignment: 'right', fontSize: 8 }
     );
     if (showMrp) row.push({ text: mrpVal, alignment: 'right', fontSize: 8 });
     row.push(
