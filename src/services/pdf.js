@@ -318,15 +318,16 @@ export const generateInvoicePdf = async (invoice) => {
     ['Mode/Terms of Payment', invoice.paymentMode || ''],
     ['Reference No. & Date.', ''],
     ['Other References', ''],
-    ["Buyer's Order No.", invoice.orderNo || ''],
+    ['Order ID', String(invoice.invoiceId || invoice.orderNo || '')],
     ['Dated', ''],
-    ['Dispatch Doc No.', invoice.dispatchNo || ''],
+    ['', ''],
     ['Delivery Note Date', ''],
     ['Dispatched through', ''],
     ['Destination', ''],
     ['Terms of Delivery', invoice.termsOfDelivery || ''],
     ['', ''],
   ];
+
 
   // Buyer block
   const buyerBlock = [
@@ -432,7 +433,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
     ['Original Invoice', originalInvoiceNo],
     ['Reason', (salesReturn.reason || '').replace(/_/g, ' ')],
     ['', ''],
-    ['Dispatch Doc No.', newInvoice.dispatchNo || ''],
+    ['Order ID', String(newInvoice.invoiceId || newInvoice.orderNo || '')],
     ['Delivery Note Date', ''],
     ['Dispatched through', ''],
     ['Destination', ''],
