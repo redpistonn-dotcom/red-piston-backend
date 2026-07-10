@@ -248,11 +248,14 @@ async function ensureSchemaFixes() {
   try {
     await prisma.$executeRawUnsafe('ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS mrp DECIMAL(10,2)');
     await prisma.$executeRawUnsafe('ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS oem_number VARCHAR(255)');
+    await prisma.$executeRawUnsafe('ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS igst DECIMAL(10,2) DEFAULT 0');
     await prisma.$executeRawUnsafe('ALTER TABLE shop_inventory ADD COLUMN IF NOT EXISTS mrp DECIMAL(10,2)');
     await prisma.$executeRawUnsafe('ALTER TABLE master_parts ADD COLUMN IF NOT EXISTS mrp DECIMAL(10,2)');
     await prisma.$executeRawUnsafe('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS custom_items_meta JSONB');
     await prisma.$executeRawUnsafe('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS marketplace_order_id INTEGER');
-    console.log('[schema] ensured all recent invoice & inventory columns (mrp, oem_number, custom_items_meta) exist');
+    await prisma.$executeRawUnsafe('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS igst DECIMAL(10,2) DEFAULT 0');
+    await prisma.$executeRawUnsafe('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS vehicle_reg VARCHAR(255)');
+    console.log('[schema] ensured all recent invoice & inventory columns (mrp, oem_number, igst, vehicle_reg, custom_items_meta) exist');
   } catch (err) {
     console.error('[schema] ensureSchemaFixes column additions failed (non-fatal):', err?.message);
   }

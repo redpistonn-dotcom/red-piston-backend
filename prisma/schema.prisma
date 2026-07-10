@@ -999,6 +999,7 @@ model InvoiceItem {
   gstRate     Decimal @map("gst_rate") @db.Decimal(5, 2)
   cgst        Decimal @db.Decimal(10, 2)
   sgst        Decimal @db.Decimal(10, 2)
+  igst        Decimal @default(0) @db.Decimal(10, 2)
   total       Decimal @db.Decimal(10, 2)
   oemNumber   String? @map("oem_number")
   mrp         Decimal? @db.Decimal(10, 2)

@@ -76,75 +76,89 @@ function numberToWords(num) {
 }
 
 // ─── GST tax-analysis table (Tally-style) ────────────────────────────────────
-// Renders the standard summary grouped by GST rate:
+// Renders the standard summary grouped by GST rate. Intra-state shows
 //   Taxable Value | CGST (Rate | Amount) | SGST/UTGST (Rate | Amount) | Total Tax
-// followed by a Total row. Returns pdfmake content (table + tax-in-words line).
+// inter-state shows a single IGST column instead of CGST/SGST. Follows a Total
+// row + a "Tax Amount (in words)" line. Returns pdfmake content.
 function buildTaxAnalysisTable(items) {
   const byRate = new Map();
+  let anyIgst = 0;
   for (const it of (items || [])) {
-    const taxable = Number(it.taxableAmt ?? it.taxableValue ?? 0);
+    const taxable  = Number(it.taxableAmt ?? it.taxableValue ?? 0);
     const itemCgst = Number(it.cgst || 0);
-    // Prefer the stored gstRate; otherwise derive it from the tax amounts
-    // (cgst is half the total rate: rate = cgst / taxable * 200).
+    const itemIgst = Number(it.igst || 0);
+    anyIgst += itemIgst;
+    // Prefer the stored gstRate; otherwise derive it from the tax amounts.
+    // IGST is the full rate; CGST is half the rate.
     let rate = Number(it.gstRate || 0);
-    if (rate <= 0 && taxable > 0 && itemCgst > 0) rate = Math.round((itemCgst / taxable) * 200 * 100) / 100;
-    const cur = byRate.get(rate) || { taxable: 0, cgst: 0, sgst: 0 };
+    if (rate <= 0 && taxable > 0) {
+      if (itemIgst > 0)      rate = Math.round((itemIgst / taxable) * 100 * 100) / 100;
+      else if (itemCgst > 0) rate = Math.round((itemCgst / taxable) * 200 * 100) / 100;
+    }
+    const cur = byRate.get(rate) || { taxable: 0, cgst: 0, sgst: 0, igst: 0 };
     cur.taxable += taxable;
     cur.cgst    += itemCgst;
     cur.sgst    += Number(it.sgst || 0);
+    cur.igst    += itemIgst;
     byRate.set(rate, cur);
   }
   const rates = [...byRate.keys()].sort((a, b) => a - b);
-  let sumTaxable = 0, tCgst = 0, tSgst = 0;
+  const isInterState = anyIgst > 0;
+  let sumTaxable = 0, tCgst = 0, tSgst = 0, tIgst = 0;
 
   const hdrCell = (text, extra = {}) => ({ text, bold: true, fontSize: 7.5, alignment: 'center', fillColor: '#F3F4F6', ...extra });
   const cell    = (text, align = 'right') => ({ text, fontSize: 7.5, alignment: align });
 
-  const body = [
-    // Two-row header
-    [
-      hdrCell('Taxable\nValue', { rowSpan: 2 }),
-      hdrCell('CGST', { colSpan: 2 }), {},
-      hdrCell('SGST/UTGST', { colSpan: 2 }), {},
-      hdrCell('Total\nTax Amount', { rowSpan: 2 }),
-    ],
-    [ {}, hdrCell('Rate'), hdrCell('Amount'), hdrCell('Rate'), hdrCell('Amount'), {} ],
-  ];
-
-  for (const rate of rates) {
-    const { taxable, cgst, sgst } = byRate.get(rate);
-    sumTaxable += taxable; tCgst += cgst; tSgst += sgst;
-    const half = fmtPct(rate / 2);
+  let table;
+  if (isInterState) {
+    // Taxable Value | IGST (Rate | Amount) | Total Tax Amount
+    const body = [
+      [ hdrCell('Taxable\nValue', { rowSpan: 2 }), hdrCell('IGST', { colSpan: 2 }), {}, hdrCell('Total\nTax Amount', { rowSpan: 2 }) ],
+      [ {}, hdrCell('Rate'), hdrCell('Amount'), {} ],
+    ];
+    for (const rate of rates) {
+      const g = byRate.get(rate);
+      sumTaxable += g.taxable; tIgst += g.igst;
+      body.push([ cell(g.taxable.toFixed(2)), cell(`${fmtPct(rate)}%`, 'center'), cell(g.igst.toFixed(2)), cell(g.igst.toFixed(2)) ]);
+    }
     body.push([
-      cell(taxable.toFixed(2)),
-      cell(`${half}%`, 'center'), cell(cgst.toFixed(2)),
-      cell(`${half}%`, 'center'), cell(sgst.toFixed(2)),
-      cell((cgst + sgst).toFixed(2)),
+      { text: sumTaxable.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+      { text: 'Total', bold: true, fontSize: 7.5, alignment: 'right' },
+      { text: tIgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+      { text: tIgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
     ]);
+    table = { headerRows: 2, widths: ['*', 40, '*', '*'], body };
+  } else {
+    // Taxable Value | CGST (Rate | Amount) | SGST/UTGST (Rate | Amount) | Total Tax
+    const body = [
+      [ hdrCell('Taxable\nValue', { rowSpan: 2 }), hdrCell('CGST', { colSpan: 2 }), {}, hdrCell('SGST/UTGST', { colSpan: 2 }), {}, hdrCell('Total\nTax Amount', { rowSpan: 2 }) ],
+      [ {}, hdrCell('Rate'), hdrCell('Amount'), hdrCell('Rate'), hdrCell('Amount'), {} ],
+    ];
+    for (const rate of rates) {
+      const g = byRate.get(rate);
+      sumTaxable += g.taxable; tCgst += g.cgst; tSgst += g.sgst;
+      const half = fmtPct(rate / 2);
+      body.push([ cell(g.taxable.toFixed(2)), cell(`${half}%`, 'center'), cell(g.cgst.toFixed(2)), cell(`${half}%`, 'center'), cell(g.sgst.toFixed(2)), cell((g.cgst + g.sgst).toFixed(2)) ]);
+    }
+    body.push([
+      { text: sumTaxable.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+      { text: 'Total', bold: true, fontSize: 7.5, alignment: 'right' },
+      { text: tCgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+      { text: '', fontSize: 7.5 },
+      { text: tSgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+      { text: (tCgst + tSgst).toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
+    ]);
+    table = { headerRows: 2, widths: ['*', 34, '*', 34, '*', '*'], body };
   }
-  // Total row
-  body.push([
-    { text: sumTaxable.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
-    { text: 'Total', bold: true, fontSize: 7.5, alignment: 'right' },
-    { text: tCgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
-    { text: '', fontSize: 7.5 },
-    { text: tSgst.toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
-    { text: (tCgst + tSgst).toFixed(2), bold: true, fontSize: 7.5, alignment: 'right' },
-  ]);
 
+  const totalTax = tCgst + tSgst + tIgst;
   return [
     {
-      table: { headerRows: 2, widths: ['*', 34, '*', 34, '*', '*'], body },
-      layout: {
-        hLineColor: () => '#000000', vLineColor: () => '#000000',
-        hLineWidth: () => 0.4, vLineWidth: () => 0.4,
-      },
+      table,
+      layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0.4 },
       margin: [0, 2, 0, 2],
     },
-    {
-      text: `Tax Amount (in words) :  ${numberToWords(tCgst + tSgst)}`,
-      fontSize: 8, bold: true, margin: [0, 2, 0, 6],
-    },
+    { text: `Tax Amount (in words) :  ${numberToWords(totalTax)}`, fontSize: 8, bold: true, margin: [0, 2, 0, 6] },
   ];
 }
 
@@ -302,8 +316,10 @@ function buildLastPageSummary(invoice, totalQty) {
   const subtotal    = Number(invoice.subtotal    || 0);
   const cgst        = Number(invoice.cgst        || 0);
   const sgst        = Number(invoice.sgst        || 0);
+  const igst        = Number(invoice.igst        || 0);
   const totalAmount = Number(invoice.totalAmount || 0);
-  const roundOff    = Number(invoice.roundOff    || 0);
+  // Round Off is the rupee-rounding delta: stored total minus the exact sum.
+  const roundOff    = Number((totalAmount - (subtotal + cgst + sgst + igst)).toFixed(2));
   const pan         = invoice.shop?.pan || '';
 
   return [

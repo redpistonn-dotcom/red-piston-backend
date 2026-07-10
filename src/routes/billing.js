@@ -45,7 +45,7 @@ async function writeLedgerDebit(tx, { shopId, partyId, creditAmount = 0, debitAm
  * of an exchange with the exact same formula, before it knows how much of the
  * old item's credit note to apply — without duplicating the math.
  */
-export async function computeItemTotals(shopId, items, invType) {
+export async function computeItemTotals(shopId, items, invType, interState = false) {
   const inventoryIds = Array.isArray(items) ? items.map(i => parseInt(i.inventoryId)) : [];
   const inventoryRows = inventoryIds.length > 0
     ? await prisma.shopInventory.findMany({
@@ -55,7 +55,7 @@ export async function computeItemTotals(shopId, items, invType) {
     : [];
   const invMap = new Map(inventoryRows.map(r => [r.inventoryId, r]));
 
-  let subtotal = 0, cgst = 0, sgst = 0;
+  let subtotal = 0, cgst = 0, sgst = 0, igst = 0;
   const processedItems = [];
 
   for (const item of (items || [])) {
@@ -85,13 +85,16 @@ export async function computeItemTotals(shopId, items, invType) {
     const discount    = Math.min(maxDiscount, Math.max(0, parseFloat(item.discount) || 0));
     const taxableAmt  = (unitPrice - discount) * itemQty;
     const gstRate    = parseFloat(inv.masterPart.gstRate || 18);
-    const itemCgst   = taxableAmt * (gstRate / 2 / 100);
+    // Place of supply: inter-state → single IGST at full rate; intra-state → CGST+SGST split.
+    const itemIgst   = interState ? taxableAmt * (gstRate / 100) : 0;
+    const itemCgst   = interState ? 0 : taxableAmt * (gstRate / 2 / 100);
     const itemSgst   = itemCgst;
-    const itemTotal  = taxableAmt + itemCgst + itemSgst;
+    const itemTotal  = taxableAmt + itemCgst + itemSgst + itemIgst;
 
     subtotal += taxableAmt;
     cgst     += itemCgst;
     sgst     += itemSgst;
+    igst     += itemIgst;
 
     processedItems.push({
       inventoryId: item.inventoryId,
@@ -107,12 +110,13 @@ export async function computeItemTotals(shopId, items, invType) {
       gstRate,
       cgst:        itemCgst,
       sgst:        itemSgst,
+      igst:        itemIgst,
       total:       itemTotal,
       buyingPrice: parseFloat(inv.buyingPrice || 0),
     });
   }
 
-  return { subtotal, cgst, sgst, processedItems };
+  return { subtotal, cgst, sgst, igst, processedItems };
 }
 
 /**
@@ -152,9 +156,19 @@ export async function createInvoice(req, {
     // invoiceNumber is generated INSIDE the transaction below via nextSeq()
     // so the counter increment and the invoice INSERT are in the same atomic unit.
 
+    // ── Place of supply: intra-state (CGST+SGST) vs inter-state (IGST) ─────────
+    // GST law: if the buyer's state differs from the shop's, tax is IGST at the
+    // full rate; otherwise it splits into CGST + SGST. The buyer's state is the
+    // first 2 digits of their GSTIN; walk-in / no-GSTIN customers default to
+    // intra-state (the shop's own state).
+    const shopRow = await prisma.shop.findUnique({ where: { shopId: req.shopId }, select: { stateCode: true } });
+    const shopStateCode  = (shopRow?.stateCode || '').trim();
+    const buyerStateCode = partyGstin ? String(partyGstin).trim().slice(0, 2) : '';
+    const interState = !!(shopStateCode && /^\d{2}$/.test(buyerStateCode) && buyerStateCode !== shopStateCode);
+
     // ── Validate stock + calculate line-item totals ───────────────────────────
-    const itemTotals = await computeItemTotals(req.shopId, hasInventoryItems ? items : [], invType);
-    let subtotal = itemTotals.subtotal, cgst = itemTotals.cgst, sgst = itemTotals.sgst;
+    const itemTotals = await computeItemTotals(req.shopId, hasInventoryItems ? items : [], invType, interState);
+    let subtotal = itemTotals.subtotal, cgst = itemTotals.cgst, sgst = itemTotals.sgst, igst = itemTotals.igst;
     const processedItems = itemTotals.processedItems;
 
     // ── Process custom items (no inventory lookup, no stock deduction) ───────
@@ -166,13 +180,15 @@ export async function createInvoice(req, {
         const ciDisc     = Math.min(ciUnit * 0.8, Math.max(0, parseFloat(ci.discount) || 0));
         const ciTaxable  = (ciUnit - ciDisc) * ciQty;
         const ciGstRate  = Math.max(0, parseFloat(ci.gstRate) || 0);
-        const ciCgst     = ciTaxable * (ciGstRate / 2 / 100);
+        const ciIgst     = interState ? ciTaxable * (ciGstRate / 100) : 0;
+        const ciCgst     = interState ? 0 : ciTaxable * (ciGstRate / 2 / 100);
         const ciSgst     = ciCgst;
-        const ciTotal    = ciTaxable + ciCgst + ciSgst;
+        const ciTotal    = ciTaxable + ciCgst + ciSgst + ciIgst;
 
         subtotal += ciTaxable;
         cgst     += ciCgst;
         sgst     += ciSgst;
+        igst     += ciIgst;
 
         processedCustomItems.push({
           name:        String(ci.name  || 'Custom Item').slice(0, 200),
@@ -185,13 +201,17 @@ export async function createInvoice(req, {
           gstRate:     ciGstRate,
           cgst:        ciCgst,
           sgst:        ciSgst,
+          igst:        ciIgst,
           total:       ciTotal,
           buyingPrice: Math.max(0, parseFloat(ci.buyingPrice) || 0),
         });
       }
     }
 
-    const totalAmount  = subtotal + cgst + sgst;
+    // Round the grand total to the nearest rupee (Tally-style Round Off). The
+    // rounding delta is derived at print time as totalAmount − (subtotal+cgst+sgst+igst).
+    const rawTotal     = subtotal + cgst + sgst + igst;
+    const totalAmount  = Math.round(rawTotal);
     const creditAmt    = creditAmount ? Math.max(0, parseFloat(creditAmount)) : 0;
     if (creditAmt > totalAmount + 0.01) {
       throw { status: 400, message: `Credit amount (₹${creditAmt.toFixed(2)}) cannot exceed invoice total (₹${totalAmount.toFixed(2)})` };
@@ -303,6 +323,7 @@ export async function createInvoice(req, {
           taxableAmount:     subtotal,
           cgst,
           sgst,
+          igst,
           totalAmount,
           paymentMode:       paymentMode       || 'CASH',
           cashAmount:        cashAmount        ? parseFloat(cashAmount)  : null,
@@ -334,6 +355,7 @@ export async function createInvoice(req, {
               gstRate:     item.gstRate,
               cgst:        item.cgst,
               sgst:        item.sgst,
+              igst:        item.igst || 0,
               total:       item.total,
             })),
           },
@@ -358,7 +380,7 @@ export async function createInvoice(req, {
             gstRate:         item.gstRate,
             taxableAmount:   item.taxableAmt,
             totalAmount:     item.total,
-            gstAmount:       item.cgst + item.sgst,
+            gstAmount:       item.cgst + item.sgst + (item.igst || 0),
             profit:          item.taxableAmt - (item.buyingPrice * item.qty),
             invoiceId:       inv.invoiceId,
             partyId:         partyId || null,
