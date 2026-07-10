@@ -32,6 +32,14 @@ function fmtPct(n) {
   return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/\.?0+$/, '');
 }
 
+// Insert invisible zero-width-space break opportunities into very long unbroken
+// runs (e.g. a pasted string with no spaces) so pdfmake can wrap them inside a
+// fixed-width cell — the row simply grows taller instead of overflowing the page
+// width. The full text is preserved and the breaks are not visible.
+function softWrap(text) {
+  return String(text ?? '').replace(/\S{31,}/g, run => run.replace(/(.{12})/g, '$1\u200B'));
+}
+
 // ─── Image helper ────────────────────────────────────────────────────────────
 async function fetchImageAsDataUri(url) {
   if (!url) return null;
@@ -450,7 +458,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
       widths: [58, '*'],
       body: buyerRows.map(([label, value, boldVal]) => [
         { text: label, fontSize: 8, color: '#555555', margin: [0, 1.5, 0, 1.5] },
-        { text: `:  ${value}`, fontSize: 8, bold: !!boldVal, margin: [0, 1.5, 0, 1.5] },
+        { text: `:  ${softWrap(value)}`, fontSize: 8, bold: !!boldVal, margin: [0, 1.5, 0, 1.5] },
       ]),
     },
     layout: 'noBorders',
@@ -487,7 +495,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     const discPct  = Number(item.discount) > 0 && Number(item.unitPrice) > 0 ? Math.round((Number(item.discount) / Number(item.unitPrice)) * 100) : 0;
     const row = [
       { text: String(idx + 1),                           alignment: 'center', fontSize: 8 },
-      { text: [item.partName, item.brand].filter(Boolean).join(' — '), fontSize: 8 },
+      { text: softWrap([item.partName, item.brand].filter(Boolean).join(' — ')), fontSize: 8 },
     ];
     if (showOem) row.push({ text: oemVal, alignment: 'center', fontSize: 8 });
     row.push(
@@ -612,7 +620,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
     const amt  = Number(item.taxableValue || 0) + Number(item.cgst || 0) + Number(item.sgst || 0);
     return [
       { text: String(idx + 1),                  alignment: 'center', fontSize: 8 },
-      { text: name,                              fontSize: 8 },
+      { text: softWrap(name),                    fontSize: 8 },
       { text: hsn,                               alignment: 'center', fontSize: 8 },
       { text: `${item.qty || 0} NOS`,                 alignment: 'center', fontSize: 8, bold: true },
       { text: Number(item.unitPrice || 0).toFixed(2), alignment: 'right',  fontSize: 8 },
@@ -626,7 +634,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
   // New items rows
   const newItemRows = (newInvoice?.items || []).map((item, idx) => [
     { text: String(idx + 1),                               alignment: 'center', fontSize: 8 },
-    { text: [item.partName, item.brand].filter(Boolean).join(' — '), fontSize: 8 },
+    { text: softWrap([item.partName, item.brand].filter(Boolean).join(' — ')), fontSize: 8 },
     { text: item.hsnCode || '',                            alignment: 'center', fontSize: 8 },
     { text: `${item.qty || 0} NOS`,                             alignment: 'center', fontSize: 8, bold: true },
     { text: Number(item.unitPrice || 0).toFixed(2),             alignment: 'right',  fontSize: 8 },
@@ -849,7 +857,7 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
     const amt  = Number(item.taxableValue || 0) + Number(item.cgst || 0) + Number(item.sgst || 0);
     return [
       { text: String(idx + 1),                  alignment: 'center', fontSize: 8 },
-      { text: name,                              fontSize: 8 },
+      { text: softWrap(name),                    fontSize: 8 },
       { text: hsn,                               alignment: 'center', fontSize: 8 },
       { text: `${item.qty || 0} NOS`,                 alignment: 'center', fontSize: 8, bold: true },
       { text: Number(item.unitPrice || 0).toFixed(2), alignment: 'right',  fontSize: 8 },
@@ -999,7 +1007,7 @@ export const generatePurchaseOrderPdf = async (po) => {
 
   const itemRows = items.map((item, idx) => [
     { text: String(idx + 1),                       alignment: 'center', fontSize: 8 },
-    { text: item.partName || '',                   fontSize: 8 },
+    { text: softWrap(item.partName || ''),         fontSize: 8 },
     { text: item.hsnCode || '',                    alignment: 'center', fontSize: 8 },
     { text: `${item.orderedQty} NOS`,              alignment: 'center', fontSize: 8, bold: true },
     { text: Number(item.unitPrice).toFixed(2),     alignment: 'right',  fontSize: 8 },
