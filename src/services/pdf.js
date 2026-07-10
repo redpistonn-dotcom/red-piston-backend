@@ -330,6 +330,16 @@ function buildLastPageSummary(invoice, totalQty) {
   const roundOff    = Number((totalAmount - (subtotal + cgst + sgst + igst)).toFixed(2));
   const pan         = invoice.shop?.pan || '';
 
+  // Payment breakdown (shown when the bill was split across methods, e.g. Cash + UPI)
+  const cashPaid   = Number(invoice.cashAmount   || 0);
+  const upiPaid    = Number(invoice.upiAmount    || 0);
+  const creditPaid = Number(invoice.creditAmount || 0);
+  const payParts = [];
+  if (cashPaid   > 0) payParts.push(`Cash: ₹${cashPaid.toFixed(2)}`);
+  if (upiPaid    > 0) payParts.push(`UPI/Card: ₹${upiPaid.toFixed(2)}${invoice.upiReference ? ` (Ref: ${invoice.upiReference})` : ''}`);
+  if (creditPaid > 0) payParts.push(`Credit/Udhaar: ₹${creditPaid.toFixed(2)}`);
+  const showPayBreakdown = payParts.length >= 2; // only meaningful when split across methods
+
   return [
     // ROUND OFF row (only shown when there is a rounding adjustment)
     ...(roundOff !== 0 ? [{
@@ -376,6 +386,14 @@ function buildLastPageSummary(invoice, totalQty) {
       ],
       margin: [0, 4, 0, 4],
     },
+    // Payment breakdown (Cash + UPI split, etc.)
+    ...(showPayBreakdown ? [{
+      text: [
+        { text: 'Payment Received:  ', bold: true, fontSize: 8 },
+        { text: payParts.join('   |   '), fontSize: 8 },
+      ],
+      margin: [0, 0, 0, 4],
+    }] : []),
     // GST tax-analysis table (Taxable Value | CGST | SGST/UTGST | Total Tax) + tax in words
     ...buildTaxAnalysisTable(invoice.items),
     // PAN + Declaration + Signatory
