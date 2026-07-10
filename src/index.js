@@ -243,7 +243,18 @@ async function ensureSchemaFixes() {
     await prisma.$executeRawUnsafe('ALTER TABLE movements DROP CONSTRAINT IF EXISTS chk_movement_qty_positive');
     console.log('[schema] ensured movements qty constraint allows signed adjustments');
   } catch (err) {
-    console.error('[schema] ensureSchemaFixes failed (non-fatal):', err?.message);
+    console.error('[schema] ensureSchemaFixes constraint failed (non-fatal):', err?.message);
+  }
+  try {
+    await prisma.$executeRawUnsafe('ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS mrp DECIMAL(10,2)');
+    await prisma.$executeRawUnsafe('ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS oem_number VARCHAR(255)');
+    await prisma.$executeRawUnsafe('ALTER TABLE shop_inventory ADD COLUMN IF NOT EXISTS mrp DECIMAL(10,2)');
+    await prisma.$executeRawUnsafe('ALTER TABLE master_parts ADD COLUMN IF NOT EXISTS mrp DECIMAL(10,2)');
+    await prisma.$executeRawUnsafe('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS custom_items_meta JSONB');
+    await prisma.$executeRawUnsafe('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS marketplace_order_id INTEGER');
+    console.log('[schema] ensured all recent invoice & inventory columns (mrp, oem_number, custom_items_meta) exist');
+  } catch (err) {
+    console.error('[schema] ensureSchemaFixes column additions failed (non-fatal):', err?.message);
   }
 }
 
@@ -257,26 +268,28 @@ if (process.env.REDIS_URL) {
   console.log("[App] Legacy cleanup started (no REDIS_URL)");
 }
 startMetricsReporting();
-const server = app.listen(PORT, () => {
-  console.log(`RedPiston backend running on http://localhost:${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`[email] RESEND_API_KEY set: ${!!process.env.RESEND_API_KEY}`);
-  console.log(`[email] RESEND_SENDER_EMAIL set: ${!!process.env.RESEND_SENDER_EMAIL}`);
-  ensureSchemaFixes();
+ensureSchemaFixes().finally(() => {
+  const server = app.listen(PORT, () => {
+    console.log(`RedPiston backend running on http://localhost:${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`[email] RESEND_API_KEY set: ${!!process.env.RESEND_API_KEY}`);
+    console.log(`[email] RESEND_SENDER_EMAIL set: ${!!process.env.RESEND_SENDER_EMAIL}`);
+  });
+
+  // Graceful shutdown — drain in-flight requests before exiting.
+  // Render / Docker send SIGTERM on deploy; SIGINT handles Ctrl+C in dev.
+  function gracefulShutdown(signal) {
+    console.log(`[shutdown] ${signal} received — closing server`);
+    server.close(async () => {
+      try { await Promise.all(workers.filter(Boolean).map(w => w.close())); } catch {}
+      try { await prisma.$disconnect(); } catch {}
+      console.log("[shutdown] Clean exit");
+      process.exit(0);
+    });
+    setTimeout(() => { console.error('[shutdown] Forced exit after 10 s'); process.exit(1); }, 10_000);
+  }
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 });
 
-// Graceful shutdown — drain in-flight requests before exiting.
-// Render / Docker send SIGTERM on deploy; SIGINT handles Ctrl+C in dev.
-function gracefulShutdown(signal) {
-  console.log(`[shutdown] ${signal} received — closing server`);
-  server.close(async () => {
-    try { await Promise.all(workers.filter(Boolean).map(w => w.close())); } catch {}
-    try { await prisma.$disconnect(); } catch {}
-    console.log("[shutdown] Clean exit");
-    process.exit(0);
-  });
-  // Force-kill if drain takes longer than 10 s (e.g. a stuck DB query)
-  setTimeout(() => { console.error('[shutdown] Forced exit after 10 s'); process.exit(1); }, 10_000);
-}
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+
