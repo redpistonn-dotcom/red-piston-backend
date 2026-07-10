@@ -98,6 +98,8 @@ export async function computeItemTotals(shopId, items, invType) {
       partName:    inv.masterPart.partName,
       brand:       inv.masterPart.brand,
       hsnCode:     inv.masterPart.hsnCode,
+      oemNumber:   item.oemNumber || inv.masterPart.primaryOemNumber || (Array.isArray(inv.masterPart.oemNumbers) ? inv.masterPart.oemNumbers[0] : null),
+      mrp:         item.mrp !== undefined && item.mrp !== null && item.mrp !== "" ? Number(item.mrp) : (inv.masterPart.mrp !== undefined && inv.masterPart.mrp !== null ? Number(inv.masterPart.mrp) : null),
       qty:         itemQty,
       unitPrice,
       discount,
@@ -174,6 +176,8 @@ export async function createInvoice(req, {
 
         processedCustomItems.push({
           name:        String(ci.name  || 'Custom Item').slice(0, 200),
+          oemNumber:   ci.oemNumber || null,
+          mrp:         ci.mrp !== undefined && ci.mrp !== null && ci.mrp !== "" ? Number(ci.mrp) : null,
           qty:         ciQty,
           unitPrice:   ciUnit,
           discount:    ciDisc,
@@ -317,6 +321,8 @@ export async function createInvoice(req, {
               partName:    item.partName,
               brand:       item.brand,
               hsnCode:     item.hsnCode,
+              oemNumber:   item.oemNumber || null,
+              mrp:         item.mrp !== undefined && item.mrp !== null ? Number(item.mrp) : null,
               qty:         item.qty,
               unitPrice:   item.unitPrice,
               discount:    item.discount,
@@ -520,7 +526,7 @@ router.get('/invoice/:id/pdf', authenticate, async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
       where:   { invoiceId: parseInt(req.params.id, 10) },
-      include: { items: true, shop: true, party: { select: { name: true, gstin: true, address: true } } },
+      include: { items: { include: { inventory: { include: { masterPart: true } } } }, shop: true, party: { select: { name: true, gstin: true, address: true } } },
     });
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
 
@@ -535,7 +541,7 @@ router.get('/invoice/:id/pdf', authenticate, async (req, res, next) => {
     }
     if (!isShopOwner && !isLinkedCustomer) return res.status(404).json({ error: 'Invoice not found' });
 
-    const pdfBuffer = await generateInvoicePdf(invoice);
+    const pdfBuffer = await generateInvoicePdf(invoice, { showOem: req.query.showOem === 'true', showMrp: req.query.showMrp === 'true' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="invoice-${invoice.invoiceNumber}.pdf"`);
     res.send(pdfBuffer);

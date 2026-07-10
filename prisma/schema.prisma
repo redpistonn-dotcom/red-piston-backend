@@ -1000,6 +1000,8 @@ model InvoiceItem {
   cgst        Decimal @db.Decimal(10, 2)
   sgst        Decimal @db.Decimal(10, 2)
   total       Decimal @db.Decimal(10, 2)
+  oemNumber   String? @map("oem_number")
+  mrp         Decimal? @db.Decimal(10, 2)
 
   invoice   Invoice       @relation(fields: [invoiceId], references: [invoiceId], onDelete: Cascade)
   inventory ShopInventory @relation(fields: [inventoryId], references: [inventoryId])

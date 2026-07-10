@@ -168,19 +168,33 @@ function buildPageHeader(shop, invoiceFields, buyerBlock, pageNum, title, invoic
   ];
 }
 
-// ─── 8-column product table header ───────────────────────────────────────────
-function productTableHeader() {
-  return [
+// ─── Dynamic product table header & widths ────────────────────────────────────
+function productTableHeader({ showOem = false, showMrp = false } = {}) {
+  const cols = [
     { text: 'Sl\nNo.', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' },
     { text: 'Description of Goods', bold: true, fontSize: 8, fillColor: '#F3F4F6' },
+  ];
+  if (showOem) cols.push({ text: 'OEM No.', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' });
+  cols.push(
     { text: 'HSN/SAC', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' },
     { text: 'Quantity', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' },
-    { text: 'Rate\n(Incl. of Tax)', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' },
+    { text: 'Rate\n(Incl. of Tax)', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' }
+  );
+  if (showMrp) cols.push({ text: 'MRP', bold: true, alignment: 'right', fontSize: 8, fillColor: '#F3F4F6' });
+  cols.push(
     { text: 'Rate', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' },
     { text: 'per', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' },
     { text: 'Disc.\n%', bold: true, alignment: 'center', fontSize: 8, fillColor: '#F3F4F6' },
-    { text: 'Amount', bold: true, alignment: 'right', fontSize: 8, fillColor: '#F3F4F6' },
-  ];
+    { text: 'Amount', bold: true, alignment: 'right', fontSize: 8, fillColor: '#F3F4F6' }
+  );
+  return cols;
+}
+
+function getTableWidths({ showOem = false, showMrp = false } = {}) {
+  if (showOem && showMrp) return [22, '*', 56, 45, 40, 48, 42, 42, 22, 28, 56];
+  if (showOem) return [24, '*', 60, 48, 44, 52, 46, 24, 32, 60];
+  if (showMrp) return [24, '*', 50, 44, 52, 44, 46, 24, 32, 60];
+  return ['*', 60, 60, 28, 60, 50, 28, 40, 70];
 }
 
 // ─── Per-page footer ──────────────────────────────────────────────────────────
@@ -302,8 +316,10 @@ function buildLastPageSummary(invoice, totalQty) {
 }
 
 // ─── TAX INVOICE PDF ──────────────────────────────────────────────────────────
-export const generateInvoicePdf = async (invoice) => {
+export const generateInvoicePdf = async (invoice, opts = {}) => {
   const { items, shop } = invoice;
+  const showOem = opts.showOem === true || opts.showOem === 'true';
+  const showMrp = opts.showMrp === true || opts.showMrp === 'true';
 
   const logoUrl    = shop?.logoUrl || shop?.photoUrl || null;
   const logoDataUri = await fetchImageAsDataUri(logoUrl);
@@ -339,17 +355,28 @@ export const generateInvoicePdf = async (invoice) => {
   if (shop?.state)            buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
 
   // Product rows
-  const itemRows = items.map((item, idx) => [
-    { text: String(idx + 1),                           alignment: 'center', fontSize: 8 },
-    { text: [item.partName, item.brand].filter(Boolean).join(' — '), fontSize: 8 },
-    { text: item.hsnCode || '',                        alignment: 'center', fontSize: 8 },
-    { text: `${item.qty} NOS`,                         alignment: 'center', fontSize: 8, bold: true },
-    { text: Number(item.unitPrice).toFixed(2),         alignment: 'right',  fontSize: 8 },
-    { text: Number(item.unitPrice).toFixed(2),         alignment: 'right',  fontSize: 8 },
-    { text: 'NOS',                                     alignment: 'center', fontSize: 8 },
-    { text: item.discountPercent ? `${item.discountPercent}` : '', alignment: 'center', fontSize: 8 },
-    { text: Number(item.total).toFixed(2),             alignment: 'right',  fontSize: 8 },
-  ]);
+  const itemRows = items.map((item, idx) => {
+    const oemVal = item.oemNumber || item.inventory?.masterPart?.primaryOemNumber || (Array.isArray(item.inventory?.masterPart?.oemNumbers) ? item.inventory.masterPart.oemNumbers[0] : '') || '—';
+    const mrpVal = item.mrp !== undefined && item.mrp !== null ? Number(item.mrp).toFixed(2) : (item.inventory?.masterPart?.mrp ? Number(item.inventory.masterPart.mrp).toFixed(2) : '—');
+    const row = [
+      { text: String(idx + 1),                           alignment: 'center', fontSize: 8 },
+      { text: [item.partName, item.brand].filter(Boolean).join(' — '), fontSize: 8 },
+    ];
+    if (showOem) row.push({ text: oemVal, alignment: 'center', fontSize: 8 });
+    row.push(
+      { text: item.hsnCode || '',                        alignment: 'center', fontSize: 8 },
+      { text: `${item.qty} NOS`,                         alignment: 'center', fontSize: 8, bold: true },
+      { text: Number(item.unitPrice).toFixed(2),         alignment: 'right',  fontSize: 8 }
+    );
+    if (showMrp) row.push({ text: mrpVal, alignment: 'right', fontSize: 8 });
+    row.push(
+      { text: Number(item.unitPrice).toFixed(2),         alignment: 'right',  fontSize: 8 },
+      { text: 'NOS',                                     alignment: 'center', fontSize: 8 },
+      { text: item.discountPercent ? `${item.discountPercent}` : '', alignment: 'center', fontSize: 8 },
+      { text: Number(item.total).toFixed(2),             alignment: 'right',  fontSize: 8 }
+    );
+    return row;
+  });
 
   const totalQty = items.reduce((s, i) => s + Number(i.qty), 0);
 
@@ -377,8 +404,8 @@ export const generateInvoicePdf = async (invoice) => {
       {
         table: {
           headerRows: 1,
-          widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
-          body: [productTableHeader(), ...itemRows],
+          widths: getTableWidths({ showOem, showMrp }),
+          body: [productTableHeader({ showOem, showMrp }), ...itemRows],
           dontBreakRows: false,
           keepWithHeaderRows: 1,
         },
