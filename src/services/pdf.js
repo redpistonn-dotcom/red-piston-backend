@@ -350,9 +350,11 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     { text: 'Buyer (Bill to)', bold: true, fontSize: 8 },
     { text: invoice.partyName || 'Walk-in Customer', bold: true, fontSize: 9 },
   ];
+  if (invoice.partyPhone)     buyerBlock.push({ text: `Phone        :  ${invoice.partyPhone}`, fontSize: 8 });
   if (invoice.billingAddress) buyerBlock.push({ text: invoice.billingAddress, fontSize: 8 });
   if (invoice.partyGstin)     buyerBlock.push({ text: `GSTIN/UIN    :  ${invoice.partyGstin}`, fontSize: 8 });
   if (shop?.state)            buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
+  if (invoice.notes)          buyerBlock.push({ text: `Remarks      :  ${invoice.notes}`, fontSize: 8 });
 
   // Product rows
   const itemRows = items.map((item, idx) => {
