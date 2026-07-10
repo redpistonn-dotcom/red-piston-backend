@@ -222,6 +222,8 @@ export async function createInvoice(req, {
     const paidAmount   = totalAmount - creditAmt;
 
     // ── Create invoice + movements in a single transaction ───────────────────
+    // 30s timeout: 20+ item invoices (movements + stock decrements) can exceed
+    // Prisma's 5s default, causing "Transaction not found" on large bills.
     const invoice = await prisma.$transaction(async (tx) => {
       // Generate invoice number INSIDE the transaction so the counter increment
       // and the invoice INSERT are in the same atomic unit.  If the transaction
@@ -427,7 +429,7 @@ export async function createInvoice(req, {
       }
 
       return inv;
-    });
+    }, { timeout: 30000 });
 
     // Audit: record sale/invoice creation (fire & forget — never blocks the response)
     writeAudit(req, {
