@@ -241,6 +241,18 @@ export async function createInvoice(req, {
     const isCreditSale = creditAmt > 0;
     const paidAmount   = totalAmount - creditAmt;
 
+    // Auto-save a walk-in as a reusable customer when name + phone + vehicle are
+    // all provided and no existing customer was linked. The matched/created party
+    // id lands in resolvedPartyId (resolved inside the transaction below), and the
+    // invoice + movements + ledger all link to it so the customer, their vehicle,
+    // and their history/credit become reusable next time.
+    let resolvedPartyId = partyId ? parseInt(String(partyId), 10) : null;
+    const autoSaveWalkin = !partyId
+      && !!(partyName    && String(partyName).trim())
+      && !!(partyPhone   && String(partyPhone).trim())
+      && !!(vehicleReg   && String(vehicleReg).trim())
+      && invType !== 'ESTIMATE' && invType !== 'RETURN';
+
     // ── Create invoice + movements in a single transaction ───────────────────
     // 30s timeout: 20+ item invoices (movements + stock decrements) can exceed
     // Prisma's 5s default, causing "Transaction not found" on large bills.
@@ -254,6 +266,39 @@ export async function createInvoice(req, {
       // (the DB unique constraint is global, not per-shop).
       // Format: RED-S{shopId}-YYYYMM-NNNN  e.g. RED-S3-202606-0001
       const invoiceNumber = `RED-S${req.shopId}-${yyyymm}-${String(seq).padStart(4, '0')}`;
+
+      // ── Auto-save walk-in customer (name + phone + vehicle all present) ────────
+      // Match an existing customer by phone to avoid duplicates; otherwise create
+      // one. Backfills blank GSTIN/address without overwriting existing data.
+      if (autoSaveWalkin && !resolvedPartyId) {
+        const phone = String(partyPhone).trim();
+        const existingParty = await tx.party.findFirst({
+          where:  { shopId: req.shopId, phone, type: 'CUSTOMER', deletedAt: null },
+          select: { partyId: true, gstin: true, address: true },
+        });
+        if (existingParty) {
+          resolvedPartyId = existingParty.partyId;
+          const patch = {};
+          if (!existingParty.gstin && partyGstin)      patch.gstin   = partyGstin;
+          if (!existingParty.address && billingAddress) patch.address = billingAddress;
+          if (Object.keys(patch).length) {
+            await tx.party.update({ where: { partyId: existingParty.partyId }, data: patch });
+          }
+        } else {
+          const createdParty = await tx.party.create({
+            data: {
+              shopId:  req.shopId,
+              name:    String(partyName).trim(),
+              phone,
+              gstin:   partyGstin    || null,
+              address: billingAddress || null,
+              type:    'CUSTOMER',
+            },
+            select: { partyId: true },
+          });
+          resolvedPartyId = createdParty.partyId;
+        }
+      }
 
       // ── Materialize custom items into real MasterPart + ShopInventory rows ────
       // so they're regular InvoiceItems from here on — same PDF rendering, same
@@ -312,7 +357,7 @@ export async function createInvoice(req, {
         data: {
           invoiceNumber,
           shopId:            req.shopId,
-          partyId:           partyId           || null,
+          partyId:           resolvedPartyId   || null,
           invoiceType:       invType,
           partyName:         partyName         || null,
           partyPhone:        partyPhone        || null,
@@ -383,7 +428,7 @@ export async function createInvoice(req, {
             gstAmount:       item.cgst + item.sgst + (item.igst || 0),
             profit:          item.taxableAmt - (item.buyingPrice * item.qty),
             invoiceId:       inv.invoiceId,
-            partyId:         partyId || null,
+            partyId:         resolvedPartyId || null,
             referenceNumber: invoiceNumber,
             invoiceNumber,
             partyName:       partyName || null,
@@ -421,10 +466,10 @@ export async function createInvoice(req, {
       }
 
       // ── Write PartyLedger debit if credit sale ──────────────────────────────
-      if (isCreditSale && partyId) {
+      if (isCreditSale && resolvedPartyId) {
         await writeLedgerDebit(tx, {
           shopId:      req.shopId,
-          partyId,
+          partyId:     resolvedPartyId,
           debitAmount: creditAmt,
           invoiceId:   inv.invoiceId,
           entryType:   'SALE_CREDIT',
@@ -448,10 +493,10 @@ export async function createInvoice(req, {
           where: { creditNoteId: creditNoteRow.creditNoteId },
           data:  { status: Number(updatedNote.remainingBalance) <= 0.01 ? 'FULLY_USED' : 'PARTIALLY_USED' },
         });
-        if (partyId) {
+        if (resolvedPartyId) {
           await writeLedgerDebit(tx, {
             shopId:      req.shopId,
-            partyId,
+            partyId:     resolvedPartyId,
             debitAmount: appliedAmt,
             invoiceId:   inv.invoiceId,
             entryType:   'CREDIT_NOTE_APPLIED',
@@ -463,6 +508,29 @@ export async function createInvoice(req, {
 
       return inv;
     }, { timeout: 30000 });
+
+    // Best-effort: link the vehicle to the auto-saved customer. Non-fatal — the
+    // sale is already committed, so a vehicle hiccup must never fail the request.
+    // make/model are unknown at POS (fill later in the Vehicles screen); dedupe by
+    // registration number within the shop.
+    if (autoSaveWalkin && resolvedPartyId && vehicleReg) {
+      try {
+        const reg = String(vehicleReg).trim().toUpperCase();
+        const existingVeh = await prisma.shopVehicle.findFirst({
+          where:  { shopId: req.shopId, registrationNumber: reg },
+          select: { vehicleId: true, ownerId: true },
+        });
+        if (!existingVeh) {
+          await prisma.shopVehicle.create({
+            data: { shopId: req.shopId, ownerId: resolvedPartyId, registrationNumber: reg, make: '', model: '' },
+          });
+        } else if (!existingVeh.ownerId) {
+          await prisma.shopVehicle.update({ where: { vehicleId: existingVeh.vehicleId }, data: { ownerId: resolvedPartyId } });
+        }
+      } catch (e) {
+        console.error('[billing] vehicle auto-link failed (non-fatal):', e?.message);
+      }
+    }
 
     // Audit: record sale/invoice creation (fire & forget — never blocks the response)
     writeAudit(req, {
@@ -477,7 +545,7 @@ export async function createInvoice(req, {
         itemCount:     processedItems.length + processedCustomItems.length,
         customItemCount: processedCustomItems.length || undefined,
         isCreditSale,
-        partyId:       partyId || null,
+        partyId:       resolvedPartyId || null,
       },
     });
 
