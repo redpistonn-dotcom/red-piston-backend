@@ -88,6 +88,16 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
         orderBy: [{ outstanding: 'desc' }, { name: 'asc' }],
         take:    limit,
         skip:    offset,
+        // Include the customer's most recent vehicle so the POS can auto-fill the
+        // registration number when the customer is selected.
+        include: {
+          shopVehicles: {
+            where:   { registrationNumber: { not: null } },
+            orderBy: { createdAt: 'desc' },
+            take:    1,
+            select:  { registrationNumber: true },
+          },
+        },
       }),
       prisma.party.count({ where }),
     ]);
