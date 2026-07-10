@@ -47,6 +47,13 @@ export async function nextSeq(tx, shopId, counterKey) {
  * @returns {string}  e.g. '202606'
  */
 export function currentYYYYMM() {
-  const now = new Date();
-  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+  // Compute the year/month in IST. Production servers run in UTC, so around
+  // midnight IST (and at month boundaries) getMonth()/getFullYear() would use
+  // the UTC date and could bucket an invoice into the wrong month.
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit',
+  }).formatToParts(new Date());
+  const year  = parts.find(p => p.type === 'year').value;
+  const month = parts.find(p => p.type === 'month').value;
+  return `${year}${month}`;
 }

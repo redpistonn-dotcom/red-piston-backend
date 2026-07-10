@@ -17,6 +17,58 @@ const fonts = {
 
 const printer = new PdfPrinter(fonts);
 
+// ─── Date helper ──────────────────────────────────────────────────────────────
+// Always render invoice dates in IST. Production servers run in UTC, so a bill
+// created early morning IST (e.g. 03:00 IST = 21:30 UTC the previous day) would
+// otherwise print the previous day's date. Forcing Asia/Kolkata fixes that.
+function fmtDateIST(value, opts = { day: '2-digit', month: 'short', year: 'numeric' }) {
+  if (!value) return '';
+  return new Date(value).toLocaleDateString('en-IN', { ...opts, timeZone: 'Asia/Kolkata' });
+}
+
+// ─── GST breakup helper ───────────────────────────────────────────────────────
+// Groups line items by their GST rate and returns CGST/SGST rows carrying the
+// applicable percentage, e.g. [ ['OUTPUT CGST @ 9%', '245.00'], ['OUTPUT SGST @ 9%', '245.00'] ].
+// For a single-rate invoice this yields one CGST + one SGST row; mixed-rate
+// invoices produce a labelled pair per rate. Falls back to the invoice-level
+// totals (with a derived rate) when line items lack per-item tax fields.
+function gstSummaryRows(items, invoiceCgst, invoiceSgst, subtotal) {
+  const byRate = new Map();
+  for (const it of (items || [])) {
+    const rate = Number(it.gstRate || 0);
+    if (rate <= 0) continue;
+    const cur = byRate.get(rate) || { cgst: 0, sgst: 0 };
+    cur.cgst += Number(it.cgst || 0);
+    cur.sgst += Number(it.sgst || 0);
+    byRate.set(rate, cur);
+  }
+
+  // Fallback: no usable per-item tax data → derive a single rate from totals.
+  if (byRate.size === 0) {
+    const derived = subtotal > 0 ? (Number(invoiceCgst) / subtotal) * 100 : 0;
+    const half = fmtPct(derived);
+    return [
+      [`OUTPUT CGST${half ? ` @ ${half}%` : ''}`, Number(invoiceCgst).toFixed(2)],
+      [`OUTPUT SGST${half ? ` @ ${half}%` : ''}`, Number(invoiceSgst).toFixed(2)],
+    ];
+  }
+
+  const rows = [];
+  for (const rate of [...byRate.keys()].sort((a, b) => a - b)) {
+    const { cgst, sgst } = byRate.get(rate);
+    const half = fmtPct(rate / 2);
+    rows.push([`OUTPUT CGST @ ${half}%`, cgst.toFixed(2)]);
+    rows.push([`OUTPUT SGST @ ${half}%`, sgst.toFixed(2)]);
+  }
+  return rows;
+}
+
+// Format a percentage without trailing ".00" (9 not 9.00, 2.5 stays 2.5).
+function fmtPct(n) {
+  const v = Number(n) || 0;
+  return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/\.?0+$/, '');
+}
+
 // ─── Image helper ────────────────────────────────────────────────────────────
 async function fetchImageAsDataUri(url) {
   if (!url) return null;
@@ -216,8 +268,7 @@ function buildLastPageSummary(invoice, totalQty) {
   const pan         = invoice.shop?.pan || '';
 
   const summaryRows = [
-    ['OUTPUT CGST',  `${cgst.toFixed(2)}`],
-    ['OUTPUT SGST',  `${sgst.toFixed(2)}`],
+    ...gstSummaryRows(invoice.items, cgst, sgst, subtotal),
     ['ROUND OFF',    `${roundOff !== 0 ? (roundOff > 0 ? '' : '(-)') + Math.abs(roundOff).toFixed(2) : '0.00'}`],
     ['Total',        `${totalAmount.toFixed(2)}`, true],
   ];
@@ -324,7 +375,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
   const logoUrl    = shop?.logoUrl || shop?.photoUrl || null;
   const logoDataUri = await fetchImageAsDataUri(logoUrl);
 
-  const dateStr = new Date(invoice.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dateStr = fmtDateIST(invoice.createdAt);
 
   // Invoice fields for the right-side grid (label/value pairs, 2 per row)
   const orderIdVal = String(invoice.invoiceId || invoice.orderNo || invoice.marketplaceOrderId || '');
@@ -442,7 +493,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
   const logoUrl    = shop?.logoUrl || shop?.photoUrl || null;
   const logoDataUri = await fetchImageAsDataUri(logoUrl);
 
-  const dateStr = newInvoice?.createdAt ? new Date(newInvoice.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  const dateStr = fmtDateIST(newInvoice?.createdAt);
   const originalInvoiceNo = salesReturn?.invoice?.invoiceNumber || '';
 
   const orderIdVal = String(newInvoice?.invoiceId || newInvoice?.orderNo || exchangeOrder?.exchangeId || '');
@@ -680,7 +731,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
 export const generateReturnInvoicePdf = async (salesReturn) => {
   const { items = [], invoice: origInvoice, creditNote, shop } = salesReturn || {};
 
-  const dateStr = salesReturn?.createdAt ? new Date(salesReturn.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  const dateStr = fmtDateIST(salesReturn?.createdAt);
   const originalInvoiceNo = origInvoice?.invoiceNumber || '';
 
   const orderIdVal = String(salesReturn?.returnId || '');
@@ -730,6 +781,10 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
   const totalAmount = Number(creditNote?.totalAmount || 0);
   const cgst        = Number(creditNote?.cgst || 0);
   const sgst        = Number(creditNote?.sgst || 0);
+  const retTaxable  = totalAmount - cgst - sgst;
+  const retPct      = retTaxable > 0 ? fmtPct((cgst / retTaxable) * 100) : '';
+  const cgstLabel   = `OUTPUT CGST${retPct ? ` @ ${retPct}%` : ''}`;
+  const sgstLabel   = `OUTPUT SGST${retPct ? ` @ ${retPct}%` : ''}`;
 
   const tableLayout = {
     hLineColor: () => '#000000',
@@ -769,13 +824,13 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
           body: [
             [
               { text: '', border: [true, false, false, false] }, {}, {}, {},
-              { text: 'OUTPUT CGST', italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
+              { text: cgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
               { text: '', border: [false, false, false, false] },
               { text: cgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
             ],
             [
               { text: '', border: [true, false, false, false] }, {}, {}, {},
-              { text: 'OUTPUT SGST', italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
+              { text: sgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
               { text: '', border: [false, false, false, false] },
               { text: sgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
             ],
@@ -868,13 +923,13 @@ export const generatePurchaseOrderPdf = async (po) => {
   const logoUrl    = shop?.logoUrl || shop?.photoUrl || null;
   const logoDataUri = await fetchImageAsDataUri(logoUrl);
 
-  const dateStr = new Date(po.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dateStr = fmtDateIST(po.createdAt);
 
   const invoiceFields = [
     ['PO No.',  String(po.poNumber || '')],
     ['Dated',   dateStr],
     ['Status',  po.status || ''],
-    ['Expected', po.expectedAt ? new Date(po.expectedAt).toLocaleDateString('en-IN') : ''],
+    ['Expected', po.expectedAt ? fmtDateIST(po.expectedAt, { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''],
     ['Items',   String(items.length)],
     ['Remarks', po.notes || ''],
     ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''],
@@ -903,6 +958,10 @@ export const generatePurchaseOrderPdf = async (po) => {
   const totalAmount = Number(po.totalAmount || 0);
   const cgst        = Number(po.cgst || 0);
   const sgst        = Number(po.sgst || 0);
+  const poTaxable   = totalAmount - cgst - sgst;
+  const poPct       = poTaxable > 0 ? fmtPct((cgst / poTaxable) * 100) : '';
+  const poCgstLabel = `CGST${poPct ? ` @ ${poPct}%` : ''}`;
+  const poSgstLabel = `SGST${poPct ? ` @ ${poPct}%` : ''}`;
 
   const pageHeader = buildPageHeader(shop, invoiceFields, buyerBlock, 1, 'PURCHASE ORDER', po.poNumber, dateStr);
 
@@ -945,7 +1004,7 @@ export const generatePurchaseOrderPdf = async (po) => {
             [
               { text: '', border: [true, false, false, false] },
               {}, {}, {},
-              { text: 'CGST', italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 },
+              { text: poCgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 },
               {}, {},
               { text: '', border: [false, false, false, false] },
               { text: cgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
@@ -953,7 +1012,7 @@ export const generatePurchaseOrderPdf = async (po) => {
             [
               { text: '', border: [true, false, false, false] },
               {}, {}, {},
-              { text: 'SGST', italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 },
+              { text: poSgstLabel, italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 },
               {}, {},
               { text: '', border: [false, false, false, false] },
               { text: sgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
