@@ -130,7 +130,7 @@ export async function computeItemTotals(shopId, items, invType) {
  */
 export async function createInvoice(req, {
   items, customItems, partyId, partyName, partyPhone, partyGstin,
-  billingAddress,
+  billingAddress, vehicleReg,
   invoiceType,
   paymentMode, cashAmount, upiAmount, creditAmount,
   upiReference,
@@ -298,6 +298,7 @@ export async function createInvoice(req, {
           partyPhone:        partyPhone        || null,
           partyGstin:        partyGstin        || null,
           billingAddress:    billingAddress    || null,
+          vehicleReg:        vehicleReg        || null,
           subtotal,
           taxableAmount:     subtotal,
           cgst,

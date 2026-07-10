@@ -340,13 +340,14 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
   // Buyer block
   const buyerBlock = [
     { text: 'Buyer (Bill to)', bold: true, fontSize: 8 },
-    { text: invoice.partyName || 'Walk-in Customer', bold: true, fontSize: 9 },
+    { text: invoice.partyName || 'Walk-in Customer', bold: true, fontSize: 9, margin: [0, 1, 0, 2] },
   ];
-  if (invoice.partyPhone)     buyerBlock.push({ text: `Phone        :  ${invoice.partyPhone}`, fontSize: 8 });
-  if (invoice.billingAddress || invoice.customerAddress) buyerBlock.push({ text: invoice.billingAddress || invoice.customerAddress, fontSize: 8 });
-  if (invoice.partyGstin)     buyerBlock.push({ text: `GSTIN/UIN    :  ${invoice.partyGstin}`, fontSize: 8 });
-  if (shop?.state)            buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
-  if (invoice.notes)          buyerBlock.push({ text: `Remarks      :  ${invoice.notes}`, fontSize: 8 });
+  if (invoice.partyPhone)     buyerBlock.push({ text: `Phone        :  ${invoice.partyPhone}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (invoice.billingAddress || invoice.customerAddress) buyerBlock.push({ text: invoice.billingAddress || invoice.customerAddress, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (invoice.partyGstin)     buyerBlock.push({ text: `GSTIN/UIN    :  ${invoice.partyGstin}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shop?.state)            buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (invoice.vehicleReg)     buyerBlock.push({ text: `Vehicle Reg  :  ${invoice.vehicleReg}`, fontSize: 8, bold: true, margin: [0, 1, 0, 1] });
+  if (invoice.notes)          buyerBlock.push({ text: `Remarks      :  ${invoice.notes}`, fontSize: 8, margin: [0, 1, 0, 1] });
 
   // Product rows
   const itemRows = items.map((item, idx) => {
@@ -463,13 +464,14 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
 
   const buyerBlock = [
     { text: 'Customer (Bill to)', bold: true, fontSize: 8 },
-    { text: partyName, bold: true, fontSize: 9 },
+    { text: partyName, bold: true, fontSize: 9, margin: [0, 1, 0, 2] },
   ];
-  if (partyPhone) buyerBlock.push({ text: `Phone        :  ${partyPhone}`, fontSize: 8 });
-  if (partyAddr)  buyerBlock.push({ text: partyAddr, fontSize: 8 });
-  if (partyGstin) buyerBlock.push({ text: `GSTIN/UIN    :  ${partyGstin}`, fontSize: 8 });
-  if (shop?.state) buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
-  if (newInvoice?.notes) buyerBlock.push({ text: `Remarks      :  ${newInvoice.notes}`, fontSize: 8 });
+  if (partyPhone) buyerBlock.push({ text: `Phone        :  ${partyPhone}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (partyAddr)  buyerBlock.push({ text: partyAddr, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (partyGstin) buyerBlock.push({ text: `GSTIN/UIN    :  ${partyGstin}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shop?.state) buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (newInvoice?.vehicleReg) buyerBlock.push({ text: `Vehicle Reg  :  ${newInvoice.vehicleReg}`, fontSize: 8, bold: true, margin: [0, 1, 0, 1] });
+  if (newInvoice?.notes) buyerBlock.push({ text: `Remarks      :  ${newInvoice.notes}`, fontSize: 8, margin: [0, 1, 0, 1] });
 
   // Returned items rows
   const oldItemRows = (salesReturn?.items || []).map((item, idx) => {
@@ -698,13 +700,14 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
 
   const buyerBlock = [
     { text: 'Customer (Bill to)', bold: true, fontSize: 8 },
-    { text: partyName, bold: true, fontSize: 9 },
+    { text: partyName, bold: true, fontSize: 9, margin: [0, 1, 0, 2] },
   ];
-  if (partyPhone) buyerBlock.push({ text: `Phone        :  ${partyPhone}`, fontSize: 8 });
-  if (partyAddr)  buyerBlock.push({ text: partyAddr, fontSize: 8 });
-  if (partyGstin) buyerBlock.push({ text: `GSTIN/UIN    :  ${partyGstin}`, fontSize: 8 });
-  if (shop?.state) buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
-  if (salesReturn?.notes || origInvoice?.notes) buyerBlock.push({ text: `Remarks      :  ${salesReturn?.notes || origInvoice?.notes}`, fontSize: 8 });
+  if (partyPhone) buyerBlock.push({ text: `Phone        :  ${partyPhone}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (partyAddr)  buyerBlock.push({ text: partyAddr, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (partyGstin) buyerBlock.push({ text: `GSTIN/UIN    :  ${partyGstin}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shop?.state) buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (origInvoice?.vehicleReg) buyerBlock.push({ text: `Vehicle Reg  :  ${origInvoice.vehicleReg}`, fontSize: 8, bold: true, margin: [0, 1, 0, 1] });
+  if (salesReturn?.notes || origInvoice?.notes) buyerBlock.push({ text: `Remarks      :  ${salesReturn?.notes || origInvoice?.notes}`, fontSize: 8, margin: [0, 1, 0, 1] });
 
   const itemRows = items.map((item, idx) => {
     const name = item.invoiceItem?.partName || item.inventory?.masterPart?.partName || 'Item';
