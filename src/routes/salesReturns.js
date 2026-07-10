@@ -24,6 +24,7 @@ import { financialYearKey, isGstAdjustable, currentGstPeriod, isPeriodLocked } f
 import { writeAudit, ET, ACT } from '../lib/audit.js';
 import { writeLedgerEntry } from './parties.js';
 import { loadReturnPolicyWindows, resolveReturnPolicyDays } from '../lib/return-policy.js';
+import { generateReturnInvoicePdf } from '../services/pdf.js';
 
 const router = Router();
 
@@ -590,6 +591,40 @@ router.get('/:id', authenticate, requireShopOwner, requirePermission('billing.vi
     });
     if (!salesReturn) return res.status(404).json({ success: false, error: { message: 'Return not found' } });
     res.json({ success: true, salesReturn });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /:id/pdf — printable Credit Note / Return Invoice ───────────────────
+router.get('/:id/pdf', authenticate, requireShopOwner, requirePermission('billing.view'), async (req, res, next) => {
+  try {
+    const returnId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(returnId)) return res.status(400).json({ success: false, error: { message: 'Invalid return id' } });
+
+    const salesReturn = await prisma.salesReturn.findFirst({
+      where: { returnId, shopId: req.shopId },
+      include: {
+        items: {
+          include: {
+            invoiceItem: { select: { partName: true, hsnCode: true } },
+            inventory:   { include: { masterPart: { select: { partName: true, hsnCode: true } } } },
+          },
+        },
+        creditNote: true,
+        invoice:    { select: { invoiceNumber: true, partyName: true } },
+        party:      { select: { name: true, gstin: true } },
+        shop:       true,
+      },
+    });
+    if (!salesReturn) return res.status(404).json({ success: false, error: { message: 'Return not found' } });
+
+    // Attach shop from the request scope (always authoritative)
+    const shop = await prisma.shop.findUnique({ where: { shopId: req.shopId } });
+    salesReturn.shop = shop;
+
+    const pdfBuffer = await generateReturnInvoicePdf(salesReturn);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="return-${salesReturn.returnNo || returnId}.pdf"`);
+    res.send(pdfBuffer);
   } catch (err) { next(err); }
 });
 

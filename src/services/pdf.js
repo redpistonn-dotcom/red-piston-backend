@@ -651,6 +651,185 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
   });
 };
 
+// ─── SALES RETURN INVOICE PDF ────────────────────────────────────────────────
+// Generates a printable Credit Note / Return Invoice in the same style as the
+// TAX INVOICE and EXCHANGE INVOICE.
+export const generateReturnInvoicePdf = async (salesReturn) => {
+  const { items, invoice: origInvoice, creditNote, shop } = salesReturn;
+
+  const dateStr = new Date(salesReturn.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const originalInvoiceNo = origInvoice?.invoiceNumber || '';
+
+  const invoiceFields = [
+    ['Return No.',        String(salesReturn.returnNo || salesReturn.returnId || '')],
+    ['Dated',            dateStr],
+    ['Original Invoice', originalInvoiceNo],
+    ['Reason',           (salesReturn.reason || '').replace(/_/g, ' ')],
+    ['Refund Mode',      salesReturn.refundMode || ''],
+    ['', ''],
+    ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''],
+  ];
+
+  const partyName  = salesReturn.party?.name  || origInvoice?.partyName  || 'Walk-in Customer';
+  const partyGstin = salesReturn.party?.gstin || '';
+
+  const buyerBlock = [
+    { text: 'Customer (Bill to)', bold: true, fontSize: 8 },
+    { text: partyName, bold: true, fontSize: 9 },
+  ];
+  if (partyGstin) buyerBlock.push({ text: `GSTIN/UIN    :  ${partyGstin}`, fontSize: 8 });
+  if (shop?.state) buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
+
+  const itemRows = items.map((item, idx) => {
+    const name = item.invoiceItem?.partName || item.inventory?.masterPart?.partName || 'Item';
+    const hsn  = item.invoiceItem?.hsnCode  || item.inventory?.masterPart?.hsnCode  || '';
+    const amt  = Number(item.taxableValue || 0) + Number(item.cgst || 0) + Number(item.sgst || 0);
+    return [
+      { text: String(idx + 1),                  alignment: 'center', fontSize: 8 },
+      { text: name,                              fontSize: 8 },
+      { text: hsn,                               alignment: 'center', fontSize: 8 },
+      { text: `${item.qty} NOS`,                 alignment: 'center', fontSize: 8, bold: true },
+      { text: Number(item.unitPrice).toFixed(2), alignment: 'right',  fontSize: 8 },
+      { text: Number(item.unitPrice).toFixed(2), alignment: 'right',  fontSize: 8 },
+      { text: 'NOS',                             alignment: 'center', fontSize: 8 },
+      { text: '',                                alignment: 'center', fontSize: 8 },
+      { text: amt.toFixed(2),                    alignment: 'right',  fontSize: 8 },
+    ];
+  });
+
+  const totalQty    = items.reduce((s, i) => s + Number(i.qty), 0);
+  const totalAmount = Number(creditNote?.totalAmount || 0);
+  const cgst        = Number(creditNote?.cgst || 0);
+  const sgst        = Number(creditNote?.sgst || 0);
+
+  const tableLayout = {
+    hLineColor: () => '#000000',
+    vLineColor: () => '#000000',
+    hLineWidth: () => 0.4,
+    vLineWidth: () => 0.4,
+  };
+
+  const docDef = {
+    pageSize: 'A4',
+    pageMargins: [30, 175, 30, 60],
+
+    header: (currentPage) => {
+      const hdr = buildPageHeader(shop, invoiceFields, buyerBlock, currentPage, 'CREDIT NOTE / RETURN INVOICE', salesReturn.returnNo || salesReturn.returnId, dateStr);
+      return { stack: hdr, margin: [30, 20, 30, 0] };
+    },
+
+    footer: () => ({
+      stack: buildPageFooter(),
+      margin: [30, 0, 30, 10],
+    }),
+
+    content: [
+      {
+        table: {
+          headerRows: 1,
+          widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
+          body: [productTableHeader(), ...itemRows],
+        },
+        layout: tableLayout,
+        margin: [0, 0, 0, 0],
+      },
+      // Summary rows
+      {
+        table: {
+          widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
+          body: [
+            [
+              { text: '', border: [true, false, false, false] }, {}, {}, {},
+              { text: 'OUTPUT CGST', italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
+              { text: '', border: [false, false, false, false] },
+              { text: cgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
+            ],
+            [
+              { text: '', border: [true, false, false, false] }, {}, {}, {},
+              { text: 'OUTPUT SGST', italics: true, fontSize: 8, border: [false, false, false, false], colSpan: 3 }, {}, {},
+              { text: '', border: [false, false, false, false] },
+              { text: sgst.toFixed(2), alignment: 'right', fontSize: 8, border: [false, false, true, false] },
+            ],
+            [
+              { text: '', border: [true, false, false, true] }, {}, {}, {},
+              { text: 'Total Credit', bold: true, fontSize: 9, border: [false, false, false, true], colSpan: 3 }, {}, {},
+              { text: '', border: [false, false, false, true] },
+              { text: totalAmount.toFixed(2), bold: true, fontSize: 9, alignment: 'right', border: [false, false, true, true] },
+            ],
+          ],
+        },
+        layout: tableLayout,
+        margin: [0, 0, 0, 0],
+      },
+      {
+        table: {
+          widths: ['*', 60, 60, 28, 60, 50, 28, 40, 70],
+          body: [[
+            { text: 'Total', bold: true, fontSize: 9, border: [true, true, false, true] },
+            {}, {}, { text: `${totalQty} NOS`, bold: true, alignment: 'center', fontSize: 9, border: [false, true, false, true] },
+            {}, {}, {}, {},
+            { text: `₹ ${totalAmount.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 9, border: [false, true, true, true] },
+          ]],
+        },
+        layout: tableLayout,
+        margin: [0, 0, 0, 4],
+      },
+      {
+        columns: [
+          { text: `Amount Chargeable (in words)\n${numberToWords(totalAmount)}`, fontSize: 8, width: '*' },
+          { text: 'E. & O.E', fontSize: 8, alignment: 'right', width: 'auto' },
+        ],
+        margin: [0, 4, 0, 4],
+      },
+      {
+        table: {
+          widths: ['60%', '40%'],
+          body: [[
+            {
+              stack: [
+                shop?.pan ? { text: `Company's PAN    :  ${shop.pan}`, fontSize: 8, bold: true } : { text: '' },
+                { text: 'Declaration', fontSize: 8, bold: true, margin: [0, 4, 0, 0] },
+                { text: '1. GOODS ONCE SOLD NOT TAKEN BACK', fontSize: 7, italics: true },
+                { text: "We declare that this credit note shows the actual value of goods returned and that all particulars are true and correct.", fontSize: 7, italics: true },
+              ],
+              border: [true, true, false, true],
+              margin: [2, 2, 2, 2],
+            },
+            {
+              stack: [
+                { text: `for ${shop?.name || 'Shri Mahesh Automobiles'}`, fontSize: 8, alignment: 'center' },
+                { text: '\n\n\n', fontSize: 8 },
+                { text: 'Authorised Signatory', fontSize: 8, alignment: 'center' },
+              ],
+              border: [true, true, true, true],
+              margin: [2, 2, 2, 2],
+            },
+          ]],
+        },
+        layout: {
+          hLineColor: () => '#000000',
+          vLineColor: () => '#000000',
+          hLineWidth: () => 0.5,
+          vLineWidth: () => 0.5,
+        },
+        margin: [0, 0, 0, 6],
+      },
+    ],
+
+    styles: { header: { fontSize: 9, color: '#374151' } },
+    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#374151' },
+  };
+
+  return new Promise((resolve, reject) => {
+    const doc = printer.createPdfKitDocument(docDef);
+    const chunks = [];
+    doc.on('data', chunk => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    doc.end();
+  });
+};
+
 // ─── PURCHASE ORDER PDF ───────────────────────────────────────────────────────
 export const generatePurchaseOrderPdf = async (po) => {
   const { items, shop, party } = po;
