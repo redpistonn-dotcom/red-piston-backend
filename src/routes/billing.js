@@ -243,48 +243,49 @@ export async function createInvoice(req, {
       // of every catalog search (those filter to status='VERIFIED') and out of
       // this shop's own browsable inventory (see inventory.js's masterPart.source
       // exclusion) — they only ever surface via this specific invoice/return.
-      const materializedCustomItems = [];
-      for (const ci of processedCustomItems) {
-        const customPart = await tx.masterPart.create({
-          data: {
-            partName:           ci.name,
-            gstRate:            ci.gstRate,
-            status:             'CUSTOM',
-            source:             'CUSTOM',
-            unitOfSale:         'Piece',
-            contributedByShopId: req.shopId,
-            isUniversal:        true,
-            requiresFitment:    false,
-          },
-        });
-        const customInv = await tx.shopInventory.create({
-          data: {
-            shopId:         req.shopId,
-            masterPartId:   customPart.masterPartId,
-            sellingPrice:   ci.unitPrice,
-            buyingPrice:    ci.buyingPrice || null,
-            // Seeded to exactly this sale's qty so the standard atomic decrement
-            // below zeroes it out cleanly — custom items were never "stocked".
-            stockQty:       ci.qty,
-            customPartName: ci.name,
-          },
-        });
-        materializedCustomItems.push({
-          inventoryId: customInv.inventoryId,
-          partName:    ci.name,
-          brand:       null,
-          hsnCode:     null,
-          qty:         ci.qty,
-          unitPrice:   ci.unitPrice,
-          discount:    ci.discount,
-          taxableAmt:  ci.taxableAmt,
-          gstRate:     ci.gstRate,
-          cgst:        ci.cgst,
-          sgst:        ci.sgst,
-          total:       ci.total,
-          buyingPrice: ci.buyingPrice,
-        });
-      }
+      // Parallelize across custom items (each pair is sequential within itself
+      // since the inventory create needs the masterPartId from the part create).
+      const materializedCustomItems = await Promise.all(
+        processedCustomItems.map(async (ci) => {
+          const customPart = await tx.masterPart.create({
+            data: {
+              partName:           ci.name,
+              gstRate:            ci.gstRate,
+              status:             'CUSTOM',
+              source:             'CUSTOM',
+              unitOfSale:         'Piece',
+              contributedByShopId: req.shopId,
+              isUniversal:        true,
+              requiresFitment:    false,
+            },
+          });
+          const customInv = await tx.shopInventory.create({
+            data: {
+              shopId:         req.shopId,
+              masterPartId:   customPart.masterPartId,
+              sellingPrice:   ci.unitPrice,
+              buyingPrice:    ci.buyingPrice || null,
+              stockQty:       ci.qty,
+              customPartName: ci.name,
+            },
+          });
+          return {
+            inventoryId: customInv.inventoryId,
+            partName:    ci.name,
+            brand:       null,
+            hsnCode:     null,
+            qty:         ci.qty,
+            unitPrice:   ci.unitPrice,
+            discount:    ci.discount,
+            taxableAmt:  ci.taxableAmt,
+            gstRate:     ci.gstRate,
+            cgst:        ci.cgst,
+            sgst:        ci.sgst,
+            total:       ci.total,
+            buyingPrice: ci.buyingPrice,
+          };
+        })
+      );
       const allItems = [...processedItems, ...materializedCustomItems];
 
       const inv = await tx.invoice.create({
@@ -340,49 +341,58 @@ export async function createInvoice(req, {
       });
 
       // ── Create SALE movements + decrement stock (skip for ESTIMATE) ─────────
+      // Batched: one createMany for all movements, then parallel stock updates.
+      // Previously N×2 serial queries — now 2 queries regardless of item count.
       if (invType !== 'ESTIMATE') {
-        for (const item of allItems) {
-          const profit = item.taxableAmt - (item.buyingPrice * item.qty);
-          await tx.movement.create({
-            data: {
-              shopId:       req.shopId,
-              inventoryId:  item.inventoryId,
-              type:         invType === 'RETURN' ? 'RETURN_OUT' : 'SALE',
-              qty:          item.qty,
-              unitPrice:    item.unitPrice,
-              gstRate:      item.gstRate,
-              taxableAmount: item.taxableAmt,
-              totalAmount:  item.total,
-              gstAmount:    item.cgst + item.sgst,
-              profit,
-              invoiceId:    inv.invoiceId,
-              partyId:      partyId || null,
-              referenceNumber: invoiceNumber,
-              invoiceNumber,
-              partyName:    partyName || null,
-              paymentMode:  paymentMode || 'CASH',
-              correlationId: correlationId || undefined,
-              createdBy:    req.user.userId,
-            },
-          });
+        const now = new Date();
+        const moveType = invType === 'RETURN' ? 'RETURN_OUT' : 'SALE';
 
-          if (invType === 'RETURN') {
-            await tx.shopInventory.update({
+        await tx.movement.createMany({
+          data: allItems.map(item => ({
+            shopId:          req.shopId,
+            inventoryId:     item.inventoryId,
+            type:            moveType,
+            qty:             item.qty,
+            unitPrice:       item.unitPrice,
+            gstRate:         item.gstRate,
+            taxableAmount:   item.taxableAmt,
+            totalAmount:     item.total,
+            gstAmount:       item.cgst + item.sgst,
+            profit:          item.taxableAmt - (item.buyingPrice * item.qty),
+            invoiceId:       inv.invoiceId,
+            partyId:         partyId || null,
+            referenceNumber: invoiceNumber,
+            invoiceNumber,
+            partyName:       partyName || null,
+            paymentMode:     paymentMode || 'CASH',
+            correlationId:   correlationId || null,
+            createdBy:       req.user.userId,
+            createdAt:       now,
+          })),
+        });
+
+        if (invType === 'RETURN') {
+          await Promise.all(allItems.map(item =>
+            tx.shopInventory.update({
               where: { inventoryId: item.inventoryId },
               data:  { stockQty: { increment: item.qty } },
-            });
-          } else {
-            // Atomic decrement: only succeeds when stockQty >= qty at the moment of
-            // the UPDATE, eliminating the TOCTOU race between the pre-flight check
-            // above and the actual decrement. If count === 0 another request beat us
-            // to the last units and we must abort the transaction.
-            const deducted = await tx.shopInventory.updateMany({
-              where: { inventoryId: item.inventoryId, stockQty: { gte: item.qty } },
-              data:  { stockQty: { decrement: item.qty }, lastSoldAt: new Date() },
-            });
-            if (deducted.count === 0) {
-              throw { status: 400, message: `Insufficient stock for ${item.partName} — it was just sold to another customer` };
-            }
+            })
+          ));
+        } else {
+          // Atomic decrement per item — the WHERE stockQty >= qty guard prevents
+          // overselling even under concurrent requests. Run in parallel since each
+          // targets a different inventoryId row.
+          const deductResults = await Promise.all(
+            allItems.map(item =>
+              tx.shopInventory.updateMany({
+                where: { inventoryId: item.inventoryId, stockQty: { gte: item.qty } },
+                data:  { stockQty: { decrement: item.qty }, lastSoldAt: now },
+              })
+            )
+          );
+          const failedIdx = deductResults.findIndex(r => r.count === 0);
+          if (failedIdx !== -1) {
+            throw { status: 400, message: `Insufficient stock for ${allItems[failedIdx].partName} — it was just sold to another customer` };
           }
         }
       }
