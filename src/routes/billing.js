@@ -520,7 +520,7 @@ router.get('/invoice/:id/pdf', authenticate, async (req, res, next) => {
   try {
     const invoice = await prisma.invoice.findUnique({
       where:   { invoiceId: parseInt(req.params.id, 10) },
-      include: { items: true, shop: true },
+      include: { items: true, shop: true, party: { select: { name: true, gstin: true, address: true } } },
     });
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
 
