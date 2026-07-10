@@ -230,10 +230,10 @@ export async function createInvoice(req, {
       // rolls back (e.g. stock check fails) the counter rolls back too.
       const yyyymm = currentYYYYMM();
       const seq = await nextSeq(tx, req.shopId, `INV-${yyyymm}`);
-      // Prefix with shopId so the number is globally unique across shops
+      // RED brand prefix + shopId so the number is globally unique across shops
       // (the DB unique constraint is global, not per-shop).
-      // Format: S{shopId}-YYYYMM-NNNN  e.g. S3-202606-0001
-      const invoiceNumber = `S${req.shopId}-${yyyymm}-${String(seq).padStart(4, '0')}`;
+      // Format: RED-S{shopId}-YYYYMM-NNNN  e.g. RED-S3-202606-0001
+      const invoiceNumber = `RED-S${req.shopId}-${yyyymm}-${String(seq).padStart(4, '0')}`;
 
       // ── Materialize custom items into real MasterPart + ShopInventory rows ────
       // so they're regular InvoiceItems from here on — same PDF rendering, same

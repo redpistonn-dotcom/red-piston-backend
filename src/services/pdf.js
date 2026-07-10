@@ -378,7 +378,10 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
   const dateStr = fmtDateIST(invoice.createdAt);
 
   // Invoice fields for the right-side grid (label/value pairs, 2 per row)
-  const orderIdVal = String(invoice.invoiceId || invoice.orderNo || invoice.marketplaceOrderId || '');
+  // Order ID is RED-branded to match the Orders list (RED-SO-<invoiceId>).
+  const orderIdVal = invoice.invoiceId
+    ? `RED-SO-${String(invoice.invoiceId).padStart(5, '0')}`
+    : String(invoice.orderNo || invoice.marketplaceOrderId || '');
   const invoiceFields = [
     ['Invoice No.', String(invoice.invoiceNumber || '')],
     ['Dated', dateStr],
