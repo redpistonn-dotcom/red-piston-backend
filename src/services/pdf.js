@@ -327,23 +327,15 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
   const dateStr = new Date(invoice.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
   // Invoice fields for the right-side grid (label/value pairs, 2 per row)
+  const orderIdVal = String(invoice.invoiceId || invoice.orderNo || invoice.marketplaceOrderId || '');
   const invoiceFields = [
     ['Invoice No.', String(invoice.invoiceNumber || '')],
     ['Dated', dateStr],
-    ['Delivery Note', ''],
+    ['Order ID', orderIdVal],
     ['Mode/Terms of Payment', invoice.paymentMode || ''],
-    ['Reference No. & Date.', ''],
-    ['Other References', ''],
-    ['Order ID', String(invoice.invoiceId || invoice.orderNo || '')],
-    ['Dated', ''],
-    ['', ''],
-    ['Delivery Note Date', ''],
-    ['Dispatched through', ''],
-    ['Destination', ''],
     ['Terms of Delivery', invoice.termsOfDelivery || ''],
     ['', ''],
   ];
-
 
   // Buyer block
   const buyerBlock = [
@@ -351,7 +343,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     { text: invoice.partyName || 'Walk-in Customer', bold: true, fontSize: 9 },
   ];
   if (invoice.partyPhone)     buyerBlock.push({ text: `Phone        :  ${invoice.partyPhone}`, fontSize: 8 });
-  if (invoice.billingAddress) buyerBlock.push({ text: invoice.billingAddress, fontSize: 8 });
+  if (invoice.billingAddress || invoice.customerAddress) buyerBlock.push({ text: invoice.billingAddress || invoice.customerAddress, fontSize: 8 });
   if (invoice.partyGstin)     buyerBlock.push({ text: `GSTIN/UIN    :  ${invoice.partyGstin}`, fontSize: 8 });
   if (shop?.state)            buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
   if (invoice.notes)          buyerBlock.push({ text: `Remarks      :  ${invoice.notes}`, fontSize: 8 });
@@ -443,45 +435,44 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
 // ─── EXCHANGE INVOICE PDF ──────────────────────────────────────────────────────
 // Two sections: Returned Items + New Items Issued, same header/footer design
 export const generateExchangeInvoicePdf = async (exchangeOrder) => {
-  const { salesReturn, newInvoice, shop } = exchangeOrder;
-  const creditNote = salesReturn.creditNote;
+  const { salesReturn, newInvoice, shop } = exchangeOrder || {};
+  const creditNote = salesReturn?.creditNote;
 
   const logoUrl    = shop?.logoUrl || shop?.photoUrl || null;
   const logoDataUri = await fetchImageAsDataUri(logoUrl);
 
-  const dateStr = new Date(newInvoice.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dateStr = newInvoice?.createdAt ? new Date(newInvoice.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  const originalInvoiceNo = salesReturn?.invoice?.invoiceNumber || '';
 
-  const originalInvoiceNo = salesReturn.invoice?.invoiceNumber || '';
-
+  const orderIdVal = String(newInvoice?.invoiceId || newInvoice?.orderNo || exchangeOrder?.exchangeId || '');
   const invoiceFields = [
-    ['Exchange No.', String(exchangeOrder.exchangeNo || '')],
+    ['Exchange No.', String(exchangeOrder?.exchangeNo || '')],
     ['Dated', dateStr],
-    ['New Invoice No.', String(newInvoice.invoiceNumber || '')],
-    ['Mode/Terms of Payment', newInvoice.paymentMode || ''],
-    ['Return No.', String(salesReturn.returnNo || '')],
+    ['New Invoice No.', String(newInvoice?.invoiceNumber || '')],
+    ['Order ID', orderIdVal],
+    ['Return No.', String(salesReturn?.returnNo || salesReturn?.returnId || '')],
     ['Original Invoice', originalInvoiceNo],
-    ['Reason', (salesReturn.reason || '').replace(/_/g, ' ')],
-    ['', ''],
-    ['Order ID', String(newInvoice.invoiceId || newInvoice.orderNo || '')],
-    ['Delivery Note Date', ''],
-    ['Dispatched through', ''],
-    ['Destination', ''],
-    ['Terms of Delivery', ''],
-    ['', ''],
+    ['Mode/Terms of Payment', newInvoice?.paymentMode || ''],
+    ['Reason', (salesReturn?.reason || '').replace(/_/g, ' ')],
   ];
 
-  const partyName  = newInvoice.partyName  || salesReturn.party?.name  || 'Walk-in Customer';
-  const partyGstin = newInvoice.partyGstin || salesReturn.party?.gstin || '';
+  const partyName  = newInvoice?.partyName  || salesReturn?.party?.name  || 'Walk-in Customer';
+  const partyPhone = newInvoice?.partyPhone || salesReturn?.party?.phone || '';
+  const partyGstin = newInvoice?.partyGstin || salesReturn?.party?.gstin || '';
+  const partyAddr  = newInvoice?.billingAddress || newInvoice?.customerAddress || '';
 
   const buyerBlock = [
     { text: 'Customer (Bill to)', bold: true, fontSize: 8 },
     { text: partyName, bold: true, fontSize: 9 },
   ];
+  if (partyPhone) buyerBlock.push({ text: `Phone        :  ${partyPhone}`, fontSize: 8 });
+  if (partyAddr)  buyerBlock.push({ text: partyAddr, fontSize: 8 });
   if (partyGstin) buyerBlock.push({ text: `GSTIN/UIN    :  ${partyGstin}`, fontSize: 8 });
   if (shop?.state) buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
+  if (newInvoice?.notes) buyerBlock.push({ text: `Remarks      :  ${newInvoice.notes}`, fontSize: 8 });
 
   // Returned items rows
-  const oldItemRows = salesReturn.items.map((item, idx) => {
+  const oldItemRows = (salesReturn?.items || []).map((item, idx) => {
     const name = item.invoiceItem?.partName || item.inventory?.masterPart?.partName || 'Item';
     const hsn  = item.invoiceItem?.hsnCode  || item.inventory?.masterPart?.hsnCode  || '';
     const amt  = Number(item.taxableValue || 0) + Number(item.cgst || 0) + Number(item.sgst || 0);
@@ -489,9 +480,9 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
       { text: String(idx + 1),                  alignment: 'center', fontSize: 8 },
       { text: name,                              fontSize: 8 },
       { text: hsn,                               alignment: 'center', fontSize: 8 },
-      { text: `${item.qty} NOS`,                 alignment: 'center', fontSize: 8, bold: true },
-      { text: Number(item.unitPrice).toFixed(2), alignment: 'right',  fontSize: 8 },
-      { text: Number(item.unitPrice).toFixed(2), alignment: 'right',  fontSize: 8 },
+      { text: `${item.qty || 0} NOS`,                 alignment: 'center', fontSize: 8, bold: true },
+      { text: Number(item.unitPrice || 0).toFixed(2), alignment: 'right',  fontSize: 8 },
+      { text: Number(item.unitPrice || 0).toFixed(2), alignment: 'right',  fontSize: 8 },
       { text: 'NOS',                             alignment: 'center', fontSize: 8 },
       { text: '',                                alignment: 'center', fontSize: 8 },
       { text: amt.toFixed(2),                    alignment: 'right',  fontSize: 8 },
@@ -499,29 +490,29 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
   });
 
   // New items rows
-  const newItemRows = newInvoice.items.map((item, idx) => [
+  const newItemRows = (newInvoice?.items || []).map((item, idx) => [
     { text: String(idx + 1),                               alignment: 'center', fontSize: 8 },
     { text: [item.partName, item.brand].filter(Boolean).join(' — '), fontSize: 8 },
     { text: item.hsnCode || '',                            alignment: 'center', fontSize: 8 },
-    { text: `${item.qty} NOS`,                             alignment: 'center', fontSize: 8, bold: true },
-    { text: Number(item.unitPrice).toFixed(2),             alignment: 'right',  fontSize: 8 },
-    { text: Number(item.unitPrice).toFixed(2),             alignment: 'right',  fontSize: 8 },
+    { text: `${item.qty || 0} NOS`,                             alignment: 'center', fontSize: 8, bold: true },
+    { text: Number(item.unitPrice || 0).toFixed(2),             alignment: 'right',  fontSize: 8 },
+    { text: Number(item.unitPrice || 0).toFixed(2),             alignment: 'right',  fontSize: 8 },
     { text: 'NOS',                                         alignment: 'center', fontSize: 8 },
     { text: item.discountPercent ? `${item.discountPercent}` : '', alignment: 'center', fontSize: 8 },
-    { text: Number(item.total).toFixed(2),                 alignment: 'right',  fontSize: 8 },
+    { text: Number(item.total || 0).toFixed(2),                 alignment: 'right',  fontSize: 8 },
   ]);
 
   const oldTotal   = Number(creditNote?.totalAmount || 0);
-  const newTotal   = Number(newInvoice.totalAmount  || 0);
-  const netAmount  = Number(exchangeOrder.netAmount || 0);
-  const settlementLabel = exchangeOrder.settlementType === 'COLLECT'
+  const newTotal   = Number(newInvoice?.totalAmount  || 0);
+  const netAmount  = Number(exchangeOrder?.netAmount || 0);
+  const settlementLabel = exchangeOrder?.settlementType === 'COLLECT'
     ? 'Additional Amount Collected'
-    : exchangeOrder.settlementType === 'REFUND'
+    : exchangeOrder?.settlementType === 'REFUND'
     ? 'Refund / Credit Balance'
     : 'Even Exchange — No Balance Due';
 
-  const totalQtyOld = salesReturn.items.reduce((s, i) => s + Number(i.qty), 0);
-  const totalQtyNew = newInvoice.items.reduce((s, i) => s + Number(i.qty), 0);
+  const totalQtyOld = (salesReturn?.items || []).reduce((s, i) => s + Number(i.qty || 0), 0);
+  const totalQtyNew = (newInvoice?.items || []).reduce((s, i) => s + Number(i.qty || 0), 0);
 
   const pageHeader = buildPageHeader(shop, invoiceFields, buyerBlock, 1, 'EXCHANGE INVOICE', exchangeOrder.exchangeNo, dateStr);
 
@@ -685,30 +676,35 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
 // Generates a printable Credit Note / Return Invoice in the same style as the
 // TAX INVOICE and EXCHANGE INVOICE.
 export const generateReturnInvoicePdf = async (salesReturn) => {
-  const { items, invoice: origInvoice, creditNote, shop } = salesReturn;
+  const { items = [], invoice: origInvoice, creditNote, shop } = salesReturn || {};
 
-  const dateStr = new Date(salesReturn.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dateStr = salesReturn?.createdAt ? new Date(salesReturn.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
   const originalInvoiceNo = origInvoice?.invoiceNumber || '';
 
+  const orderIdVal = String(salesReturn?.returnId || '');
   const invoiceFields = [
-    ['Return No.',        String(salesReturn.returnNo || salesReturn.returnId || '')],
+    ['Return No.',        String(salesReturn?.returnNo || salesReturn?.returnId || '')],
     ['Dated',            dateStr],
     ['Original Invoice', originalInvoiceNo],
-    ['Reason',           (salesReturn.reason || '').replace(/_/g, ' ')],
-    ['Refund Mode',      salesReturn.refundMode || ''],
-    ['', ''],
-    ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''],
+    ['Reason',           (salesReturn?.reason || '').replace(/_/g, ' ')],
+    ['Refund Mode',      salesReturn?.refundMode || ''],
+    ['Order ID',         orderIdVal],
   ];
 
-  const partyName  = salesReturn.party?.name  || origInvoice?.partyName  || 'Walk-in Customer';
-  const partyGstin = salesReturn.party?.gstin || '';
+  const partyName  = salesReturn?.party?.name  || origInvoice?.partyName  || 'Walk-in Customer';
+  const partyPhone = salesReturn?.party?.phone || origInvoice?.partyPhone || '';
+  const partyGstin = salesReturn?.party?.gstin || origInvoice?.partyGstin || '';
+  const partyAddr  = origInvoice?.billingAddress || origInvoice?.customerAddress || '';
 
   const buyerBlock = [
     { text: 'Customer (Bill to)', bold: true, fontSize: 8 },
     { text: partyName, bold: true, fontSize: 9 },
   ];
+  if (partyPhone) buyerBlock.push({ text: `Phone        :  ${partyPhone}`, fontSize: 8 });
+  if (partyAddr)  buyerBlock.push({ text: partyAddr, fontSize: 8 });
   if (partyGstin) buyerBlock.push({ text: `GSTIN/UIN    :  ${partyGstin}`, fontSize: 8 });
   if (shop?.state) buyerBlock.push({ text: `State Name   :  ${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`, fontSize: 8 });
+  if (salesReturn?.notes || origInvoice?.notes) buyerBlock.push({ text: `Remarks      :  ${salesReturn?.notes || origInvoice?.notes}`, fontSize: 8 });
 
   const itemRows = items.map((item, idx) => {
     const name = item.invoiceItem?.partName || item.inventory?.masterPart?.partName || 'Item';
@@ -718,16 +714,16 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
       { text: String(idx + 1),                  alignment: 'center', fontSize: 8 },
       { text: name,                              fontSize: 8 },
       { text: hsn,                               alignment: 'center', fontSize: 8 },
-      { text: `${item.qty} NOS`,                 alignment: 'center', fontSize: 8, bold: true },
-      { text: Number(item.unitPrice).toFixed(2), alignment: 'right',  fontSize: 8 },
-      { text: Number(item.unitPrice).toFixed(2), alignment: 'right',  fontSize: 8 },
+      { text: `${item.qty || 0} NOS`,                 alignment: 'center', fontSize: 8, bold: true },
+      { text: Number(item.unitPrice || 0).toFixed(2), alignment: 'right',  fontSize: 8 },
+      { text: Number(item.unitPrice || 0).toFixed(2), alignment: 'right',  fontSize: 8 },
       { text: 'NOS',                             alignment: 'center', fontSize: 8 },
       { text: '',                                alignment: 'center', fontSize: 8 },
       { text: amt.toFixed(2),                    alignment: 'right',  fontSize: 8 },
     ];
   });
 
-  const totalQty    = items.reduce((s, i) => s + Number(i.qty), 0);
+  const totalQty    = items.reduce((s, i) => s + Number(i.qty || 0), 0);
   const totalAmount = Number(creditNote?.totalAmount || 0);
   const cgst        = Number(creditNote?.cgst || 0);
   const sgst        = Number(creditNote?.sgst || 0);

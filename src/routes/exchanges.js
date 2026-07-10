@@ -220,6 +220,9 @@ router.get('/:id/pdf', authenticate, requireShopOwner, requirePermission('billin
     });
     if (!exchangeOrder) return res.status(404).json({ error: 'Exchange not found' });
 
+    const shop = await prisma.shop.findUnique({ where: { shopId: req.shopId } });
+    exchangeOrder.shop = shop || exchangeOrder.shop;
+
     const pdfBuffer = await generateExchangeInvoicePdf(exchangeOrder);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="exchange-${exchangeOrder.exchangeNo}.pdf"`);
