@@ -182,13 +182,13 @@ function sellerStack(shop) {
   const shopStateCode = shop?.stateCode || '';
 
   const lines = [
-    { text: shopName, bold: true, fontSize: 10, margin: [0, 0, 0, 3] },
+    { text: shopName, bold: true, fontSize: 10, margin: [0, 0, 0, 2] },
   ];
-  if (shopAddr) lines.push({ text: shopAddr, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (shopPhone) lines.push({ text: `Ph : ${shopPhone}`, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (shopGstin) lines.push({ text: `GSTIN/UIN : ${shopGstin}`, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (shopState) lines.push({ text: `State Name : ${shopState}${shopStateCode ? ', Code : ' + shopStateCode : ''}`, fontSize: 8, margin: [0, 1, 0, 1] });
-  if (shopEmail) lines.push({ text: `E-Mail : ${shopEmail}`, fontSize: 8, margin: [0, 1, 0, 1] });
+  if (shopAddr) lines.push({ text: shopAddr, fontSize: 8, margin: [0, 0.3, 0, 0.3] });
+  if (shopPhone) lines.push({ text: `Ph : ${shopPhone}`, fontSize: 8, margin: [0, 0.3, 0, 0.3] });
+  if (shopGstin) lines.push({ text: `GSTIN/UIN : ${shopGstin}`, fontSize: 8, margin: [0, 0.3, 0, 0.3] });
+  if (shopState) lines.push({ text: `State Name : ${shopState}${shopStateCode ? ', Code : ' + shopStateCode : ''}`, fontSize: 8, margin: [0, 0.3, 0, 0.3] });
+  if (shopEmail) lines.push({ text: `E-Mail : ${shopEmail}`, fontSize: 8, margin: [0, 0.3, 0, 0.3] });
   return lines;
 }
 
@@ -315,17 +315,20 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
   const fieldCell = (label, value, borders) => ({
     stack: [
       { text: label, fontSize: 6.5, color: '#555555' },
-      { text: value || ' ', fontSize: 8.5, bold: true, margin: [0, 1, 0, 0] },
+      { text: value || ' ', fontSize: 8.5, bold: true, margin: [0, 0.5, 0, 0] },
     ],
     border: borders,
-    margin: [3, 2, 3, 2],
+    margin: [4, 1.5, 4, 1.5],
   });
 
   const gridBody = [];
   for (let i = 0; i < fieldGrid.length; i += 2) {
     const l = fieldGrid[i] || ['', ''];
     const r = fieldGrid[i + 1] || ['', ''];
-    gridBody.push([ fieldCell(l[0], l[1], [false, true, true, false]), fieldCell(r[0], r[1], [false, true, false, false]) ]);
+    // First row has NO top border — the outer header box already draws that edge,
+    // so a top border here would print a second, disturbing line above "Invoice No.".
+    const topB = i > 0;
+    gridBody.push([ fieldCell(l[0], l[1], [false, topB, true, false]), fieldCell(r[0], r[1], [false, topB, false, false]) ]);
   }
   gridBody.push([ { ...fieldCell('Terms of Delivery', termsOfDelivery, [false, true, false, false]), colSpan: 2 }, {} ]);
 
@@ -416,9 +419,9 @@ function buildLastPageSummary(invoice, totalQty) {
   const upiPaid    = Number(invoice.upiAmount    || 0);
   const creditPaid = Number(invoice.creditAmount || 0);
   const payParts = [];
-  if (cashPaid   > 0) payParts.push(`Cash: ₹${cashPaid.toFixed(2)}`);
-  if (upiPaid    > 0) payParts.push(`UPI/Card: ₹${upiPaid.toFixed(2)}${invoice.upiReference ? ` (Ref: ${invoice.upiReference})` : ''}`);
-  if (creditPaid > 0) payParts.push(`Credit/Udhaar: ₹${creditPaid.toFixed(2)}`);
+  if (cashPaid   > 0) payParts.push(`Cash: Rs. ${cashPaid.toFixed(2)}`);
+  if (upiPaid    > 0) payParts.push(`UPI/Card: Rs. ${upiPaid.toFixed(2)}${invoice.upiReference ? ` (Ref: ${invoice.upiReference})` : ''}`);
+  if (creditPaid > 0) payParts.push(`Credit/Udhaar: Rs. ${creditPaid.toFixed(2)}`);
   const showPayBreakdown = payParts.length >= 2; // only meaningful when split across methods
 
   return [
@@ -448,7 +451,7 @@ function buildLastPageSummary(invoice, totalQty) {
           { text: '', border: [false, true, false, true] },
           { text: '', border: [false, true, false, true] },
           { text: '', border: [false, true, false, true] },
-          { text: `₹ ${totalAmount.toFixed(2)}`, bold: true, fontSize: 9, alignment: 'right', border: [false, true, true, true] },
+          { text: `Rs. ${totalAmount.toFixed(2)}`, bold: true, fontSize: 9, alignment: 'right', border: [false, true, true, true] },
         ]],
       },
       layout: {
@@ -610,7 +613,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     // filename, so blob previews save as the invoice number instead of a UUID.
     info: { title: String(invoice.invoiceNumber || 'Invoice'), author: shop?.name || 'RedPiston' },
     pageSize: 'A4',
-    pageMargins: [30, 205, 30, 60],
+    pageMargins: [30, 218, 30, 60],
 
     // Repeating header on every page
     header: (currentPage) => {
@@ -793,7 +796,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
             { text: 'Returned Total', bold: true, fontSize: 8 },
             {}, {}, { text: `${totalQtyOld} NOS`, alignment: 'center', fontSize: 8, bold: true },
             {}, {}, {}, {},
-            { text: `₹ ${oldTotal.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 8 },
+            { text: `Rs. ${oldTotal.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 8 },
           ]],
         },
         layout: tableLayout,
@@ -819,7 +822,7 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
             { text: 'New Items Total', bold: true, fontSize: 8 },
             {}, {}, { text: `${totalQtyNew} NOS`, alignment: 'center', fontSize: 8, bold: true },
             {}, {}, {}, {},
-            { text: `₹ ${newTotal.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 8 },
+            { text: `Rs. ${newTotal.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 8 },
           ]],
         },
         layout: tableLayout,
@@ -837,15 +840,15 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
               body: [
                 [
                   { text: 'Old Item Value (Credited)', fontSize: 8, border: [false, false, false, false] },
-                  { text: `₹ ${oldTotal.toFixed(2)}`, fontSize: 8, alignment: 'right', border: [false, false, false, false] },
+                  { text: `Rs. ${oldTotal.toFixed(2)}`, fontSize: 8, alignment: 'right', border: [false, false, false, false] },
                 ],
                 [
                   { text: 'New Item Value (Charged)', fontSize: 8, border: [false, false, false, false] },
-                  { text: `₹ ${newTotal.toFixed(2)}`, fontSize: 8, alignment: 'right', border: [false, false, false, false] },
+                  { text: `Rs. ${newTotal.toFixed(2)}`, fontSize: 8, alignment: 'right', border: [false, false, false, false] },
                 ],
                 [
                   { text: settlementLabel, fontSize: 9, bold: true, border: [false, true, false, true] },
-                  { text: `₹ ${Math.abs(netAmount).toFixed(2)}`, fontSize: 9, bold: true, alignment: 'right', border: [false, true, false, true] },
+                  { text: `Rs. ${Math.abs(netAmount).toFixed(2)}`, fontSize: 9, bold: true, alignment: 'right', border: [false, true, false, true] },
                 ],
               ],
             },
@@ -1004,7 +1007,7 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
             { text: 'Total Credit', bold: true, fontSize: 9, border: [true, true, false, true] },
             {}, {}, { text: `${totalQty} NOS`, bold: true, alignment: 'center', fontSize: 9, border: [false, true, false, true] },
             {}, {}, {}, {},
-            { text: `₹ ${totalAmount.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 9, border: [false, true, true, true] },
+            { text: `Rs. ${totalAmount.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 9, border: [false, true, true, true] },
           ]],
         },
         layout: tableLayout,
@@ -1158,7 +1161,7 @@ export const generatePurchaseOrderPdf = async (po) => {
             { text: 'Total', bold: true, fontSize: 9, border: [true, true, false, true] },
             {}, {}, { text: `${totalQty} NOS`, bold: true, alignment: 'center', fontSize: 9, border: [false, true, false, true] },
             {}, {}, {}, {},
-            { text: `₹ ${totalAmount.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 9, border: [false, true, true, true] },
+            { text: `Rs. ${totalAmount.toFixed(2)}`, bold: true, alignment: 'right', fontSize: 9, border: [false, true, true, true] },
           ]],
         },
         layout: tableLayout,
