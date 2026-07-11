@@ -312,53 +312,47 @@ function partyStack(title, party, shop) {
 function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStack, buyerStack, pageNum, title) {
   const pageLabel = pageNum === 1 ? title : `${title} (Page ${pageNum})`;
 
-  const fieldCell = (label, value, borders) => ({
+  const stackedField = (label, value) => ({
     stack: [
       { text: label, fontSize: 6.5, color: '#555555' },
       { text: value || ' ', fontSize: 8.5, bold: true, margin: [0, 0.5, 0, 0] },
     ],
-    border: borders,
-    margin: [4, 1.5, 4, 1.5],
+    margin: [4, 2, 4, 2],
   });
 
-  const gridBody = [];
-  for (let i = 0; i < fieldGrid.length; i += 2) {
-    const l = fieldGrid[i] || ['', ''];
-    const r = fieldGrid[i + 1] || ['', ''];
-    // First row has NO top border — the outer header box already draws that edge,
-    // so a top border here would print a second, disturbing line above "Invoice No.".
-    const topB = i > 0;
-    gridBody.push([ fieldCell(l[0], l[1], [false, topB, true, false]), fieldCell(r[0], r[1], [false, topB, false, false]) ]);
-  }
-  gridBody.push([ { ...fieldCell('Terms of Delivery', termsOfDelivery, [false, true, false, false]), colSpan: 2 }, {} ]);
-
-  const fieldsGrid = {
-    table: { widths: ['48%', '52%'], body: gridBody },
-    layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0.4 },
-  };
-
+  // Left column (seller / consignee / buyer) with internal dividers — rendered as
+  // a nested table placed in a single cell that rowSpans the whole field grid.
   const leftColumn = {
     table: {
       widths: ['*'],
       body: [
-        [ { stack: sellerStack(shop), border: [false, false, false, true], margin: [3, 2, 3, 3] } ],
-        [ { stack: consigneeStack,    border: [false, false, false, true], margin: [3, 2, 3, 3] } ],
-        [ { stack: buyerStack,        border: [false, false, false, false], margin: [3, 2, 3, 3] } ],
+        [ { stack: sellerStack(shop), border: [false, false, false, true], margin: [4, 3, 4, 3] } ],
+        [ { stack: consigneeStack,    border: [false, false, false, true], margin: [4, 3, 4, 3] } ],
+        [ { stack: buyerStack,        border: [false, false, false, false], margin: [4, 3, 4, 3] } ],
       ],
     },
     layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0 },
   };
 
+  // ONE table: col0 = left blocks (rowSpans every field row → the field rows keep
+  // their natural, tight height instead of being stretched to fill), col1/col2 =
+  // the two field columns per row.
+  const nRows = Math.ceil(fieldGrid.length / 2) + 1; // + Terms of Delivery row
+  const body = [];
+  for (let i = 0; i < fieldGrid.length; i += 2) {
+    const l = fieldGrid[i] || ['', ''];
+    const r = fieldGrid[i + 1] || ['', ''];
+    const first = i === 0
+      ? { stack: [leftColumn], rowSpan: nRows, margin: [0, 0, 0, 0] }
+      : {};
+    body.push([ first, stackedField(l[0], l[1]), stackedField(r[0], r[1]) ]);
+  }
+  body.push([ {}, { ...stackedField('Terms of Delivery', termsOfDelivery), colSpan: 2 }, {} ]);
+
   return [
     { text: pageLabel, fontSize: 11, bold: true, alignment: 'center', margin: [0, 0, 0, 2] },
     {
-      table: {
-        widths: ['52%', '48%'],
-        body: [[
-          { stack: [leftColumn], border: [true, true, true, true], margin: [0, 0, 0, 0] },
-          { stack: [fieldsGrid], border: [false, true, true, true], margin: [0, 0, 0, 0] },
-        ]],
-      },
+      table: { widths: ['52%', '24%', '24%'], body },
       layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.5, vLineWidth: () => 0.5 },
       margin: [0, 0, 0, 0],
     },
