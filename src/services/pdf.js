@@ -355,7 +355,7 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
   // spanned row, so when the left blocks are taller than the few field rows the
   // extra height lands in the spacer — the field rows stay tight (no gaps).
   const pairRows = Math.ceil(fieldGrid.length / 2);
-  const nRows = pairRows + 2; // field pairs + Terms of Delivery + spacer
+  const nRows = pairRows + 1; // field pairs + spacer
   const body = [];
   for (let i = 0; i < fieldGrid.length; i += 2) {
     const l = fieldGrid[i] || ['', ''];
@@ -365,9 +365,8 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
       : {};
     body.push([ first, stackedField(l[0], l[1]), stackedField(r[0], r[1]) ]);
   }
-  body.push([ {}, { ...stackedField('Terms of Delivery', termsOfDelivery), colSpan: 2 }, {} ]);
   // Spacer spans BOTH field columns so no vertical divider splits the empty area
-  // below Terms of Delivery — it reads as one clean empty box.
+  // below the fields — it reads as one clean empty box.
   body.push([ {}, { text: ' ', fontSize: 2, colSpan: 2 }, {} ]);
 
   return [
