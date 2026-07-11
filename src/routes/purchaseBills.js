@@ -261,8 +261,14 @@ router.post('/:id/import', authenticate, requireShopOwner, async (req, res, next
 // ─── GET /api/shop/purchase-bills ─────────────────────────────────────────────
 router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
   try {
+    // Optional status filter (e.g. the Purchase Return picker asks for IMPORTED
+    // bills only, since only imported bills have received-stock to return).
+    const where = { shopId: req.shopId };
+    if (req.query.status && ['PENDING_REVIEW', 'IMPORTED'].includes(req.query.status)) {
+      where.status = req.query.status;
+    }
     const bills = await prisma.purchaseBill.findMany({
-      where: { shopId: req.shopId },
+      where,
       orderBy: { createdAt: 'desc' },
       take: 100,
       select: {
