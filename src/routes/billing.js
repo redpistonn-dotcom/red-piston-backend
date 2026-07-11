@@ -192,6 +192,7 @@ export async function createInvoice(req, {
 
         processedCustomItems.push({
           name:        String(ci.name  || 'Custom Item').slice(0, 200),
+          brand:       ci.brand ? String(ci.brand).slice(0, 100) : null,
           oemNumber:   ci.oemNumber || null,
           mrp:         ci.mrp !== undefined && ci.mrp !== null && ci.mrp !== "" ? Number(ci.mrp) : null,
           qty:         ciQty,
@@ -317,6 +318,7 @@ export async function createInvoice(req, {
           const customPart = await tx.masterPart.create({
             data: {
               partName:           ci.name,
+              brand:              ci.brand || null,
               gstRate:            ci.gstRate,
               status:             'CUSTOM',
               source:             'CUSTOM',
@@ -339,7 +341,7 @@ export async function createInvoice(req, {
           return {
             inventoryId: customInv.inventoryId,
             partName:    ci.name,
-            brand:       null,
+            brand:       ci.brand || null,
             hsnCode:     null,
             qty:         ci.qty,
             unitPrice:   ci.unitPrice,
