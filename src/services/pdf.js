@@ -32,6 +32,19 @@ function fmtPct(n) {
   return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/\.?0+$/, '');
 }
 
+// GST state codes → state names (first 2 digits of a GSTIN encode the state).
+const GST_STATE_NAMES = {
+  '01': 'Jammu and Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh',
+  '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh',
+  '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur',
+  '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam', '19': 'West Bengal',
+  '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat',
+  '25': 'Daman and Diu', '26': 'Dadra and Nagar Haveli', '27': 'Maharashtra', '28': 'Andhra Pradesh',
+  '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu',
+  '34': 'Puducherry', '35': 'Andaman and Nicobar Islands', '36': 'Telangana', '37': 'Andhra Pradesh',
+  '38': 'Ladakh', '97': 'Other Territory', '99': 'Centre Jurisdiction',
+};
+
 // Insert invisible zero-width-space break opportunities into very long unbroken
 // runs (e.g. a pasted string with no spaces) so pdfmake can wrap them inside a
 // fixed-width cell — the row simply grows taller instead of overflowing the page
@@ -290,14 +303,17 @@ function partyStack(title, party, shop) {
   if (party.address) nodes.push({ text: softWrap(party.address), fontSize: 8, margin: [0, 0.5, 0, 0.5] });
   const kv = [];
   if (party.gstin) kv.push(['GSTIN/UIN', party.gstin]);
+  // Buyer's state comes from their GSTIN (its first 2 digits); the state NAME must
+  // match that code — not the shop's state — so an out-of-state buyer shows the
+  // right place of supply. Walk-in / no GSTIN falls back to the shop's state.
   const stateCode = party.gstin ? String(party.gstin).slice(0, 2) : (shop?.stateCode || '');
-  const stateName = shop?.state || '';
+  const stateName = (party.gstin && GST_STATE_NAMES[stateCode]) ? GST_STATE_NAMES[stateCode] : (shop?.state || '');
   if (stateName || stateCode) kv.push(['State Name', `${stateName}${stateCode ? ', Code : ' + stateCode : ''}`]);
   if (party.vehicleReg) kv.push(['Vehicle Reg', party.vehicleReg]);
   if (party.phone) kv.push(['Phone', party.phone]);
   if (kv.length) nodes.push({
     table: { widths: [58, '*'], body: kv.map(([l, v]) => [
-      { text: l, fontSize: 8, color: '#555555' },
+      { text: l, fontSize: 8, color: '#333333' },
       { text: `:  ${softWrap(String(v))}`, fontSize: 8 },
     ]) },
     layout: 'noBorders',
@@ -314,7 +330,7 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
 
   const stackedField = (label, value) => ({
     stack: [
-      { text: label, fontSize: 6.5, color: '#555555' },
+      { text: label, fontSize: 6.5, color: '#333333' },
       { text: value || ' ', fontSize: 8.5, bold: true, margin: [0, 0.5, 0, 0] },
     ],
     margin: [4, 2, 4, 2],
@@ -646,9 +662,9 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     ],
 
     styles: {
-      header: { fontSize: 9, color: '#374151' },
+      header: { fontSize: 9, color: '#000000' },
     },
-    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#374151' },
+    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#000000' },
   };
 
   return new Promise((resolve, reject) => {
@@ -889,9 +905,9 @@ export const generateExchangeInvoicePdf = async (exchangeOrder) => {
     ],
 
     styles: {
-      header: { fontSize: 9, color: '#374151' },
+      header: { fontSize: 9, color: '#000000' },
     },
-    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#374151' },
+    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#000000' },
   };
 
   return new Promise((resolve, reject) => {
@@ -1051,8 +1067,8 @@ export const generateReturnInvoicePdf = async (salesReturn) => {
       },
     ],
 
-    styles: { header: { fontSize: 9, color: '#374151' } },
-    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#374151' },
+    styles: { header: { fontSize: 9, color: '#000000' } },
+    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#000000' },
   };
 
   return new Promise((resolve, reject) => {
@@ -1205,9 +1221,9 @@ export const generatePurchaseOrderPdf = async (po) => {
     ],
 
     styles: {
-      header: { fontSize: 9, color: '#374151' },
+      header: { fontSize: 9, color: '#000000' },
     },
-    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#374151' },
+    defaultStyle: { font: 'Roboto', fontSize: 9, color: '#000000' },
   };
 
   return new Promise((resolve, reject) => {
