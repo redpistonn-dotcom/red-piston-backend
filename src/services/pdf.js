@@ -281,6 +281,87 @@ function buildPageHeader(shop, invoiceFields, buyerBlock, pageNum, title, invoic
   ];
 }
 
+// ─── Tally-style party block (Consignee / Buyer) ─────────────────────────────
+function partyStack(title, party, shop) {
+  const nodes = [
+    { text: title, fontSize: 8, bold: true, color: '#333333' },
+    { text: party.name || 'Walk-in Customer', bold: true, fontSize: 9, margin: [0, 1, 0, 2] },
+  ];
+  if (party.address) nodes.push({ text: softWrap(party.address), fontSize: 8, margin: [0, 0.5, 0, 0.5] });
+  const kv = [];
+  if (party.gstin) kv.push(['GSTIN/UIN', party.gstin]);
+  const stateCode = party.gstin ? String(party.gstin).slice(0, 2) : (shop?.stateCode || '');
+  const stateName = shop?.state || '';
+  if (stateName || stateCode) kv.push(['State Name', `${stateName}${stateCode ? ', Code : ' + stateCode : ''}`]);
+  if (party.vehicleReg) kv.push(['Vehicle Reg', party.vehicleReg]);
+  if (party.phone) kv.push(['Phone', party.phone]);
+  if (kv.length) nodes.push({
+    table: { widths: [58, '*'], body: kv.map(([l, v]) => [
+      { text: l, fontSize: 8, color: '#555555' },
+      { text: `:  ${softWrap(String(v))}`, fontSize: 8 },
+    ]) },
+    layout: 'noBorders',
+    margin: [0, 1, 0, 0],
+  });
+  return nodes;
+}
+
+// ─── Tally-style invoice header ───────────────────────────────────────────────
+// Left column: seller / Consignee (Ship to) / Buyer (Bill to) stacked with
+// internal dividers. Right column: the standard Tally invoice-fields grid.
+function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStack, buyerStack, pageNum, title) {
+  const pageLabel = pageNum === 1 ? title : `${title} (Page ${pageNum})`;
+
+  const fieldCell = (label, value, borders) => ({
+    stack: [
+      { text: label, fontSize: 6.5, color: '#555555' },
+      { text: value || ' ', fontSize: 8.5, bold: true, margin: [0, 1, 0, 0] },
+    ],
+    border: borders,
+    margin: [3, 2, 3, 2],
+  });
+
+  const gridBody = [];
+  for (let i = 0; i < fieldGrid.length; i += 2) {
+    const l = fieldGrid[i] || ['', ''];
+    const r = fieldGrid[i + 1] || ['', ''];
+    gridBody.push([ fieldCell(l[0], l[1], [false, true, true, false]), fieldCell(r[0], r[1], [false, true, false, false]) ]);
+  }
+  gridBody.push([ { ...fieldCell('Terms of Delivery', termsOfDelivery, [false, true, false, false]), colSpan: 2 }, {} ]);
+
+  const fieldsGrid = {
+    table: { widths: ['48%', '52%'], body: gridBody },
+    layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0.4 },
+  };
+
+  const leftColumn = {
+    table: {
+      widths: ['*'],
+      body: [
+        [ { stack: sellerStack(shop), border: [false, false, false, true], margin: [3, 2, 3, 3] } ],
+        [ { stack: consigneeStack,    border: [false, false, false, true], margin: [3, 2, 3, 3] } ],
+        [ { stack: buyerStack,        border: [false, false, false, false], margin: [3, 2, 3, 3] } ],
+      ],
+    },
+    layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0 },
+  };
+
+  return [
+    { text: pageLabel, fontSize: 11, bold: true, alignment: 'center', margin: [0, 0, 0, 2] },
+    {
+      table: {
+        widths: ['52%', '48%'],
+        body: [[
+          { stack: [leftColumn], border: [true, true, true, true], margin: [0, 0, 0, 0] },
+          { stack: [fieldsGrid], border: [false, true, true, true], margin: [0, 0, 0, 0] },
+        ]],
+      },
+      layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.5, vLineWidth: () => 0.5 },
+      margin: [0, 0, 0, 0],
+    },
+  ];
+}
+
 // ─── Dynamic product table header & widths ────────────────────────────────────
 function productTableHeader({ showOem = false, showMrp = false } = {}) {
   const cols = [
@@ -444,43 +525,37 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
 
   const dateStr = fmtDateIST(invoice.createdAt);
 
-  // Invoice fields for the right-side grid (label/value pairs, 2 per row)
   // Order ID is RED-branded to match the Orders list (RED-SO-<invoiceId>).
   const orderIdVal = invoice.invoiceId
     ? `RED-SO-${String(invoice.invoiceId).padStart(5, '0')}`
     : String(invoice.orderNo || invoice.marketplaceOrderId || '');
-  const invoiceFields = [
+
+  // Right-side invoice-fields grid (Tally layout — pairs render 2 per row).
+  const fieldGrid = [
     ['Invoice No.', String(invoice.invoiceNumber || '')],
     ['Dated', dateStr],
-    ['Order ID', orderIdVal],
+    ['Delivery Note', ''],
     ['Mode/Terms of Payment', invoice.paymentMode || ''],
-    ['Terms of Delivery', invoice.termsOfDelivery || ''],
-    ['', ''],
+    ['Reference No. & Date', ''],
+    ['Other References', ''],
+    ["Buyer's Order No.", orderIdVal],
+    ['Dated', ''],
+    ['Dispatch Doc No.', ''],
+    ['Delivery Note Date', ''],
+    ['Dispatched through', ''],
+    ['Destination', ''],
   ];
 
-  // Buyer block — rendered as a label/value table so every colon lines up and
-  // the spacing stays even regardless of label length.
-  const buyerRows = [];
-  if (invoice.partyPhone) buyerRows.push(['Phone', invoice.partyPhone]);
-  if (invoice.billingAddress || invoice.customerAddress) buyerRows.push(['Address', invoice.billingAddress || invoice.customerAddress]);
-  if (invoice.partyGstin) buyerRows.push(['GSTIN/UIN', invoice.partyGstin]);
-  if (shop?.state) buyerRows.push(['State Name', `${shop.state}${shop.stateCode ? ', Code : ' + shop.stateCode : ''}`]);
-  if (invoice.vehicleReg) buyerRows.push(['Vehicle Reg', invoice.vehicleReg, true]);
-  if (invoice.notes) buyerRows.push(['Remarks', invoice.notes]);
-  const buyerBlock = [
-    { text: 'Buyer (Bill to)', bold: true, fontSize: 8 },
-    { text: invoice.partyName || 'Walk-in Customer', bold: true, fontSize: 9, margin: [0, 2, 0, 3] },
-  ];
-  if (buyerRows.length) buyerBlock.push({
-    table: {
-      widths: [58, '*'],
-      body: buyerRows.map(([label, value, boldVal]) => [
-        { text: label, fontSize: 8, color: '#555555', margin: [0, 1.5, 0, 1.5] },
-        { text: `:  ${softWrap(value)}`, fontSize: 8, bold: !!boldVal, margin: [0, 1.5, 0, 1.5] },
-      ]),
-    },
-    layout: 'noBorders',
-  });
+  // Consignee (Ship to) + Buyer (Bill to) — same customer for a POS sale.
+  const party = {
+    name:       invoice.partyName || 'Walk-in Customer',
+    address:    invoice.billingAddress || invoice.customerAddress || '',
+    gstin:      invoice.partyGstin || '',
+    phone:      invoice.partyPhone || '',
+    vehicleReg: invoice.vehicleReg || '',
+  };
+  const consigneeStack = partyStack('Consignee (Ship to)', party, shop);
+  const buyerStack     = partyStack('Buyer (Bill to)', party, shop);
 
   // Column config: base Rate first, then Rate incl. GST. When every line shares
   // one GST rate, the incl. column names the rate ("Incl. GST 18%"). A Disc %
@@ -530,18 +605,16 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
 
   const totalQty = items.reduce((s, i) => s + Number(i.qty), 0);
 
-  const pageHeader = buildPageHeader(shop, invoiceFields, buyerBlock, 1, 'TAX INVOICE', invoice.invoiceNumber, dateStr);
-
   const docDef = {
     // PDF title metadata → the browser's PDF-viewer download uses it as the
     // filename, so blob previews save as the invoice number instead of a UUID.
     info: { title: String(invoice.invoiceNumber || 'Invoice'), author: shop?.name || 'RedPiston' },
     pageSize: 'A4',
-    pageMargins: [30, 175, 30, 60],
+    pageMargins: [30, 205, 30, 60],
 
     // Repeating header on every page
     header: (currentPage) => {
-      const pageHeaderN = buildPageHeader(shop, invoiceFields, buyerBlock, currentPage, 'TAX INVOICE', invoice.invoiceNumber, dateStr);
+      const pageHeaderN = buildInvoiceHeaderTally(shop, fieldGrid, invoice.termsOfDelivery || '', consigneeStack, buyerStack, currentPage, 'TAX INVOICE');
       return { stack: pageHeaderN, margin: [30, 20, 30, 0] };
     },
 
