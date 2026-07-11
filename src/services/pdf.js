@@ -366,7 +366,9 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
     body.push([ first, stackedField(l[0], l[1]), stackedField(r[0], r[1]) ]);
   }
   body.push([ {}, { ...stackedField('Terms of Delivery', termsOfDelivery), colSpan: 2 }, {} ]);
-  body.push([ {}, { text: ' ', fontSize: 2 }, { text: ' ', fontSize: 2 } ]); // spacer
+  // Spacer spans BOTH field columns so no vertical divider splits the empty area
+  // below Terms of Delivery — it reads as one clean empty box.
+  body.push([ {}, { text: ' ', fontSize: 2, colSpan: 2 }, {} ]);
 
   return [
     { text: pageLabel, fontSize: 11, bold: true, alignment: 'center', margin: [0, 0, 0, 2] },
