@@ -350,10 +350,12 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
     layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0 },
   };
 
-  // ONE table: col0 = left blocks (rowSpans every field row → the field rows keep
-  // their natural, tight height instead of being stretched to fill), col1/col2 =
-  // the two field columns per row.
-  const nRows = Math.ceil(fieldGrid.length / 2) + 1; // + Terms of Delivery row
+  // ONE table: col0 = left blocks (rowSpans every field row + a trailing spacer),
+  // col1/col2 = the two field columns per row. The empty spacer row is the LAST
+  // spanned row, so when the left blocks are taller than the few field rows the
+  // extra height lands in the spacer — the field rows stay tight (no gaps).
+  const pairRows = Math.ceil(fieldGrid.length / 2);
+  const nRows = pairRows + 2; // field pairs + Terms of Delivery + spacer
   const body = [];
   for (let i = 0; i < fieldGrid.length; i += 2) {
     const l = fieldGrid[i] || ['', ''];
@@ -364,12 +366,20 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
     body.push([ first, stackedField(l[0], l[1]), stackedField(r[0], r[1]) ]);
   }
   body.push([ {}, { ...stackedField('Terms of Delivery', termsOfDelivery), colSpan: 2 }, {} ]);
+  body.push([ {}, { text: ' ', fontSize: 2 }, { text: ' ', fontSize: 2 } ]); // spacer
 
   return [
     { text: pageLabel, fontSize: 11, bold: true, alignment: 'center', margin: [0, 0, 0, 2] },
     {
       table: { widths: ['52%', '24%', '24%'], body },
-      layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.5, vLineWidth: () => 0.5 },
+      layout: {
+        hLineColor: () => '#000000',
+        vLineColor: () => '#000000',
+        // Suppress the divider just above the spacer row so it reads as empty
+        // space below Terms of Delivery rather than a stray empty cell.
+        hLineWidth: (i, node) => (i === node.table.body.length - 1 ? 0 : 0.5),
+        vLineWidth: () => 0.5,
+      },
       margin: [0, 0, 0, 0],
     },
   ];
@@ -543,20 +553,13 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     ? `RED-SO-${String(invoice.invoiceId).padStart(5, '0')}`
     : String(invoice.orderNo || invoice.marketplaceOrderId || '');
 
-  // Right-side invoice-fields grid (Tally layout — pairs render 2 per row).
+  // Right-side invoice-fields grid — pairs render 2 per row (grid style kept,
+  // trimmed to just the fields we actually populate).
   const fieldGrid = [
     ['Invoice No.', String(invoice.invoiceNumber || '')],
     ['Dated', dateStr],
-    ['Delivery Note', ''],
+    ['Order ID', orderIdVal],
     ['Mode/Terms of Payment', invoice.paymentMode || ''],
-    ['Reference No. & Date', ''],
-    ['Other References', ''],
-    ["Buyer's Order No.", orderIdVal],
-    ['Dated', ''],
-    ['Dispatch Doc No.', ''],
-    ['Delivery Note Date', ''],
-    ['Dispatched through', ''],
-    ['Destination', ''],
   ];
 
   // Consignee (Ship to) + Buyer (Bill to) — same customer for a POS sale.
