@@ -376,9 +376,10 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
       layout: {
         hLineColor: () => '#000000',
         vLineColor: () => '#000000',
-        // Suppress the divider just above the spacer row so it reads as empty
-        // space below Terms of Delivery rather than a stray empty cell.
-        hLineWidth: (i, node) => (i === node.table.body.length - 1 ? 0 : 0.5),
+        // Draw a line under every field row (including one closing the last field
+        // row) so the invoice-details block is properly boxed, with the empty
+        // filler area sitting cleanly below it.
+        hLineWidth: () => 0.5,
         vLineWidth: () => 0.5,
       },
       margin: [0, 0, 0, 0],
