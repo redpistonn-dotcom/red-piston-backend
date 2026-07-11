@@ -584,19 +584,19 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
   const hasDiscount = items.some(it => Number(it.discount) > 0);
 
   const hcell = (text, align = 'center') => ({ text, bold: true, alignment: align, fontSize: 8, fillColor: '#F3F4F6' });
-  const tableHeader = [ hcell('Sl\nNo.'), hcell('Description of Goods', 'left') ];
+  const tableHeader = [ hcell('Sl\nNo.'), hcell('Description of Goods', 'left'), hcell('Brand', 'left') ];
   if (showOem) tableHeader.push(hcell('OEM No.'));
   tableHeader.push(hcell('HSN/SAC'), hcell('Qty'), hcell('Rate', 'right'), hcell(inclHeader, 'right'));
   if (showMrp) tableHeader.push(hcell('MRP', 'right'));
   if (hasDiscount) tableHeader.push(hcell('Disc %'));
   tableHeader.push(hcell('Amount', 'right'));
 
-  const tableWidths = [22, '*'];
-  if (showOem) tableWidths.push(54);
-  tableWidths.push(46, 26, 52, 58);
-  if (showMrp) tableWidths.push(46);
-  if (hasDiscount) tableWidths.push(32);
-  tableWidths.push(62);
+  const tableWidths = [20, '*', 48];
+  if (showOem) tableWidths.push(50);
+  tableWidths.push(42, 24, 48, 54);
+  if (showMrp) tableWidths.push(44);
+  if (hasDiscount) tableWidths.push(30);
+  tableWidths.push(58);
 
   // Product rows
   const itemRows = items.map((item, idx) => {
@@ -607,7 +607,8 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     const discPct  = Number(item.discount) > 0 && Number(item.unitPrice) > 0 ? Math.round((Number(item.discount) / Number(item.unitPrice)) * 100) : 0;
     const row = [
       { text: String(idx + 1),                           alignment: 'center', fontSize: 8 },
-      { text: softWrap([item.partName, item.brand].filter(Boolean).join(' — ')), fontSize: 8 },
+      { text: softWrap(item.partName || ''),             fontSize: 8 },
+      { text: softWrap(item.brand || '—'),               fontSize: 8 },
     ];
     if (showOem) row.push({ text: oemVal, alignment: 'center', fontSize: 8 });
     row.push(
@@ -624,6 +625,9 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
 
   const totalQty = items.reduce((s, i) => s + Number(i.qty), 0);
 
+  // An ESTIMATE invoice is a saved quotation — title it accordingly.
+  const docTitle = invoice.invoiceType === 'ESTIMATE' ? 'QUOTATION' : 'TAX INVOICE';
+
   const docDef = {
     // PDF title metadata → the browser's PDF-viewer download uses it as the
     // filename, so blob previews save as the invoice number instead of a UUID.
@@ -633,7 +637,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
 
     // Repeating header on every page
     header: (currentPage) => {
-      const pageHeaderN = buildInvoiceHeaderTally(shop, fieldGrid, invoice.termsOfDelivery || '', consigneeStack, buyerStack, currentPage, 'TAX INVOICE');
+      const pageHeaderN = buildInvoiceHeaderTally(shop, fieldGrid, invoice.termsOfDelivery || '', consigneeStack, buyerStack, currentPage, docTitle);
       return { stack: pageHeaderN, margin: [30, 20, 30, 0] };
     },
 

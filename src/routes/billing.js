@@ -261,11 +261,13 @@ export async function createInvoice(req, {
       // and the invoice INSERT are in the same atomic unit.  If the transaction
       // rolls back (e.g. stock check fails) the counter rolls back too.
       const yyyymm = currentYYYYMM();
-      const seq = await nextSeq(tx, req.shopId, `INV-${yyyymm}`);
-      // RED brand prefix + shopId so the number is globally unique across shops
-      // (the DB unique constraint is global, not per-shop).
-      // Format: RED-S{shopId}-YYYYMM-NNNN  e.g. RED-S3-202606-0001
-      const invoiceNumber = `RED-S${req.shopId}-${yyyymm}-${String(seq).padStart(4, '0')}`;
+      // Estimates (quotations) get their OWN sequence + prefix so they never
+      // consume a tax-invoice number — GST requires the sales invoice series to be
+      // continuous with no gaps.  Sales:    RED-S{shop}-YYYYMM-NNNN
+      //                          Estimates: RED-EST-S{shop}-YYYYMM-NNNN
+      const isEstimate = invType === 'ESTIMATE';
+      const seq = await nextSeq(tx, req.shopId, `${isEstimate ? 'EST' : 'INV'}-${yyyymm}`);
+      const invoiceNumber = `RED-${isEstimate ? 'EST-' : ''}S${req.shopId}-${yyyymm}-${String(seq).padStart(4, '0')}`;
 
       // ── Auto-save walk-in customer (name + phone + vehicle all present) ────────
       // Match an existing customer by phone to avoid duplicates; otherwise create
@@ -408,12 +410,13 @@ export async function createInvoice(req, {
         include: { items: true, shop: true },
       });
 
-      // ── Create SALE movements + decrement stock (skip for ESTIMATE) ─────────
-      // Batched: one createMany for all movements, then parallel stock updates.
-      // Previously N×2 serial queries — now 2 queries regardless of item count.
-      if (invType !== 'ESTIMATE') {
+      // ── Record movements + adjust stock ──────────────────────────────────────
+      // Movements are recorded for EVERY invoice type (including ESTIMATE) so the
+      // sale/quotation shows in History. Stock is only changed for real SALE/RETURN
+      // invoices — an ESTIMATE (quotation) is informational and must not touch stock.
+      {
         const now = new Date();
-        const moveType = invType === 'RETURN' ? 'RETURN_OUT' : 'SALE';
+        const moveType = invType === 'RETURN' ? 'RETURN_OUT' : invType === 'ESTIMATE' ? 'ESTIMATE' : 'SALE';
 
         await tx.movement.createMany({
           data: allItems.map(item => ({
@@ -426,7 +429,7 @@ export async function createInvoice(req, {
             taxableAmount:   item.taxableAmt,
             totalAmount:     item.total,
             gstAmount:       item.cgst + item.sgst + (item.igst || 0),
-            profit:          item.taxableAmt - (item.buyingPrice * item.qty),
+            profit:          invType === 'ESTIMATE' ? 0 : item.taxableAmt - (item.buyingPrice * item.qty),
             invoiceId:       inv.invoiceId,
             partyId:         resolvedPartyId || null,
             referenceNumber: invoiceNumber,
@@ -446,7 +449,7 @@ export async function createInvoice(req, {
               data:  { stockQty: { increment: item.qty } },
             })
           ));
-        } else {
+        } else if (invType !== 'ESTIMATE') {
           // Atomic decrement per item — the WHERE stockQty >= qty guard prevents
           // overselling even under concurrent requests. Run in parallel since each
           // targets a different inventoryId row.
