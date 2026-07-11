@@ -118,9 +118,26 @@ router.post('/', authenticate, requireShopOwner, requirePermission('purchase.cre
       }
     }
 
+    // Resolve the supplier party so SUPPLIER_CREDIT can post to the ledger. Prefer
+    // an explicit partyId; otherwise match the bill's supplier to a registered
+    // party by GSTIN (exact) or name (case-insensitive) within this shop.
+    let resolvedPartyId = null;
     if (partyId) {
       const party = await prisma.party.findFirst({ where: { partyId: parseInt(partyId, 10), shopId: req.shopId } });
       if (!party) return res.status(400).json({ success: false, error: { message: 'Party not found' } });
+      resolvedPartyId = party.partyId;
+    } else if (bill.supplierGstin || bill.supplierName) {
+      const match = await prisma.party.findFirst({
+        where: {
+          shopId: req.shopId, deletedAt: null, type: { in: ['SUPPLIER', 'BOTH'] },
+          OR: [
+            ...(bill.supplierGstin ? [{ gstin: bill.supplierGstin }] : []),
+            ...(bill.supplierName  ? [{ name: { equals: bill.supplierName, mode: 'insensitive' } }] : []),
+          ],
+        },
+        select: { partyId: true },
+      });
+      if (match) resolvedPartyId = match.partyId;
     }
 
     const result = await runSerializable(async (tx) => {
@@ -170,7 +187,7 @@ router.post('/', authenticate, requireShopOwner, requirePermission('purchase.cre
           returnNo,
           shopId:         req.shopId,
           originalBillId: billId,
-          partyId:        partyId ? parseInt(partyId, 10) : null,
+          partyId:        resolvedPartyId,
           supplierName:   bill.supplierName,
           supplierGstin:  bill.supplierGstin,
           reason,
@@ -204,7 +221,7 @@ router.post('/', authenticate, requireShopOwner, requirePermission('purchase.cre
             taxableAmount:   item.taxableValue,
             totalAmount:     Number(item.taxableValue) + Number(item.cgst) + Number(item.sgst),
             gstAmount:       Number(item.cgst) + Number(item.sgst),
-            partyId:         partyId ? parseInt(partyId, 10) : null,
+            partyId:         resolvedPartyId,
             partyName:       bill.supplierName,
             referenceNumber: returnNo,
             invoiceNumber:   bill.invoiceNumber,

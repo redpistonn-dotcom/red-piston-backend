@@ -259,6 +259,52 @@ async function ensureSchemaFixes() {
   } catch (err) {
     console.error('[schema] ensureSchemaFixes column additions failed (non-fatal):', err?.message);
   }
+  // ── Purchase Returns tables ────────────────────────────────────────────────
+  // These were only ever created by a hand-run SQL file, so on a DB where that
+  // wasn't applied the Purchase Returns page 500s while everything else works.
+  // Create them idempotently at boot so the feature works everywhere.
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS purchase_returns (
+        return_id               SERIAL PRIMARY KEY,
+        return_no               VARCHAR(60) NOT NULL UNIQUE,
+        shop_id                 INTEGER NOT NULL REFERENCES shops(shop_id),
+        original_bill_id        INTEGER NOT NULL REFERENCES purchase_bills(bill_id),
+        party_id                INTEGER REFERENCES parties(party_id),
+        supplier_name           VARCHAR(255),
+        supplier_gstin          VARCHAR(20),
+        reason                  VARCHAR(30) NOT NULL,
+        resolution              VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        supplier_credit_note_no VARCHAR(60),
+        status                  VARCHAR(20) NOT NULL DEFAULT 'COMPLETED',
+        notes                   TEXT,
+        credit_ledger_posted    BOOLEAN NOT NULL DEFAULT FALSE,
+        version                 INTEGER NOT NULL DEFAULT 0,
+        created_by              INTEGER,
+        created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+    await prisma.$executeRawUnsafe('ALTER TABLE purchase_returns ADD COLUMN IF NOT EXISTS credit_ledger_posted BOOLEAN NOT NULL DEFAULT FALSE');
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_purchase_returns_shop_created ON purchase_returns (shop_id, created_at DESC)');
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_purchase_returns_shop_resol ON purchase_returns (shop_id, resolution)');
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS purchase_return_items (
+        item_id            SERIAL PRIMARY KEY,
+        return_id          INTEGER NOT NULL REFERENCES purchase_returns(return_id) ON DELETE CASCADE,
+        inventory_id       INTEGER NOT NULL REFERENCES shop_inventory(inventory_id),
+        source_movement_id INTEGER NOT NULL REFERENCES movements(movement_id),
+        qty                INTEGER NOT NULL,
+        unit_price         NUMERIC(10,2) NOT NULL,
+        taxable_value      NUMERIC(10,2) NOT NULL,
+        gst_rate           NUMERIC(5,2) NOT NULL,
+        cgst               NUMERIC(10,2) NOT NULL,
+        sgst               NUMERIC(10,2) NOT NULL,
+        igst               NUMERIC(10,2) NOT NULL DEFAULT 0
+      )`);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_purchase_return_items_return ON purchase_return_items (return_id)');
+    console.log('[schema] ensured purchase_returns + purchase_return_items tables exist');
+  } catch (err) {
+    console.error('[schema] ensureSchemaFixes purchase-returns tables failed (non-fatal):', err?.message);
+  }
 }
 
 const workers = [];
