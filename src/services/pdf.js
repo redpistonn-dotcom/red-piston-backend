@@ -336,17 +336,17 @@ function buildInvoiceHeaderTally(shop, fieldGrid, termsOfDelivery, consigneeStac
     margin: [4, 2, 4, 2],
   });
 
-  // Left column (seller / consignee / buyer) with internal dividers — rendered as
-  // a nested table placed in a single cell that rowSpans the whole field grid.
+  // Left column (seller / [consignee] / buyer) with internal dividers — rendered
+  // as a nested table placed in a single cell that rowSpans the whole field grid.
+  // Consignee is optional: for a POS counter sale ship-to == bill-to, so it's
+  // dropped to avoid a redundant block (and a tall, unbalanced left column).
+  const leftBody = [
+    [ { stack: sellerStack(shop), border: [false, false, false, true], margin: [4, 3, 4, 3] } ],
+  ];
+  if (consigneeStack) leftBody.push([ { stack: consigneeStack, border: [false, false, false, true], margin: [4, 3, 4, 3] } ]);
+  leftBody.push([ { stack: buyerStack, border: [false, false, false, false], margin: [4, 3, 4, 3] } ]);
   const leftColumn = {
-    table: {
-      widths: ['*'],
-      body: [
-        [ { stack: sellerStack(shop), border: [false, false, false, true], margin: [4, 3, 4, 3] } ],
-        [ { stack: consigneeStack,    border: [false, false, false, true], margin: [4, 3, 4, 3] } ],
-        [ { stack: buyerStack,        border: [false, false, false, false], margin: [4, 3, 4, 3] } ],
-      ],
-    },
+    table: { widths: ['*'], body: leftBody },
     layout: { hLineColor: () => '#000000', vLineColor: () => '#000000', hLineWidth: () => 0.4, vLineWidth: () => 0 },
   };
 
@@ -572,7 +572,8 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     phone:      invoice.partyPhone || '',
     vehicleReg: invoice.vehicleReg || '',
   };
-  const consigneeStack = partyStack('Consignee (Ship to)', party, shop);
+  // POS counter sale: ship-to == bill-to, so we skip the redundant Consignee block.
+  const consigneeStack = null;
   const buyerStack     = partyStack('Buyer (Bill to)', party, shop);
 
   // Column config: base Rate first, then Rate incl. GST. When every line shares
@@ -628,7 +629,7 @@ export const generateInvoicePdf = async (invoice, opts = {}) => {
     // filename, so blob previews save as the invoice number instead of a UUID.
     info: { title: String(invoice.invoiceNumber || 'Invoice'), author: shop?.name || 'RedPiston' },
     pageSize: 'A4',
-    pageMargins: [30, 218, 30, 60],
+    pageMargins: [30, 170, 30, 60],
 
     // Repeating header on every page
     header: (currentPage) => {
