@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import prisma from '../db/prisma.js';
 import { getCacheClient } from '../lib/cache.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
+import { getNetworkStats } from '../middleware/networkLogger.js';
 import { formatUserResponse, attachStaffSections } from './auth/helpers.js';
 import { sendShopOwnerApprovedEmail, sendShopOwnerRejectedEmail } from '../services/email.js';
 import { generateResetToken, hashResetToken } from '../services/password.js';
@@ -1447,6 +1448,41 @@ router.post('/autodukan/migrate-images', authenticate, requireAdmin, (req, res) 
 // GET /api/admin/autodukan/migrate-images  — poll progress
 router.get('/autodukan/migrate-images', authenticate, requireAdmin, (req, res) => {
   res.json({ success: true, state: imgMigState });
+});
+
+// === VERCEL DEPLOYMENT PROXY ===
+router.get('/deployments/vercel', requireAdmin, async (req, res, next) => {
+  try {
+    const { token, projectId } = req.query;
+    if (!token) return res.status(400).json({ success: false, error: 'Token required' });
+    
+    // Vercel v6 deployments API
+    let url = 'https://api.vercel.com/v6/deployments?limit=5';
+    if (projectId) url += `&projectId=${projectId}`;
+
+    const vercelRes = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    if (!vercelRes.ok) {
+      return res.status(vercelRes.status).json({ success: false, error: 'Failed to fetch from Vercel' });
+    }
+
+    const data = await vercelRes.json();
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// === NETWORK LOGS API ===
+router.get('/network-logs', requireAdmin, (req, res) => {
+  res.json({
+    success: true,
+    data: getNetworkStats()
+  });
 });
 
 export default router;
