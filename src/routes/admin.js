@@ -766,6 +766,13 @@ async function ensureImportLogTable() {
 // Returns staging totals, import progress, today's usage and rate-limit state.
 router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next) => {
   try {
+    const cache = await getCacheClient();
+    const cacheKey = 'admin:autodukan_stats';
+    const cachedStats = await cache.get(cacheKey);
+    if (cachedStats) {
+      return res.json(JSON.parse(cachedStats));
+    }
+
     await ensureImportLogTable();
 
     const [stagingRes, masterRes, todayRes, lastImportRes, recentLogs, recentImports, brandStats, categoryStats, scrapeProgress] = await Promise.all([
@@ -867,7 +874,7 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
       if (cooldownEnds > new Date()) nextAvailableAt = cooldownEnds.toISOString();
     }
 
-    res.json({
+    const payload = {
       success: true,
       data: {
         stagingTotal,
@@ -917,7 +924,11 @@ router.get('/autodukan/stats', authenticate, requireAdmin, async (req, res, next
           fullyDone:      r.fully_done,
         })),
       },
-    });
+    };
+
+    // Cache for 2 minutes to prevent DB hammering on dashboard refresh
+    await cache.set(cacheKey, JSON.stringify(payload), 'EX', 120);
+    res.json(payload);
   } catch (err) { next(err); }
 });
 
@@ -930,6 +941,11 @@ router.get('/autodukan/parts', authenticate, requireAdmin, async (req, res, next
     const q        = (req.query.q        || '').trim();
     const category = (req.query.category || '').trim();
     const brand    = (req.query.brand    || '').trim();
+
+    const cacheKey = `admin:autodukan_parts:${limit}:${offset}:${q}:${category}:${brand}`;
+    const cache = await getCacheClient();
+    const cached = await cache.get(cacheKey);
+    if (cached) return res.json(JSON.parse(cached));
 
     // Build WHERE clauses dynamically
     const conditions = [`source = 'autodukan'`];
@@ -969,7 +985,7 @@ router.get('/autodukan/parts', authenticate, requireAdmin, async (req, res, next
       ),
     ]);
 
-    res.json({
+    const payload = {
       success: true,
       data: {
         parts: partsRes.map(r => ({
@@ -986,7 +1002,10 @@ router.get('/autodukan/parts', authenticate, requireAdmin, async (req, res, next
         })),
         total: countRes[0]?.count || 0,
       },
-    });
+    };
+
+    await cache.set(cacheKey, JSON.stringify(payload), 'EX', 30);
+    res.json(payload);
   } catch (err) { next(err); }
 });
 
