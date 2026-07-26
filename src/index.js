@@ -19,6 +19,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import { httpLogger } from './lib/logger.js';
+import { networkLogger } from './middleware/networkLogger.js';
 import cookieParser from 'cookie-parser';
 import prisma from './db/prisma.js';
 import { authenticate, requireSection } from './middleware/auth.js';
@@ -90,6 +91,7 @@ app.use(helmet({
 }));
 
 app.use(httpLogger);
+app.use(networkLogger);
 
 // ── Gzip compression ──────────────────────────────────────────────────────────
 // Must be applied before routes so it wraps every response.

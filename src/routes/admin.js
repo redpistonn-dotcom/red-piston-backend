@@ -1451,7 +1451,7 @@ router.get('/autodukan/migrate-images', authenticate, requireAdmin, (req, res) =
 });
 
 // === VERCEL DEPLOYMENT PROXY ===
-router.get('/deployments/vercel', requireAdmin, async (req, res, next) => {
+router.get('/deployments/vercel', authenticate, requireAdmin, async (req, res, next) => {
   try {
     const { token, projectId } = req.query;
     if (!token) return res.status(400).json({ success: false, error: 'Token required' });
@@ -1478,7 +1478,7 @@ router.get('/deployments/vercel', requireAdmin, async (req, res, next) => {
 });
 
 // === NETWORK LOGS API ===
-router.get('/network-logs', requireAdmin, (req, res) => {
+router.get('/network-logs', authenticate, requireAdmin, (req, res) => {
   res.json({
     success: true,
     data: getNetworkStats()
