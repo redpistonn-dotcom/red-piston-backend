@@ -146,25 +146,25 @@ app.get('/health', async (req, res) => {
   // Flag as degraded if heap > 400 MB — gives early warning before OOM kill
   const memPressure = heapMB > 400 ? 'high' : heapMB > 250 ? 'moderate' : 'normal';
 
+  let dbStatus = 'unknown';
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    const status = memPressure === 'high' ? 'degraded' : 'ok';
-    res.status(status === 'degraded' ? 503 : 200).json({
-      status,
-      db: 'connected',
-      memory: { heapMB, rssMB, pressure: memPressure },
-      uptimeSec: Math.floor(process.uptime()),
-      timestamp: new Date().toISOString(),
-    });
+    await Promise.race([
+      prisma.$queryRaw`SELECT 1`,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+    ]);
+    dbStatus = 'connected';
   } catch (err) {
-    res.status(503).json({
-      status: 'degraded',
-      db: 'disconnected',
-      memory: { heapMB, rssMB, pressure: memPressure },
-      error: err.message,
-      timestamp: new Date().toISOString(),
-    });
+    dbStatus = 'degraded';
   }
+  // Always return 200 — Railway healthcheck must not flip to failed due to transient DB/Redis issues.
+  // Degraded state is surfaced in the payload for observability.
+  res.status(200).json({
+    status: dbStatus === 'connected' && memPressure !== 'high' ? 'ok' : 'degraded',
+    db: dbStatus,
+    memory: { heapMB, rssMB, pressure: memPressure },
+    uptimeSec: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // Routes
