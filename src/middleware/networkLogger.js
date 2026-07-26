@@ -12,8 +12,8 @@ let endpointHealth = {
  * Middleware to intercept and log all incoming network requests
  */
 function networkLogger(req, res, next) {
-  // Ignore requests to the logs endpoint itself to prevent infinite feedback loop
-  if (req.path === '/api/admin/network-logs') {
+  // Skip logging the polling endpoint itself — it would flood the feed with self-referential noise
+  if (req.originalUrl.startsWith('/api/admin/network-logs')) {
     return next();
   }
 

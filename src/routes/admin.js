@@ -1479,6 +1479,9 @@ router.get('/deployments/vercel', authenticate, requireAdmin, async (req, res, n
 
 // === NETWORK LOGS API ===
 router.get('/network-logs', authenticate, requireAdmin, (req, res) => {
+  // Disable caching so browsers/proxies always fetch fresh log data
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
   res.json({
     success: true,
     data: getNetworkStats()
