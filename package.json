@@ -21,6 +21,8 @@
   },
   "dependencies": {
     "@prisma/client": "^5.10.0",
+    "@sentry/node": "^10.68.0",
+    "@sentry/profiling-node": "^10.68.0",
     "axios": "^1.6.7",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.79.0",

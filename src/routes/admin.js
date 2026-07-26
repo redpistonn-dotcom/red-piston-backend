@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { spawn } from 'child_process';
+import os from 'os';
 import { existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import prisma from '../db/prisma.js';
+import { getCacheClient } from '../lib/cache.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { formatUserResponse, attachStaffSections } from './auth/helpers.js';
 import { sendShopOwnerApprovedEmail, sendShopOwnerRejectedEmail } from '../services/email.js';
@@ -19,6 +21,76 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRAPER_SCRIPT = resolve(__dirname, '../../scripts/scrape_autodukan_full.py');
 
 const router = Router();
+
+// GET /api/admin/system-metrics
+router.get('/system-metrics', authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const dbSizeRes = await prisma.$queryRaw`SELECT pg_database_size(current_database()) as size`;
+    const dbSizeBytes = dbSizeRes[0]?.size ? Number(dbSizeRes[0].size) : 0;
+    
+    const connRes = await prisma.$queryRaw`SELECT count(*) as count FROM pg_stat_activity`;
+    const activeDbConnections = connRes[0]?.count ? Number(connRes[0].count) : 0;
+
+    let redisMemory = '0B';
+    let apiRateLimiters = 0;
+    let apiWarnings = 0;
+    let mutRateLimiters = 0;
+    let mutWarnings = 0;
+
+    const redisClient = getCacheClient();
+    if (redisClient) {
+      try {
+        const info = await redisClient.info('memory');
+        const match = info.match(/used_memory_human:(.*)/);
+        if (match) redisMemory = match[1].trim();
+
+        // Scan for active rate limiters
+        const apiKeys = await redisClient.keys('rl:api:*');
+        apiRateLimiters = apiKeys.length;
+        for (const key of apiKeys) {
+          const val = await redisClient.get(key);
+          if (Number(val) > 150) apiWarnings++;
+        }
+
+        const mutKeys = await redisClient.keys('rl:mut:*');
+        mutRateLimiters = mutKeys.length;
+        for (const key of mutKeys) {
+          const val = await redisClient.get(key);
+          if (Number(val) > 45) mutWarnings++;
+        }
+      } catch (e) {
+        console.error('Redis info error', e);
+      }
+    }
+
+    const memoryUsage = process.memoryUsage();
+    
+    res.json({
+      success: true,
+      data: {
+        database: {
+          sizeBytes: dbSizeBytes,
+          sizeMb: (dbSizeBytes / 1024 / 1024).toFixed(2),
+          activeConnections: activeDbConnections,
+        },
+        cache: {
+          usedMemoryHuman: redisMemory,
+        },
+        rateLimits: {
+          api: { active: apiRateLimiters, warnings: apiWarnings },
+          mutations: { active: mutRateLimiters, warnings: mutWarnings }
+        },
+        server: {
+          freemem: os.freemem(),
+          totalmem: os.totalmem(),
+          loadavg: os.loadavg(),
+          heapUsed: memoryUsage.heapUsed,
+          heapTotal: memoryUsage.heapTotal,
+        }
+      }
+    });
+  } catch (err) { next(err); }
+});
 
 // GET /api/admin/stats
 router.get('/stats', authenticate, requireAdmin, async (req, res, next) => {

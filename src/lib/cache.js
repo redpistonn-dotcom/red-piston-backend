@@ -11,9 +11,10 @@ function getOrCreateClient() {
   if (!url) return null;
 
   try {
+    const isTls = url.startsWith("rediss:");
     client = new Redis(url, {
-      lazyConnect: true,
-      enableOfflineQueue: false,
+      family: 4,
+      tls: isTls ? { rejectUnauthorized: false } : undefined,
       maxRetriesPerRequest: 1,
       connectTimeout: 8000,
       retryStrategy(times) {
@@ -45,7 +46,7 @@ export function getCacheClient() {
 
 // ioredis has no built-in per-command timeout. `enableOfflineQueue`/
 // `maxRetriesPerRequest` only kick in when the client's own state is
-// disconnected/reconnecting — if the TCP connection died silently (a NAT/LB
+// disconnected/reconnecting â€” if the TCP connection died silently (a NAT/LB
 // or Redis provider dropping an idle connection without a FIN/RST, which is
 // exactly what a multi-day-idle deploy runs into), ioredis still thinks the
 // socket is "ready" and will wait forever for a reply that's never coming.
@@ -67,7 +68,7 @@ export function withRedisTimeout(promise, ms = REDIS_CMD_TIMEOUT_MS) {
 /**
  * Timeout-guarded raw command call, for use as rate-limit-redis's
  * sendCommand. Throws (never hangs) if Redis doesn't reply within the
- * deadline — callers (express-rate-limit) already fail open on store errors.
+ * deadline â€” callers (express-rate-limit) already fail open on store errors.
  */
 export function callWithTimeout(redisClient, ...args) {
   return withRedisTimeout(redisClient.call(...args));
@@ -91,7 +92,7 @@ export async function getOrSet(key, ttlSeconds, fn) {
         return JSON.parse(cached);
       }
     } catch {
-      // Redis unavailable, timed out, or parse error — fall through to fn()
+      // Redis unavailable, timed out, or parse error â€” fall through to fn()
     }
   }
 
@@ -126,7 +127,7 @@ export async function invalidate(key) {
 
 /**
  * Deletes all keys matching a glob pattern using the KEYS command.
- * Note: KEYS blocks the Redis server — use only in low-traffic scenarios
+ * Note: KEYS blocks the Redis server â€” use only in low-traffic scenarios
  * or consider SCAN for production use at scale.
  *
  * @param {string} pattern

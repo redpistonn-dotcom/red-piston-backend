@@ -1,4 +1,4 @@
-import { Queue } from "bullmq";
+﻿import { Queue } from "bullmq";
 
 function parseRedisUrl(redisUrl) {
   const url = new URL(redisUrl);
@@ -6,12 +6,13 @@ function parseRedisUrl(redisUrl) {
     host: url.hostname,
     port: url.port ? Number(url.port) : 6379,
     maxRetriesPerRequest: null,
+    family: 4,
   };
   if (url.password) {
     connection.password = decodeURIComponent(url.password);
   }
   if (url.protocol === "rediss:") {
-    connection.tls = {};
+    connection.tls = { rejectUnauthorized: false };
   }
   return connection;
 }
@@ -92,7 +93,7 @@ if (process.env.REDIS_URL) {
 
 export async function scheduleRecurringJobs() {
   if (!cleanupQueue || !reconcileQueue || !gstr1Queue) {
-    console.warn("[scheduleRecurringJobs] REDIS_URL not set — skipping recurring job scheduling.");
+    console.warn("[scheduleRecurringJobs] REDIS_URL not set â€” skipping recurring job scheduling.");
     return;
   }
 
