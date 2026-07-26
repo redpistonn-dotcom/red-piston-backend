@@ -1,4 +1,4 @@
-import { Worker } from "bullmq";
+﻿import { Worker } from "bullmq";
 import prisma from "../../db/prisma.js";
 import { logger } from "../../lib/logger.js";
 
@@ -8,12 +8,13 @@ function parseRedisUrl(redisUrl) {
     host: url.hostname,
     port: url.port ? Number(url.port) : 6379,
     maxRetriesPerRequest: null,
+    family: 4,
   };
   if (url.password) {
     connection.password = decodeURIComponent(url.password);
   }
   if (url.protocol === "rediss:") {
-    connection.tls = {};
+    connection.tls = { rejectUnauthorized: false };
   }
   return connection;
 }
@@ -48,7 +49,7 @@ async function processGstr1Job(job) {
   });
 
   if (shops.length === 0) {
-    logger.info({ jobId: job.id }, "[Gstr1Worker] No shops with GSTIN found — nothing to do");
+    logger.info({ jobId: job.id }, "[Gstr1Worker] No shops with GSTIN found â€” nothing to do");
     return { shopsProcessed: 0 };
   }
 
@@ -142,7 +143,7 @@ async function aggregateShopGstr1(jobId, shop, from, to) {
 
 export function startGstr1Worker() {
   if (!process.env.REDIS_URL) {
-    logger.warn("[Gstr1Worker] REDIS_URL not set — worker not started.");
+    logger.warn("[Gstr1Worker] REDIS_URL not set â€” worker not started.");
     return null;
   }
 
@@ -159,6 +160,10 @@ export function startGstr1Worker() {
 
   worker.on("failed", (job, err) => {
     logger.error({ jobId: job?.id, err: err?.message }, "[Gstr1Worker] Job failed");
+  });
+
+  worker.on("error", (err) => {
+    logger.error({ err: err?.message }, "[Gstr1Worker] Worker error (non-fatal)");
   });
 
   logger.info("[Gstr1Worker] Started");

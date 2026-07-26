@@ -1,6 +1,19 @@
 // Load .env FIRST, overriding any system env vars (fixes Neon vs Supabase conflict)
 import { config } from 'dotenv';
 config({ override: true });
+
+import * as Sentry from "@sentry/node";
+import { nodeProfilingIntegration } from "@sentry/profiling-node";
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN || '[YOUR_SENTRY_DSN]',
+  integrations: [
+    nodeProfilingIntegration(),
+  ],
+  tracesSampleRate: 1.0,
+  profilesSampleRate: 1.0,
+});
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -227,6 +240,8 @@ app.use('/api/fitments', fitmentRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/audit', auditRoutes);
 
+Sentry.setupExpressErrorHandler(app);
+
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 
@@ -307,15 +322,57 @@ async function ensureSchemaFixes() {
   }
 }
 
-const workers = [];
-if (process.env.REDIS_URL) {
+// Prevent Redis quota errors (and similar transient infra faults) from crashing
+// the process. Workers already log these via their own .on('error') handlers;
+// this is the last-resort safety net for any path that slips through.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason?.message ?? String(reason);
+  if (msg.includes('max requests limit exceeded') || msg.includes('ReplyError') || msg.includes('ECONNREFUSED')) {
+    console.error('[App] Suppressed Redis/infra unhandledRejection (non-fatal):', msg);
+    return;
+  }
+  console.error('[App] Unhandled rejection:', reason);
+});
+
+async function startWorkersIfRedisAvailable() {
+  if (!process.env.REDIS_URL) {
+    startCleanupJob();
+    console.log("[App] Legacy cleanup started (no REDIS_URL)");
+    return;
+  }
+
+  // Quick Redis health check before starting workers.
+  // If quota exceeded or unreachable, skip workers — app runs normally without them.
+  try {
+    const { default: IORedis } = await import('ioredis');
+    const url = new URL(process.env.REDIS_URL);
+    const conn = new IORedis({
+      host: url.hostname,
+      port: url.port ? Number(url.port) : 6379,
+      password: url.password ? decodeURIComponent(url.password) : undefined,
+      family: 4,
+      tls: url.protocol === 'rediss:' ? { rejectUnauthorized: false } : undefined,
+      maxRetriesPerRequest: 1,
+      connectTimeout: 4000,
+      lazyConnect: true,
+    });
+    await conn.connect();
+    await conn.ping();
+    await conn.quit();
+  } catch (err) {
+    const msg = err?.message ?? String(err);
+    console.warn(`[App] Redis unavailable — workers disabled (app runs normally). Reason: ${msg}`);
+    startCleanupJob();
+    return;
+  }
+
+  const workers = [];
   workers.push(startEmailWorker(), startCleanupWorker(), startReconcileWorker(), startGstr1Worker());
   scheduleRecurringJobs().catch(err => console.error("[App] Failed to schedule jobs:", err));
   console.log("[App] BullMQ workers started");
-} else {
-  startCleanupJob();
-  console.log("[App] Legacy cleanup started (no REDIS_URL)");
 }
+
+startWorkersIfRedisAvailable();
 startMetricsReporting();
 ensureSchemaFixes().finally(() => {
   const server = app.listen(PORT, () => {

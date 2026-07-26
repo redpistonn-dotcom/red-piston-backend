@@ -1,4 +1,4 @@
-import { Worker } from "bullmq";
+﻿import { Worker } from "bullmq";
 import { Resend } from "resend";
 import { logger } from "../../lib/logger.js";
 
@@ -8,12 +8,13 @@ function parseRedisUrl(redisUrl) {
     host: url.hostname,
     port: url.port ? Number(url.port) : 6379,
     maxRetriesPerRequest: null,
+    family: 4,
   };
   if (url.password) {
     connection.password = decodeURIComponent(url.password);
   }
   if (url.protocol === "rediss:") {
-    connection.tls = {};
+    connection.tls = { rejectUnauthorized: false };
   }
   return connection;
 }
@@ -45,7 +46,7 @@ async function processEmailJob(job) {
 
 export function startEmailWorker() {
   if (!process.env.REDIS_URL) {
-    logger.warn("[EmailWorker] REDIS_URL not set — worker not started.");
+    logger.warn("[EmailWorker] REDIS_URL not set â€” worker not started.");
     return null;
   }
 
@@ -62,6 +63,10 @@ export function startEmailWorker() {
 
   worker.on("failed", (job, err) => {
     logger.error({ jobId: job?.id, err: err?.message }, "[EmailWorker] Job failed");
+  });
+
+  worker.on("error", (err) => {
+    logger.error({ err: err?.message }, "[EmailWorker] Worker error (non-fatal)");
   });
 
   logger.info("[EmailWorker] Started (concurrency: 3)");

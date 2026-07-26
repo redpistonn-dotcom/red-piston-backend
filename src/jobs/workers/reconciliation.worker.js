@@ -1,4 +1,4 @@
-import { Worker } from "bullmq";
+﻿import { Worker } from "bullmq";
 import prisma from "../../db/prisma.js";
 import { logger } from "../../lib/logger.js";
 
@@ -8,20 +8,21 @@ function parseRedisUrl(redisUrl) {
     host: url.hostname,
     port: url.port ? Number(url.port) : 6379,
     maxRetriesPerRequest: null,
+    family: 4,
   };
   if (url.password) {
     connection.password = decodeURIComponent(url.password);
   }
   if (url.protocol === "rediss:") {
-    connection.tls = {};
+    connection.tls = { rejectUnauthorized: false };
   }
   return connection;
 }
 
 // Movement types and their stock sign:
-//   PURCHASE, OPENING, RETURN_IN  → positive (add to stock)
-//   SALE, DAMAGE, THEFT, RETURN_OUT → negative (subtract from stock)
-//   ADJUSTMENT                   → uses the raw qty value directly (can be negative)
+//   PURCHASE, OPENING, RETURN_IN  â†’ positive (add to stock)
+//   SALE, DAMAGE, THEFT, RETURN_OUT â†’ negative (subtract from stock)
+//   ADJUSTMENT                   â†’ uses the raw qty value directly (can be negative)
 async function processReconcileJob(job) {
   logger.info({ jobId: job.id }, "[ReconcileWorker] Starting stock reconciliation");
 
@@ -65,7 +66,7 @@ async function processReconcileJob(job) {
 
   logger.warn(
     { jobId: job.id, count: drifts.length },
-    "[ReconcileWorker] Stock drifts detected — creating audit entries"
+    "[ReconcileWorker] Stock drifts detected â€” creating audit entries"
   );
 
   // Write one AuditLog row per drift so the discrepancy is traceable.
@@ -103,7 +104,7 @@ async function processReconcileJob(job) {
 
 export function startReconcileWorker() {
   if (!process.env.REDIS_URL) {
-    logger.warn("[ReconcileWorker] REDIS_URL not set — worker not started.");
+    logger.warn("[ReconcileWorker] REDIS_URL not set â€” worker not started.");
     return null;
   }
 
@@ -120,6 +121,10 @@ export function startReconcileWorker() {
 
   worker.on("failed", (job, err) => {
     logger.error({ jobId: job?.id, err: err?.message }, "[ReconcileWorker] Job failed");
+  });
+
+  worker.on("error", (err) => {
+    logger.error({ err: err?.message }, "[ReconcileWorker] Worker error (non-fatal)");
   });
 
   logger.info("[ReconcileWorker] Started");

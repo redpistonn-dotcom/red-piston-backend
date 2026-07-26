@@ -1,4 +1,4 @@
-import { Worker } from "bullmq";
+﻿import { Worker } from "bullmq";
 import prisma from "../../db/prisma.js";
 import { logger } from "../../lib/logger.js";
 
@@ -8,12 +8,13 @@ function parseRedisUrl(redisUrl) {
     host: url.hostname,
     port: url.port ? Number(url.port) : 6379,
     maxRetriesPerRequest: null,
+    family: 4,
   };
   if (url.password) {
     connection.password = decodeURIComponent(url.password);
   }
   if (url.protocol === "rediss:") {
-    connection.tls = {};
+    connection.tls = { rejectUnauthorized: false };
   }
   return connection;
 }
@@ -54,13 +55,13 @@ async function processCleanupJob(job) {
     };
   }
 
-  logger.warn({ jobId: job.id, jobName: name }, "[CleanupWorker] Unknown job name — skipped");
+  logger.warn({ jobId: job.id, jobName: name }, "[CleanupWorker] Unknown job name â€” skipped");
   return { skipped: true };
 }
 
 export function startCleanupWorker() {
   if (!process.env.REDIS_URL) {
-    logger.warn("[CleanupWorker] REDIS_URL not set — worker not started.");
+    logger.warn("[CleanupWorker] REDIS_URL not set â€” worker not started.");
     return null;
   }
 
@@ -77,6 +78,10 @@ export function startCleanupWorker() {
 
   worker.on("failed", (job, err) => {
     logger.error({ jobId: job?.id, jobName: job?.name, err: err?.message }, "[CleanupWorker] Job failed");
+  });
+
+  worker.on("error", (err) => {
+    logger.error({ err: err?.message }, "[CleanupWorker] Worker error (non-fatal)");
   });
 
   logger.info("[CleanupWorker] Started");
