@@ -724,6 +724,31 @@ router.post('/invoice/:id/send-whatsapp', authenticate, requireShopOwner, async 
   } catch (err) { next(err); }
 });
 
+// ─── PATCH /api/billing/invoice/:id/status ───────────────────────────────────
+const ALLOWED_STATUS_TRANSITIONS = ['CONVERTED'];
+router.patch('/invoice/:id/status', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const { status } = req.body;
+    if (!ALLOWED_STATUS_TRANSITIONS.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Allowed: ${ALLOWED_STATUS_TRANSITIONS.join(', ')}` });
+    }
+    const invoice = await prisma.invoice.findFirst({
+      where: { invoiceId: parseInt(req.params.id, 10), shopId: req.shopId },
+      select: { invoiceId: true, invoiceType: true, status: true },
+    });
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (invoice.invoiceType !== 'ESTIMATE') {
+      return res.status(400).json({ error: 'Only ESTIMATE invoices can be marked CONVERTED' });
+    }
+    const updated = await prisma.invoice.update({
+      where: { invoiceId: invoice.invoiceId },
+      data:  { status },
+    });
+    writeAudit(req, { entityType: ET.INVOICE, entityId: invoice.invoiceId, action: ACT.UPDATE, newValue: { status } });
+    res.json({ success: true, status: updated.status });
+  } catch (err) { next(err); }
+});
+
 // ─── POST /api/billing/invoice/:id/payment ───────────────────────────────────
 router.post('/invoice/:id/payment', authenticate, requireShopOwner, requirePermission('billing.payment'), async (req, res, next) => {
   try {
