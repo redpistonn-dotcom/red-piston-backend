@@ -36,6 +36,13 @@ import adminRoutes from './routes/admin.js';
 import fitmentRoutes from './routes/fitments.js';
 import shopProfileRoutes from './routes/shop.js';
 import workshopRoutes from './routes/workshop.js';
+import mechanicShopAdminRoutes from './routes/mechanic/shop-admin.js';
+import mechanicAuthRoutes, { publicMechanicAuthRouter } from './routes/mechanic/auth.js';
+import mechanicJobRoutes from './routes/mechanic/jobs.js';
+import mechanicCustomerRoutes from './routes/mechanic/customers.js';
+import workshopQuotationRoutes from './routes/workshop/quotation.js';
+import workshopBayRoutes from './routes/workshop/bays.js';
+import workshopFeedbackRoutes from './routes/workshop/feedback.js';
 import shopVehicleRoutes from './routes/shopVehicles.js';
 import purchaseOrderRoutes from './routes/purchaseOrders.js';
 import uploadRoutes from './routes/upload.js';
@@ -212,6 +219,15 @@ app.use('/api/shop/staff', staffRoutes);
 app.use('/api/shop/profile', shopProfileRoutes);
 app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'));
 app.use('/api/shop/workshop', workshopRoutes);
+// Mechanic routes — separate user type, not SHOP_STAFF
+app.use('/api/mechanic-auth', publicMechanicAuthRouter);
+app.use('/api/shop/mechanics', authenticate, requireSection('staff'), mechanicShopAdminRoutes);
+app.use('/api/mechanic', authenticate, mechanicAuthRoutes);
+app.use('/api/mechanic', authenticate, mechanicJobRoutes);
+app.use('/api/mechanic', authenticate, mechanicCustomerRoutes);
+app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'), workshopQuotationRoutes);
+app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'), workshopBayRoutes);
+app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'), workshopFeedbackRoutes);
 app.use('/api/shop/vehicles', shopVehicleRoutes);
 app.use('/api/shop/purchase-orders', purchaseOrderRoutes);
 app.use('/api/shop/purchase-bills', purchaseBillRoutes);
@@ -278,6 +294,216 @@ async function ensureSchemaFixes() {
   } catch (err) {
     console.error('[schema] ensureSchemaFixes column additions failed (non-fatal):', err?.message);
   }
+  // ── Mechanic tables & job-card extensions ─────────────────────────────────
+  try {
+    // Seed MECHANIC user type (idempotent — ON CONFLICT DO NOTHING)
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO user_types (slug, name)
+      VALUES ('MECHANIC', 'Mechanic')
+      ON CONFLICT (slug) DO NOTHING
+    `);
+
+    // shop_mechanics — one row per mechanic per shop
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS shop_mechanics (
+        id                SERIAL PRIMARY KEY,
+        user_id           INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        shop_id           INTEGER NOT NULL REFERENCES shops(shop_id),
+        mechanic_role     VARCHAR(10) NOT NULL DEFAULT 'MEMBER',
+        head_mechanic_id  INTEGER REFERENCES shop_mechanics(id),
+        employee_id       VARCHAR(50),
+        designation       VARCHAR(100),
+        skills            TEXT[],
+        is_active         BOOLEAN NOT NULL DEFAULT TRUE,
+        approval_status   VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+        invited_by        INTEGER REFERENCES users(user_id),
+        joined_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(shop_id, user_id)
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_shop_mechanics_shop ON shop_mechanics(shop_id)');
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_shop_mechanics_user ON shop_mechanics(user_id)');
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_shop_mechanics_head ON shop_mechanics(head_mechanic_id)');
+
+    // mechanic_invites — pending invite rows
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS mechanic_invites (
+        id                SERIAL PRIMARY KEY,
+        shop_id           INTEGER NOT NULL REFERENCES shops(shop_id),
+        email             VARCHAR(255) NOT NULL,
+        mechanic_role     VARCHAR(10) NOT NULL DEFAULT 'MEMBER',
+        head_mechanic_id  INTEGER REFERENCES shop_mechanics(id),
+        invited_by        INTEGER NOT NULL REFERENCES users(user_id),
+        status            VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        verified_at       TIMESTAMPTZ,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(shop_id, email)
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_mechanic_invites_shop ON mechanic_invites(shop_id)');
+
+    // shops: mechanic join code (mechanics use this to self-register)
+    await prisma.$executeRawUnsafe('ALTER TABLE shops ADD COLUMN IF NOT EXISTS mechanic_join_code VARCHAR(10) UNIQUE');
+
+    // job_cards: new columns for mechanic assignment + QC + approval
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS assigned_to_user_id INTEGER REFERENCES users(user_id)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS qc_status VARCHAR(20)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS qc_by INTEGER REFERENCES users(user_id)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS qc_at TIMESTAMPTZ');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS qc_notes TEXT');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT \'PENDING\'');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS approval_method VARCHAR(20)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(user_id)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS approval_remarks TEXT');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS mechanic_invoice_id INTEGER');
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_job_cards_assigned_user ON job_cards(assigned_to_user_id)');
+
+    // job_card_timeline — every mutation logged
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS job_card_timeline (
+        id            SERIAL PRIMARY KEY,
+        job_id        INTEGER NOT NULL REFERENCES job_cards(job_id) ON DELETE CASCADE,
+        actor_user_id INTEGER REFERENCES users(user_id),
+        event         VARCHAR(50) NOT NULL,
+        from_status   VARCHAR(30),
+        to_status     VARCHAR(30),
+        note          TEXT,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_job_card_timeline_job ON job_card_timeline(job_id, created_at DESC)');
+
+    // job_card_photos — before/during/after repair
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS job_card_photos (
+        id           SERIAL PRIMARY KEY,
+        job_id       INTEGER NOT NULL REFERENCES job_cards(job_id) ON DELETE CASCADE,
+        stage        VARCHAR(20) NOT NULL DEFAULT 'DURING',
+        url          TEXT NOT NULL,
+        uploaded_by  INTEGER REFERENCES users(user_id),
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_job_card_photos_job ON job_card_photos(job_id)');
+
+    // invoice_items: taxable_value column (used by mechanic invoice generation)
+    await prisma.$executeRawUnsafe('ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS taxable_value DECIMAL(10,2)');
+
+    console.log('[schema] ensured mechanic tables + job_card extensions + timeline + photos');
+  } catch (err) {
+    console.error('[schema] mechanic schema fixes failed (non-fatal):', err?.message);
+  }
+
+  // ── Extended job-card fields: check-in, quotation, bays, part-requests, feedback ─
+  try {
+    // Vehicle check-in
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS fuel_level VARCHAR(20)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS accessories_received TEXT[]');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS spare_key BOOLEAN DEFAULT FALSE');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS visible_condition TEXT');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS check_in_at TIMESTAMPTZ');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS check_in_by INTEGER REFERENCES users(user_id)');
+    // Service consultation
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS consultation_notes TEXT');
+    // Mechanic granular progress sub-status
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS mechanic_progress VARCHAR(30)');
+    // Customer/vehicle FK linking
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS party_id INTEGER REFERENCES parties(party_id)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS shop_vehicle_id INTEGER REFERENCES shop_vehicles(vehicle_id)');
+    // Quotation fields stored on job card
+    await prisma.$executeRawUnsafe("ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS quotation_status VARCHAR(20) DEFAULT 'NONE'");
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS quotation_number VARCHAR(50)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS quotation_discount DECIMAL(10,2) DEFAULT 0');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS quotation_grand_total DECIMAL(10,2) DEFAULT 0');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS quotation_sent_at TIMESTAMPTZ');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS quotation_sent_via VARCHAR(20)');
+    // Customer notification & delivery
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS customer_notified_at TIMESTAMPTZ');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS delivery_at TIMESTAMPTZ');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS delivery_by INTEGER REFERENCES users(user_id)');
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS customer_signature_url TEXT');
+    // Bay assignment — column first, FK after table created
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS bay_id INTEGER');
+
+    // service_bays table
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS service_bays (
+        id         SERIAL PRIMARY KEY,
+        shop_id    INTEGER NOT NULL REFERENCES shops(shop_id),
+        name       VARCHAR(100) NOT NULL,
+        is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_service_bays_shop ON service_bays(shop_id)');
+
+    // Add FK for bay_id now that service_bays exists (IF NOT EXISTS guard via DO block)
+    await prisma.$executeRawUnsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'fk_job_cards_bay' AND table_name = 'job_cards'
+        ) THEN
+          ALTER TABLE job_cards ADD CONSTRAINT fk_job_cards_bay FOREIGN KEY (bay_id) REFERENCES service_bays(id);
+        END IF;
+      END $$
+    `);
+
+    // job_card_quotation_sends — share event log
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS job_card_quotation_sends (
+        id       SERIAL PRIMARY KEY,
+        job_id   INTEGER NOT NULL REFERENCES job_cards(job_id) ON DELETE CASCADE,
+        sent_via VARCHAR(20) NOT NULL,
+        sent_to  VARCHAR(255),
+        sent_by  INTEGER REFERENCES users(user_id),
+        sent_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_quotation_sends_job ON job_card_quotation_sends(job_id)');
+
+    // job_card_part_requests — mechanic requests for out-of-stock parts
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS job_card_part_requests (
+        id            SERIAL PRIMARY KEY,
+        job_id        INTEGER NOT NULL REFERENCES job_cards(job_id) ON DELETE CASCADE,
+        shop_id       INTEGER NOT NULL REFERENCES shops(shop_id),
+        description   VARCHAR(255) NOT NULL,
+        part_number   VARCHAR(100),
+        qty_requested INTEGER NOT NULL DEFAULT 1,
+        unit_price    DECIMAL(10,2),
+        status        VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        requested_by  INTEGER REFERENCES users(user_id),
+        reviewed_by   INTEGER REFERENCES users(user_id),
+        review_notes  TEXT,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_part_requests_job ON job_card_part_requests(job_id)');
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_part_requests_shop_status ON job_card_part_requests(shop_id, status)');
+
+    // job_card_feedback — customer post-service rating
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS job_card_feedback (
+        id                SERIAL PRIMARY KEY,
+        job_id            INTEGER NOT NULL REFERENCES job_cards(job_id) ON DELETE CASCADE,
+        shop_id           INTEGER NOT NULL REFERENCES shops(shop_id),
+        rating            INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+        comment           TEXT,
+        submitted_by_name VARCHAR(255),
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(job_id)
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_job_feedback_shop ON job_card_feedback(shop_id, created_at DESC)');
+
+    console.log('[schema] ensured extended job-card columns + service_bays + part_requests + feedback + quotation_sends');
+  } catch (err) {
+    console.error('[schema] extended job-card schema fixes failed (non-fatal):', err?.message);
+  }
+
   // ── Purchase Returns tables ────────────────────────────────────────────────
   // These were only ever created by a hand-run SQL file, so on a DB where that
   // wasn't applied the Purchase Returns page 500s while everything else works.

@@ -828,3 +828,77 @@ export async function sendOrderConfirmationEmail(email, { customerName, orderNum
     text: `Your order #${orderNumber} from ${shopName || 'the shop'} (${itemCount} items, ₹${Number(totalAmount).toFixed(2)}) has been placed. Track it from the Orders section.`,
   });
 }
+
+// ─── Mechanic invite ──────────────────────────────────────────────────────────
+
+export async function sendMechanicInviteOtp(email, { shopName, mechanicRole }) {
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+
+  await prisma.otpCode.updateMany({
+    where: { email, type: 'MECHANIC_INVITE', used: false },
+    data: { used: true },
+  });
+
+  await prisma.otpCode.create({
+    data: {
+      email,
+      code,
+      type: 'MECHANIC_INVITE',
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+    },
+  });
+
+  const appUrl = (process.env.FRONTEND_APP_URL || (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0]).trim().replace(/\/$/, '');
+  const acceptUrl = `${appUrl}/mechanic/accept-invite?email=${encodeURIComponent(email)}`;
+  const roleLabel = mechanicRole === 'HEAD' ? 'Head Mechanic' : 'Mechanic';
+
+  await sendMail({
+    to: email,
+    subject: `${code} — Your invite to join ${shopName} on RedPiston`,
+    html: baseTemplate(`
+      <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;line-height:1.3;">You're invited as ${roleLabel}</h1>
+      <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
+        <strong>${shopName}</strong> has invited you to join their workshop on RedPiston as a <strong>${roleLabel}</strong>.
+      </p>
+      <p style="margin:0 0 8px;font-size:13px;font-weight:700;color:#111111;">Your verification code:</p>
+      <p style="margin:0 0 24px;font-size:36px;font-weight:900;letter-spacing:8px;color:#8B1A0F;">${code}</p>
+      <p style="margin:0 0 8px;font-size:13px;color:#6B7280;">Enter this code at:</p>
+      <a href="${acceptUrl}" style="display:inline-block;font-size:13px;font-weight:700;color:#8B1A0F;text-decoration:none;">${acceptUrl}</a>
+      <p style="margin:16px 0 0;font-size:12px;color:#9CA3AF;">This code expires in 30 minutes. If you did not expect this invite, ignore this email.</p>
+    `),
+    text: `${shopName} invited you to join RedPiston as ${roleLabel}.\n\nYour verification code: ${code}\n\nEnter it at: ${acceptUrl}\n\nExpires in 30 minutes.`,
+  });
+
+  return code;
+}
+
+export async function verifyMechanicInviteOtp(email, code) {
+  const otp = await prisma.otpCode.findFirst({
+    where: { email, code, type: 'MECHANIC_INVITE', used: false, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!otp) return { valid: false };
+  await prisma.otpCode.update({ where: { id: otp.id }, data: { used: true } });
+  return { valid: true };
+}
+
+export async function sendMechanicWelcomeEmail(email, name, shopName, resetToken) {
+  if (!email) return;
+  const appUrl = (process.env.FRONTEND_APP_URL || (process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0]).trim().replace(/\/$/, '');
+  const setPasswordUrl = `${appUrl}/reset-password?token=${resetToken}`;
+  await sendMail({
+    to: email,
+    subject: `Welcome to ${shopName} — RedPiston`,
+    html: baseTemplate(`
+      <h1 style="margin:0 0 6px;font-size:24px;font-weight:800;color:#111111;">You're in, ${name || 'there'}!</h1>
+      <p style="margin:0 0 24px;font-size:15px;color:#6B7280;line-height:1.7;">
+        You now have access to <strong>${shopName}</strong> on RedPiston. Sign in to your mechanic dashboard anytime.
+      </p>
+      <a href="${appUrl}/mechanic" style="display:inline-block;padding:12px 24px;background:#8B1A0F;color:#fff;font-weight:700;border-radius:8px;text-decoration:none;font-size:14px;">Open Mechanic Dashboard</a>
+      <p style="margin:24px 0 8px;font-size:13px;color:#6B7280;">Want to set a password for email+password login?</p>
+      <a href="${setPasswordUrl}" style="font-size:13px;font-weight:700;color:#8B1A0F;">Set your password &rarr;</a>
+      <p style="margin:16px 0 0;font-size:12px;color:#9CA3AF;">This set-password link expires in 1 hour.</p>
+    `),
+    text: `Welcome to ${shopName}!\n\nOpen your mechanic dashboard: ${appUrl}/mechanic\n\nSet a password: ${setPasswordUrl}`,
+  });
+}

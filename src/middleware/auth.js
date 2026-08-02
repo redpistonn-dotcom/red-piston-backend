@@ -99,6 +99,44 @@ export function requireSection(...sectionKeys) {
   };
 }
 
+/**
+ * Gate for MECHANIC user type. Loads and attaches the shop_mechanics row so
+ * downstream routes can read mechanic_role / head_mechanic_id without extra queries.
+ */
+export const requireMechanic = async (req, res, next) => {
+  const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();
+  if (slug !== 'MECHANIC') {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Mechanic access required' },
+    });
+  }
+  if (!req.shopId) {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'NO_SHOP', message: 'No shop associated with this mechanic account' },
+    });
+  }
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT id, mechanic_role, head_mechanic_id, is_active, approval_status
+      FROM shop_mechanics
+      WHERE user_id = ${req.user.userId} AND shop_id = ${req.shopId}
+    `;
+    const record = rows[0];
+    if (!record || !record.is_active || record.approval_status !== 'ACTIVE') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'MECHANIC_INACTIVE', message: 'Mechanic account is not active at this shop' },
+      });
+    }
+    req.mechanicRecord = record;
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const requireAdmin = async (req, res, next) => {
   const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();
   const isAdmin = slug === 'PLATFORM_ADMIN' || slug === 'ADMIN';

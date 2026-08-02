@@ -114,6 +114,19 @@ export const staffInviteVerifyLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+export const mechanicInviteVerifyLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.body?.email?.toLowerCase() || req.ip,
+  store: makeStore('rl:mechanic-invite-verify:'),
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many verification attempts. Please wait 10 minutes before trying again.' },
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // General auth endpoints (login, refresh, firebase): 20 req / 15 min per IP
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
