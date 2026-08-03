@@ -130,6 +130,7 @@ router.get('/users', authenticate, requireAdmin, async (req, res, next) => {
           createdAt: true, lastLoginAt: true, loginCount: true,
           shop: { select: { name: true, city: true } },
           userType: { select: { id: true, name: true, slug: true } },
+          customerProfile: { select: { profileType: true } },
         },
         orderBy: { createdAt: 'desc' },
         take: parseInt(limit),
@@ -258,8 +259,9 @@ router.post('/users/create', authenticate, requireAdmin, async (req, res, next) 
         email: email.trim().toLowerCase(),
         passwordHash,
         role,
-        profileType,
-        userTypeId: userTypeRow?.id || null,
+        // Prisma's generated input rejects the userTypeId scalar directly on
+        // a model with a declared relation — must go through the relation.
+        userType: userTypeRow ? { connect: { id: userTypeRow.id } } : undefined,
         emailVerified: true, // admin-created accounts are pre-verified
         isVerified: true,
         isActive: true,
@@ -271,6 +273,16 @@ router.post('/users/create', authenticate, requireAdmin, async (req, res, next) 
 
     // Link email auth provider
     await prisma.authProvider.create({ data: { userId: newUser.userId, provider: 'EMAIL', providerId: newUser.email } });
+
+    // profileType lives on CustomerProfile, not User — see profile.js's
+    // pattern (upsert keyed on userId).
+    if (role === 'CUSTOMER') {
+      await prisma.customerProfile.upsert({
+        where: { userId: newUser.userId },
+        update: { profileType },
+        create: { userId: newUser.userId, profileType },
+      });
+    }
 
     res.status(201).json({ success: true, data: { userId: newUser.userId, name: newUser.name, email: newUser.email, role: newUser.role, userType: newUser.userType } });
   } catch (err) { next(err); }
@@ -382,9 +394,24 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
 
     const updated = await prisma.user.update({
       where: { userId },
-      data: { userTypeId: userTypeRow?.id || null, role, profileType },
+      // Same relation-based FK write as /users/create — Prisma rejects the
+      // userTypeId scalar directly on update.
+      data: {
+        role,
+        userType: userTypeRow ? { connect: { id: userTypeRow.id } } : { disconnect: true },
+      },
       include: { userType: true },
     });
+
+    // profileType lives on CustomerProfile, not User — only relevant when
+    // landing on CUSTOMER, but harmless to set regardless (mirrors profile.js).
+    if (role === 'CUSTOMER') {
+      await prisma.customerProfile.upsert({
+        where: { userId },
+        update: { profileType },
+        create: { userId, profileType },
+      });
+    }
 
     res.json({
       success: true,
@@ -392,7 +419,7 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
         userId: updated.userId,
         name: updated.name,
         role: updated.role,
-        profileType: updated.profileType,
+        profileType: role === 'CUSTOMER' ? profileType : null,
         userType: updated.userType ? { id: updated.userType.id, name: updated.userType.name, slug: updated.userType.slug } : null,
       },
     });
