@@ -390,7 +390,53 @@ async function ensureSchemaFixes() {
     // invoice_items: taxable_value column (used by mechanic invoice generation)
     await prisma.$executeRawUnsafe('ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS taxable_value DECIMAL(10,2)');
 
-    console.log('[schema] ensured mechanic tables + job_card extensions + timeline + photos');
+    // shop_mechanics: granular privilege grants (mirrors ShopUser.sections for
+    // staff) — which of the mechanic-specific sections this mechanic has.
+    await prisma.$executeRawUnsafe("ALTER TABLE shop_mechanics ADD COLUMN IF NOT EXISTS sections TEXT[] NOT NULL DEFAULT '{}'");
+    // mechanic_invites: carry the owner's section picks through to acceptance
+    // (mechanic/auth.js accept copies this onto the new shop_mechanics row).
+    await prisma.$executeRawUnsafe("ALTER TABLE mechanic_invites ADD COLUMN IF NOT EXISTS sections TEXT[] NOT NULL DEFAULT '{}'");
+
+    // sections — DB-backed privilege registry replacing the hardcoded
+    // SECTION_KEYS list (lib/section-permissions.js) and giving MECHANIC its
+    // own set. appliesTo controls which invite/edit UI a section shows up in.
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS sections (
+        id          SERIAL PRIMARY KEY,
+        key         VARCHAR(50) NOT NULL UNIQUE,
+        label       VARCHAR(100) NOT NULL,
+        applies_to  TEXT[] NOT NULL DEFAULT '{}',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    const SHOP_STAFF_SECTIONS = [
+      ['dashboard', 'Dashboard'], ['inventory', 'Inventory'], ['pos', 'POS Billing'],
+      ['parties', 'Parties'], ['workshop', 'Job Cards'], ['workshop-mp', 'Parts Listing'],
+      ['history', 'History'], ['reports', 'Reports'], ['orders', 'Orders'],
+      ['gstr', 'GSTR-1 Export'], ['audit', 'Audit Log'], ['staff', 'Staff'],
+      ['shop-settings', 'Shop Settings'], ['returns', 'Returns & Exchange'],
+      ['purchase-returns', 'Purchase Returns'], ['warranty', 'Warranty'],
+    ];
+    for (const [key, label] of SHOP_STAFF_SECTIONS) {
+      await prisma.$executeRawUnsafe(`
+        INSERT INTO sections (key, label, applies_to) VALUES ($1, $2, ARRAY['SHOP_STAFF'])
+        ON CONFLICT (key) DO NOTHING
+      `, key, label);
+    }
+    // New mechanic-specific privileges (Section 6.2 — previously excluded from
+    // the mechanic app, now grantable per-mechanic rather than blanket-on).
+    const MECHANIC_SECTIONS = [
+      ['parts-inventory', 'Basic Inventory (search stock, add parts to job)'],
+      ['invoices', 'Basic Invoice Generation'],
+    ];
+    for (const [key, label] of MECHANIC_SECTIONS) {
+      await prisma.$executeRawUnsafe(`
+        INSERT INTO sections (key, label, applies_to) VALUES ($1, $2, ARRAY['MECHANIC'])
+        ON CONFLICT (key) DO NOTHING
+      `, key, label);
+    }
+
+    console.log('[schema] ensured mechanic tables + job_card extensions + timeline + photos + sections registry');
   } catch (err) {
     console.error('[schema] mechanic schema fixes failed (non-fatal):', err?.message);
   }

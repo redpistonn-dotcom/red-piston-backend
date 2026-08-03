@@ -59,6 +59,24 @@ function requireShopOwner(req, res, next) {
   next();
 }
 
+// GET /api/shop/staff/sections — DB-backed registry (see prisma Section
+// model, index.js ensureSchemaFixes seed) — the picker's data source instead
+// of a hardcoded frontend array. isValidSection/SECTION_KEYS stay the
+// authoritative validation list below since they're 1:1 with the dot-namespace
+// permission map in section-permissions.js — this is display-layer only.
+router.get('/sections', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const sections = await prisma.section.findMany({
+      where: { appliesTo: { has: 'SHOP_STAFF' } },
+      orderBy: { id: 'asc' },
+      select: { key: true, label: true },
+    });
+    res.json({ success: true, data: sections });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function validateSections(sections) {
   if (!Array.isArray(sections) || sections.length === 0) return 'At least one section is required';
   if (!sections.every(isValidSection)) return `sections must be a subset of: ${SECTION_KEYS.join(', ')}`;

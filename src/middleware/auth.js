@@ -119,7 +119,7 @@ export const requireMechanic = async (req, res, next) => {
   }
   try {
     const rows = await prisma.$queryRaw`
-      SELECT id, mechanic_role, head_mechanic_id, is_active, approval_status
+      SELECT id, mechanic_role, head_mechanic_id, is_active, approval_status, sections
       FROM shop_mechanics
       WHERE user_id = ${req.user.userId} AND shop_id = ${req.shopId}
     `;
@@ -136,6 +136,28 @@ export const requireMechanic = async (req, res, next) => {
     next(err);
   }
 };
+
+/**
+ * Gate for a specific mechanic privilege (see the `sections` table, appliesTo
+ * MECHANIC — e.g. 'parts-inventory', 'invoices'). Must run after
+ * requireMechanic, which attaches req.mechanicRecord.sections.
+ * HEAD mechanics get every mechanic section automatically — they already
+ * manage the team, no reason to gate them out of privileges too.
+ */
+export function requireMechanicSection(...sectionKeys) {
+  return (req, res, next) => {
+    const record = req.mechanicRecord;
+    if (!record) {
+      return res.status(500).json({ success: false, error: { code: 'MIDDLEWARE_ORDER', message: 'requireMechanicSection must run after requireMechanic' } });
+    }
+    if (record.mechanic_role === 'HEAD') return next();
+    const granted = record.sections || [];
+    if (!sectionKeys.some((k) => granted.includes(k))) {
+      return res.status(403).json({ success: false, error: { code: 'SECTION_NOT_GRANTED', message: 'You do not have access to this section' } });
+    }
+    next();
+  };
+}
 
 export const requireAdmin = async (req, res, next) => {
   const slug = (req.user.userType?.slug || req.user.role || '').toUpperCase();

@@ -28,6 +28,23 @@ model UserType {
   @@map("user_types")
 }
 
+// DB-backed privilege registry — replaces the hardcoded SECTION_KEYS list
+// (lib/section-permissions.js, still authoritative for the SHOP_STAFF ->
+// dot-permission-namespace projection) and gives MECHANIC its own grantable
+// sections (see shop_mechanics.sections). appliesTo says which invite/edit
+// UI a section shows up in (e.g. ["SHOP_STAFF"], ["MECHANIC"]).
+// Table is created/seeded in src/index.js ensureSchemaFixes(), not a
+// migration — this project doesn't auto-migrate prod (see README).
+model Section {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  label     String
+  appliesTo String[] @map("applies_to")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("sections")
+}
+
 // Single identity record for every person in the system.
 // Role controls which app surface they access (ERP vs Marketplace vs Admin).
 model User {

@@ -34,6 +34,24 @@ function generateJoinCode() {
   return randomBytes(4).toString('hex').toUpperCase().slice(0, 6);
 }
 
+// Validate a `sections` array against the DB-backed registry (see
+// index.js ensureSchemaFixes for the seed, prisma/schema.prisma Section
+// model) — returns the deduped, validated list, or throws with a 400.
+async function validateMechanicSections(sections) {
+  if (sections === undefined) return [];
+  if (!Array.isArray(sections)) {
+    const err = new Error('sections must be an array'); err.status = 400; err.code = 'INVALID_SECTIONS'; throw err;
+  }
+  const valid = await prisma.section.findMany({ where: { appliesTo: { has: 'MECHANIC' } }, select: { key: true } });
+  const validKeys = new Set(valid.map(s => s.key));
+  const deduped = [...new Set(sections)];
+  const bad = deduped.filter(s => !validKeys.has(s));
+  if (bad.length > 0) {
+    const err = new Error(`Invalid section(s): ${bad.join(', ')}`); err.status = 400; err.code = 'INVALID_SECTIONS'; throw err;
+  }
+  return deduped;
+}
+
 async function getOrCreateJoinCode(shopId) {
   const shop = await prisma.$queryRaw`
     SELECT mechanic_join_code FROM shops WHERE shop_id = ${shopId}
@@ -55,7 +73,7 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
     const rows = await prisma.$queryRaw`
       SELECT
         sm.id, sm.mechanic_role, sm.approval_status, sm.employee_id,
-        sm.designation, sm.skills, sm.is_active, sm.joined_at,
+        sm.designation, sm.skills, sm.is_active, sm.joined_at, sm.sections,
         sm.head_mechanic_id,
         u.user_id, u.name, u.email, u.phone, u.avatar_url, u.last_login_at,
         hm_u.name AS head_mechanic_name
@@ -67,6 +85,22 @@ router.get('/', authenticate, requireShopOwner, async (req, res, next) => {
       ORDER BY sm.is_active DESC, sm.mechanic_role ASC, sm.joined_at ASC
     `;
     res.json({ success: true, data: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /sections — the DB-backed privilege registry, mechanic-facing subset.
+// Powers the invite/approve/edit-privileges pickers on the frontend instead
+// of a hardcoded list.
+router.get('/sections', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const sections = await prisma.section.findMany({
+      where: { appliesTo: { has: 'MECHANIC' } },
+      orderBy: { id: 'asc' },
+      select: { key: true, label: true },
+    });
+    res.json({ success: true, data: sections });
   } catch (err) {
     next(err);
   }
@@ -126,6 +160,7 @@ router.post('/invite', authenticate, requireShopOwner, async (req, res, next) =>
     if (email === req.user.email?.toLowerCase()) {
       return res.status(400).json({ success: false, error: { code: 'SELF_INVITE', message: 'You cannot invite yourself' } });
     }
+    const sections = await validateMechanicSections(req.body.sections);
 
     // Guard: email already active mechanic at this shop
     const existingUser = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
@@ -139,11 +174,11 @@ router.post('/invite', authenticate, requireShopOwner, async (req, res, next) =>
     }
 
     await prisma.$executeRaw`
-      INSERT INTO mechanic_invites (shop_id, email, mechanic_role, invited_by, status)
-      VALUES (${req.shopId}, ${email}, ${mechanicRole}, ${req.user.userId}, 'PENDING')
+      INSERT INTO mechanic_invites (shop_id, email, mechanic_role, invited_by, status, sections)
+      VALUES (${req.shopId}, ${email}, ${mechanicRole}, ${req.user.userId}, 'PENDING', ${sections})
       ON CONFLICT (shop_id, email) DO UPDATE
         SET mechanic_role = ${mechanicRole}, invited_by = ${req.user.userId},
-            status = 'PENDING', verified_at = NULL, created_at = NOW()
+            status = 'PENDING', verified_at = NULL, created_at = NOW(), sections = ${sections}
     `;
 
     const shop = await prisma.shop.findUnique({ where: { shopId: req.shopId }, select: { name: true } });
@@ -213,6 +248,7 @@ router.patch('/:id/approve', authenticate, requireShopOwner, async (req, res, ne
     if (!VALID_MECHANIC_ROLES.includes(mechanicRole)) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_ROLE', message: 'mechanicRole must be HEAD or MEMBER' } });
     }
+    const sections = await validateMechanicSections(req.body.sections);
 
     // Fetch before updating — need user_id for the welcome email, and the row
     // must exist to know self-registration actually happened.
@@ -229,7 +265,7 @@ router.patch('/:id/approve', authenticate, requireShopOwner, async (req, res, ne
 
     await prisma.$executeRaw`
       UPDATE shop_mechanics
-      SET approval_status = 'ACTIVE', mechanic_role = ${mechanicRole}, is_active = TRUE
+      SET approval_status = 'ACTIVE', mechanic_role = ${mechanicRole}, is_active = TRUE, sections = ${sections}
       WHERE id = ${parseInt(req.params.id, 10)} AND shop_id = ${req.shopId} AND approval_status = 'PENDING'
     `;
     await prisma.user.update({ where: { userId }, data: { emailVerified: true } });
@@ -287,6 +323,24 @@ router.patch('/:id/role', authenticate, requireShopOwner, async (req, res, next)
       WHERE id = ${parseInt(req.params.id, 10)} AND shop_id = ${req.shopId}
     `;
     res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /:id/sections — edit an active mechanic's privilege grants
+router.patch('/:id/sections', authenticate, requireShopOwner, async (req, res, next) => {
+  try {
+    const sections = await validateMechanicSections(req.body.sections);
+    const result = await prisma.$executeRaw`
+      UPDATE shop_mechanics SET sections = ${sections}
+      WHERE id = ${parseInt(req.params.id, 10)} AND shop_id = ${req.shopId}
+    `;
+    if (!result) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Mechanic not found' } });
+    }
+    writeAudit(req, { entityType: ET.SHOP, entityId: req.shopId, action: ACT.UPDATE, newValue: { mechanicSections: req.params.id, sections } });
+    res.json({ success: true, data: { sections } });
   } catch (err) {
     next(err);
   }

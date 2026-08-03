@@ -47,7 +47,7 @@ publicMechanicAuthRouter.post('/accept', mechanicInviteVerifyLimiter, async (req
 
     // Find the invite — could be from owner or from a head mechanic
     const invites = await prisma.$queryRaw`
-      SELECT mi.id, mi.shop_id, mi.mechanic_role, mi.head_mechanic_id, mi.invited_by
+      SELECT mi.id, mi.shop_id, mi.mechanic_role, mi.head_mechanic_id, mi.invited_by, mi.sections
       FROM mechanic_invites mi
       WHERE mi.email = ${email} AND mi.status = 'PENDING'
       ORDER BY mi.created_at DESC
@@ -119,14 +119,15 @@ publicMechanicAuthRouter.post('/accept', mechanicInviteVerifyLimiter, async (req
 
       // Create or reactivate shop_mechanics row
       await tx.$executeRaw`
-        INSERT INTO shop_mechanics (user_id, shop_id, mechanic_role, head_mechanic_id, invited_by, is_active, approval_status)
-        VALUES (${u.userId}, ${Number(invite.shop_id)}, ${invite.mechanic_role}, ${invite.head_mechanic_id}, ${Number(invite.invited_by)}, TRUE, 'ACTIVE')
+        INSERT INTO shop_mechanics (user_id, shop_id, mechanic_role, head_mechanic_id, invited_by, is_active, approval_status, sections)
+        VALUES (${u.userId}, ${Number(invite.shop_id)}, ${invite.mechanic_role}, ${invite.head_mechanic_id}, ${Number(invite.invited_by)}, TRUE, 'ACTIVE', ${invite.sections || []})
         ON CONFLICT (shop_id, user_id) DO UPDATE
           SET mechanic_role = ${invite.mechanic_role},
               head_mechanic_id = ${invite.head_mechanic_id},
               is_active = TRUE,
               approval_status = 'ACTIVE',
-              invited_by = ${Number(invite.invited_by)}
+              invited_by = ${Number(invite.invited_by)},
+              sections = ${invite.sections || []}
       `;
 
       await tx.$executeRaw`

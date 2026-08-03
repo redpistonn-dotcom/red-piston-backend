@@ -22,7 +22,7 @@
 
 import { Router } from 'express';
 import prisma from '../../db/prisma.js';
-import { authenticate, requireMechanic } from '../../middleware/auth.js';
+import { authenticate, requireMechanic, requireMechanicSection } from '../../middleware/auth.js';
 import { writeAudit, ET, ACT } from '../../lib/audit.js';
 import {
   canMechanicTransition, VALID_STATUSES,
@@ -214,7 +214,7 @@ router.patch('/jobs/:id/status', authenticate, requireMechanic, async (req, res,
 });
 
 // GET /api/mechanic/jobs/:id/parts — search inventory to add parts
-router.get('/jobs/:id/parts', authenticate, requireMechanic, async (req, res, next) => {
+router.get('/jobs/:id/parts', authenticate, requireMechanic, requireMechanicSection('parts-inventory'), async (req, res, next) => {
   try {
     const jobId = parseInt(req.params.id, 10);
     const job = await loadOwnJob(req, res, jobId);
@@ -247,7 +247,7 @@ router.get('/jobs/:id/parts', authenticate, requireMechanic, async (req, res, ne
 });
 
 // POST /api/mechanic/jobs/:id/items — add part/labour/service line
-router.post('/jobs/:id/items', authenticate, requireMechanic, async (req, res, next) => {
+router.post('/jobs/:id/items', authenticate, requireMechanic, requireMechanicSection('parts-inventory'), async (req, res, next) => {
   try {
     const jobId = parseInt(req.params.id, 10);
     const job = await loadOwnJob(req, res, jobId);
@@ -331,7 +331,7 @@ router.post('/jobs/:id/items', authenticate, requireMechanic, async (req, res, n
 });
 
 // DELETE /api/mechanic/jobs/:id/items/:itemId
-router.delete('/jobs/:id/items/:itemId', authenticate, requireMechanic, async (req, res, next) => {
+router.delete('/jobs/:id/items/:itemId', authenticate, requireMechanic, requireMechanicSection('parts-inventory'), async (req, res, next) => {
   try {
     const jobId = parseInt(req.params.id, 10);
     const itemId = parseInt(req.params.itemId, 10);
@@ -441,7 +441,7 @@ router.post('/jobs/:id/notes', authenticate, requireMechanic, async (req, res, n
 // Mechanic generates invoice for own QC_PASSED job.
 // Figures computed server-side from items + labourCharge.
 // No GST edit, no discount edit, no payment collection.
-router.post('/jobs/:id/invoice', authenticate, requireMechanic, async (req, res, next) => {
+router.post('/jobs/:id/invoice', authenticate, requireMechanic, requireMechanicSection('invoices'), async (req, res, next) => {
   try {
     const jobId = parseInt(req.params.id, 10);
     const job = await loadOwnJob(req, res, jobId);
