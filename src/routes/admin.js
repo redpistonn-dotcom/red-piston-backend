@@ -219,23 +219,35 @@ router.get('/verifications', authenticate, requireAdmin, async (req, res, next) 
 });
 
 // POST /api/admin/users/create — admin creates a user directly
+// Mechanic is a CUSTOMER-role account with profileType MECHANIC — there's no
+// separate UserType row for it (see prisma/schema.prisma UserType seed:
+// 1=Customer, 2=Staff, 3=Owner, 4=Admin), so it's mapped here rather than
+// looked up.
+const USER_TYPE_MAP = {
+  PLATFORM_ADMIN: { role: 'PLATFORM_ADMIN', profileType: 'INDIVIDUAL' },
+  SHOP_OWNER:     { role: 'SHOP_OWNER',     profileType: 'INDIVIDUAL' },
+  CUSTOMER:       { role: 'CUSTOMER',       profileType: 'INDIVIDUAL' },
+  MECHANIC:       { role: 'CUSTOMER',       profileType: 'MECHANIC' },
+};
+
 router.post('/users/create', authenticate, requireAdmin, async (req, res, next) => {
   try {
-    const { name, email, password, role } = req.body;
-    if (!email || !password || !role) {
+    const { name, email, password, role: userType } = req.body;
+    if (!email || !password || !userType) {
       return res.status(400).json({ success: false, error: { code: 'MISSING_FIELDS', message: 'name, email, password and role are required' } });
     }
-    const allowedRoles = ['PLATFORM_ADMIN', 'SHOP_OWNER', 'CUSTOMER'];
-    if (!allowedRoles.includes(role)) {
-      return res.status(400).json({ success: false, error: { code: 'INVALID_ROLE', message: `role must be one of: ${allowedRoles.join(', ')}` } });
+    const mapped = USER_TYPE_MAP[userType];
+    if (!mapped) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_ROLE', message: `role must be one of: ${Object.keys(USER_TYPE_MAP).join(', ')}` } });
     }
+    const { role, profileType } = mapped;
 
     // Check email not already taken
     const existing = await prisma.user.findFirst({ where: { email: { equals: email.trim().toLowerCase(), mode: 'insensitive' } } });
     if (existing) return res.status(409).json({ success: false, error: { code: 'EMAIL_TAKEN', message: 'An account with this email already exists' } });
 
-    // Find the matching UserType
-    const userType = await prisma.userType.findUnique({ where: { slug: role } });
+    // Find the matching UserType (by underlying role, not the user-facing type)
+    const userTypeRow = await prisma.userType.findUnique({ where: { slug: role } });
 
     const bcrypt = await import('bcryptjs');
     const passwordHash = await bcrypt.default.hash(password, 12);
@@ -246,7 +258,8 @@ router.post('/users/create', authenticate, requireAdmin, async (req, res, next) 
         email: email.trim().toLowerCase(),
         passwordHash,
         role,
-        userTypeId: userType?.id || null,
+        profileType,
+        userTypeId: userTypeRow?.id || null,
         emailVerified: true, // admin-created accounts are pre-verified
         isVerified: true,
         isActive: true,
@@ -344,33 +357,32 @@ router.get('/usertypes', authenticate, requireAdmin, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/admin/users/:userId/usertype — change a user's type (syncs role cache)
+// PATCH /api/admin/users/:userId/usertype — change a user's privilege level
+// (syncs role + profileType). Body: { type: 'CUSTOMER'|'MECHANIC'|'SHOP_OWNER'|'PLATFORM_ADMIN' }
 router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, res, next) => {
   try {
     const userId = parseInt(req.params.userId);
     if (isNaN(userId)) return res.status(400).json({ success: false, error: { code: 'INVALID_ID', message: 'Invalid userId' } });
 
-    const userTypeId = parseInt(req.body.userTypeId);
-    if (!userTypeId || isNaN(userTypeId)) {
-      return res.status(400).json({ success: false, error: { code: 'MISSING_FIELD', message: 'userTypeId (integer) is required' } });
+    const mapped = USER_TYPE_MAP[req.body.type];
+    if (!mapped) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_TYPE', message: `type must be one of: ${Object.keys(USER_TYPE_MAP).join(', ')}` } });
     }
-
-    const userType = await prisma.userType.findUnique({ where: { id: userTypeId } });
-    if (!userType) {
-      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'UserType not found' } });
-    }
+    const { role, profileType } = mapped;
 
     const targetUser = await prisma.user.findUnique({ where: { userId } });
     if (!targetUser) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
     }
     if (targetUser.userId === req.user.userId) {
-      return res.status(400).json({ success: false, error: { code: 'SELF_MODIFY', message: 'Cannot change your own user type' } });
+      return res.status(400).json({ success: false, error: { code: 'SELF_MODIFY', message: 'Cannot change your own privilege level' } });
     }
+
+    const userTypeRow = await prisma.userType.findUnique({ where: { slug: role } });
 
     const updated = await prisma.user.update({
       where: { userId },
-      data: { userTypeId, role: userType.slug },  // sync role cache
+      data: { userTypeId: userTypeRow?.id || null, role, profileType },
       include: { userType: true },
     });
 
@@ -380,7 +392,8 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
         userId: updated.userId,
         name: updated.name,
         role: updated.role,
-        userType: { id: updated.userType.id, name: updated.userType.name, slug: updated.userType.slug },
+        profileType: updated.profileType,
+        userType: updated.userType ? { id: updated.userType.id, name: updated.userType.name, slug: updated.userType.slug } : null,
       },
     });
   } catch (err) { next(err); }
