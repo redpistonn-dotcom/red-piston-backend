@@ -220,20 +220,33 @@ router.get('/verifications', authenticate, requireAdmin, async (req, res, next) 
 });
 
 // POST /api/admin/users/create — admin creates a user directly
-// Mechanic is a CUSTOMER-role account with profileType MECHANIC — there's no
-// separate UserType row for it (see prisma/schema.prisma UserType seed:
-// 1=Customer, 2=Staff, 3=Owner, 4=Admin), so it's mapped here rather than
-// looked up.
+//
+// MECHANIC is NOT the CustomerProfile.profileType=MECHANIC marketplace label —
+// it's the real shop-staff mechanic (job-card app, gated by requireMechanic in
+// middleware/auth.js): role='MECHANIC' at the top level, plus (optionally) a
+// row in the unmodeled `shop_mechanics` table (no Prisma model — queried via
+// $queryRaw). In the normal product flow mechanics arrive via self-signup
+// with a shop join code or an owner invite (see routes/mechanic/*) — this is
+// just a direct admin escape hatch, so shopId is optional: omit it to create
+// an unlinked mechanic account, same as a fresh self-signup with no shop yet.
 const USER_TYPE_MAP = {
-  PLATFORM_ADMIN: { role: 'PLATFORM_ADMIN', profileType: 'INDIVIDUAL' },
-  SHOP_OWNER:     { role: 'SHOP_OWNER',     profileType: 'INDIVIDUAL' },
-  CUSTOMER:       { role: 'CUSTOMER',       profileType: 'INDIVIDUAL' },
-  MECHANIC:       { role: 'CUSTOMER',       profileType: 'MECHANIC' },
+  PLATFORM_ADMIN: { role: 'PLATFORM_ADMIN' },
+  SHOP_OWNER:     { role: 'SHOP_OWNER' },
+  CUSTOMER:       { role: 'CUSTOMER' },
+  MECHANIC:       { role: 'MECHANIC' },
 };
+
+async function upsertShopMechanic(prisma, userId, shopId) {
+  await prisma.$executeRaw`DELETE FROM shop_mechanics WHERE user_id = ${userId}`;
+  await prisma.$executeRaw`
+    INSERT INTO shop_mechanics (user_id, shop_id, mechanic_role, is_active, approval_status, joined_at)
+    VALUES (${userId}, ${shopId}, 'MEMBER', true, 'ACTIVE', now())
+  `;
+}
 
 router.post('/users/create', authenticate, requireAdmin, async (req, res, next) => {
   try {
-    const { name, email, password, role: userType } = req.body;
+    const { name, email, password, role: userType, shopId } = req.body;
     if (!email || !password || !userType) {
       return res.status(400).json({ success: false, error: { code: 'MISSING_FIELDS', message: 'name, email, password and role are required' } });
     }
@@ -241,7 +254,17 @@ router.post('/users/create', authenticate, requireAdmin, async (req, res, next) 
     if (!mapped) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_ROLE', message: `role must be one of: ${Object.keys(USER_TYPE_MAP).join(', ')}` } });
     }
-    const { role, profileType } = mapped;
+    const { role } = mapped;
+
+    let shop = null;
+    if (role === 'MECHANIC' && shopId) {
+      const shopIdNum = parseInt(shopId);
+      if (isNaN(shopIdNum)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SHOP', message: 'shopId must be a number' } });
+      }
+      shop = await prisma.shop.findUnique({ where: { shopId: shopIdNum } });
+      if (!shop) return res.status(404).json({ success: false, error: { code: 'SHOP_NOT_FOUND', message: 'Shop not found' } });
+    }
 
     // Check email not already taken
     const existing = await prisma.user.findFirst({ where: { email: { equals: email.trim().toLowerCase(), mode: 'insensitive' } } });
@@ -274,14 +297,8 @@ router.post('/users/create', authenticate, requireAdmin, async (req, res, next) 
     // Link email auth provider
     await prisma.authProvider.create({ data: { userId: newUser.userId, provider: 'EMAIL', providerId: newUser.email } });
 
-    // profileType lives on CustomerProfile, not User — see profile.js's
-    // pattern (upsert keyed on userId).
-    if (role === 'CUSTOMER') {
-      await prisma.customerProfile.upsert({
-        where: { userId: newUser.userId },
-        update: { profileType },
-        create: { userId: newUser.userId, profileType },
-      });
+    if (shop) {
+      await upsertShopMechanic(prisma, newUser.userId, shop.shopId);
     }
 
     res.status(201).json({ success: true, data: { userId: newUser.userId, name: newUser.name, email: newUser.email, role: newUser.role, userType: newUser.userType } });
@@ -369,8 +386,10 @@ router.get('/usertypes', authenticate, requireAdmin, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/admin/users/:userId/usertype — change a user's privilege level
-// (syncs role + profileType). Body: { type: 'CUSTOMER'|'MECHANIC'|'SHOP_OWNER'|'PLATFORM_ADMIN' }
+// PATCH /api/admin/users/:userId/usertype — change a user's privilege level.
+// Body: { type: 'CUSTOMER'|'MECHANIC'|'SHOP_OWNER'|'PLATFORM_ADMIN', shopId?: number }
+// shopId is optional and only used when type is MECHANIC — see the note on
+// USER_TYPE_MAP above for why it's not required.
 router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, res, next) => {
   try {
     const userId = parseInt(req.params.userId);
@@ -380,7 +399,7 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
     if (!mapped) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_TYPE', message: `type must be one of: ${Object.keys(USER_TYPE_MAP).join(', ')}` } });
     }
-    const { role, profileType } = mapped;
+    const { role } = mapped;
 
     const targetUser = await prisma.user.findUnique({ where: { userId } });
     if (!targetUser) {
@@ -389,6 +408,16 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
     // No self-modify guard: an admin can change their own type, including
     // demoting themselves out of admin. Recovery in that case is another
     // admin account, or the DB directly.
+
+    let shop = null;
+    if (role === 'MECHANIC' && req.body.shopId) {
+      const shopIdNum = parseInt(req.body.shopId);
+      if (isNaN(shopIdNum)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SHOP', message: 'shopId must be a number' } });
+      }
+      shop = await prisma.shop.findUnique({ where: { shopId: shopIdNum } });
+      if (!shop) return res.status(404).json({ success: false, error: { code: 'SHOP_NOT_FOUND', message: 'Shop not found' } });
+    }
 
     const userTypeRow = await prisma.userType.findUnique({ where: { slug: role } });
 
@@ -403,14 +432,16 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
       include: { userType: true },
     });
 
-    // profileType lives on CustomerProfile, not User — only relevant when
-    // landing on CUSTOMER, but harmless to set regardless (mirrors profile.js).
     if (role === 'CUSTOMER') {
+      // profileType lives on CustomerProfile, not User.
       await prisma.customerProfile.upsert({
         where: { userId },
-        update: { profileType },
-        create: { userId, profileType },
+        update: { profileType: 'INDIVIDUAL' },
+        create: { userId, profileType: 'INDIVIDUAL' },
       });
+    }
+    if (shop) {
+      await upsertShopMechanic(prisma, userId, shop.shopId);
     }
 
     res.json({
@@ -419,7 +450,6 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
         userId: updated.userId,
         name: updated.name,
         role: updated.role,
-        profileType: role === 'CUSTOMER' ? profileType : null,
         userType: updated.userType ? { id: updated.userType.id, name: updated.userType.name, slug: updated.userType.slug } : null,
       },
     });
