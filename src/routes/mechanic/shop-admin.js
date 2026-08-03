@@ -22,7 +22,8 @@ import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import prisma from '../../db/prisma.js';
 import { authenticate, requireShopOwner } from '../../middleware/auth.js';
-import { sendMechanicInviteOtp } from '../../services/email.js';
+import { sendMechanicInviteOtp, sendMechanicWelcomeEmail } from '../../services/email.js';
+import { generateResetToken, hashResetToken } from '../../services/password.js';
 import { writeAudit, ET, ACT } from '../../lib/audit.js';
 
 const router = Router();
@@ -212,16 +213,46 @@ router.patch('/:id/approve', authenticate, requireShopOwner, async (req, res, ne
     if (!VALID_MECHANIC_ROLES.includes(mechanicRole)) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_ROLE', message: 'mechanicRole must be HEAD or MEMBER' } });
     }
-    const result = await prisma.$executeRaw`
+
+    // Fetch before updating — need user_id for the welcome email, and the row
+    // must exist to know self-registration actually happened.
+    const pending = await prisma.$queryRaw`
+      SELECT sm.user_id, u.email, u.name
+      FROM shop_mechanics sm
+      JOIN users u ON u.user_id = sm.user_id
+      WHERE sm.id = ${parseInt(req.params.id, 10)} AND sm.shop_id = ${req.shopId} AND sm.approval_status = 'PENDING'
+    `;
+    if (!pending[0]) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Pending mechanic not found' } });
+    }
+    const { user_id: userId, email, name } = pending[0];
+
+    await prisma.$executeRaw`
       UPDATE shop_mechanics
       SET approval_status = 'ACTIVE', mechanic_role = ${mechanicRole}, is_active = TRUE
       WHERE id = ${parseInt(req.params.id, 10)} AND shop_id = ${req.shopId} AND approval_status = 'PENDING'
     `;
-    if (!result) {
-      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Pending mechanic not found' } });
-    }
+    await prisma.user.update({ where: { userId }, data: { emailVerified: true } });
+
     writeAudit(req, { entityType: ET.SHOP, entityId: req.shopId, action: ACT.UPDATE, newValue: { mechanicApproved: req.params.id, mechanicRole } });
     res.json({ success: true });
+
+    // Fire-and-forget: same welcome + set-password-link email as the
+    // invite-accept path (mechanic/auth.js), so self-registered mechanics get
+    // a way to set a password too — self-signup never collects one upfront.
+    (async () => {
+      try {
+        const shop = await prisma.shop.findUnique({ where: { shopId: req.shopId }, select: { name: true } });
+        await prisma.passwordResetToken.updateMany({ where: { userId, used: false }, data: { used: true } });
+        const rawToken = generateResetToken();
+        await prisma.passwordResetToken.create({
+          data: { userId, tokenHash: hashResetToken(rawToken), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+        });
+        await sendMechanicWelcomeEmail(email, name, shop?.name || 'your shop', rawToken);
+      } catch (emailErr) {
+        console.error('[mechanic/approve] welcome email failed:', emailErr);
+      }
+    })();
   } catch (err) {
     next(err);
   }
