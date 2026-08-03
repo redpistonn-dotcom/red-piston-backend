@@ -386,9 +386,9 @@ router.patch('/users/:userId/usertype', authenticate, requireAdmin, async (req, 
     if (!targetUser) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
     }
-    if (targetUser.userId === req.user.userId) {
-      return res.status(400).json({ success: false, error: { code: 'SELF_MODIFY', message: 'Cannot change your own privilege level' } });
-    }
+    // No self-modify guard: an admin can change their own type, including
+    // demoting themselves out of admin. Recovery in that case is another
+    // admin account, or the DB directly.
 
     const userTypeRow = await prisma.userType.findUnique({ where: { slug: role } });
 
