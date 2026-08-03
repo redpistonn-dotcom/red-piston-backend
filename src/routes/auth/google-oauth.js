@@ -1,10 +1,19 @@
 import { Router } from 'express';
+import { OAuth2Client } from 'google-auth-library';
 import prisma from '../../db/prisma.js';
 import { createSession, ensureAuthProvider, findUserByEmailInsensitive, normalizeEmail, checkShopOwnerVerification, getUserTypeId, needsShopSetup, shopSetupResponse } from './helpers.js';
 
 const router = Router();
+const oauthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 async function getGoogleUserInfo(accessToken) {
+  // Reject tokens minted for a different OAuth client before trusting them.
+  const tokenInfo = await oauthClient.getTokenInfo(accessToken)
+    .catch(() => { throw Object.assign(new Error('Failed to verify Google token'), { status: 401 }); });
+  if (tokenInfo.aud !== process.env.GOOGLE_CLIENT_ID) {
+    throw Object.assign(new Error('Token audience mismatch'), { status: 401 });
+  }
+
   const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     headers: { Authorization: `Bearer ${accessToken}` },
   });

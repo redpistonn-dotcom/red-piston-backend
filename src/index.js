@@ -146,7 +146,7 @@ app.use((req, _res, next) => {
 app.use(flagMiddleware);
 
 // Health check — exposes process memory so external monitors (UptimeRobot, etc.) can
-// alert when heapUsed approaches the Railway container limit (~512 MB on Hobby plan).
+// alert when heapUsed approaches the Render container limit (512 MB on the Free plan).
 app.get('/health', async (req, res) => {
   const mem = process.memoryUsage();
   const toMB = (b) => Math.round(b / 1024 / 1024);
@@ -165,7 +165,7 @@ app.get('/health', async (req, res) => {
   } catch (err) {
     dbStatus = 'degraded';
   }
-  // Always return 200 — Railway healthcheck must not flip to failed due to transient DB/Redis issues.
+  // Always return 200 — Render healthcheck must not flip to failed due to transient DB/Redis issues.
   // Degraded state is surfaced in the payload for observability.
   res.status(200).json({
     status: dbStatus === 'connected' && memPressure !== 'high' ? 'ok' : 'degraded',

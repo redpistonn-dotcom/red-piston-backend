@@ -2,21 +2,65 @@ services:
   - type: web
     name: red-piston-backend
     runtime: node
+    region: singapore
     plan: free
-    buildCommand: npm install && npx prisma generate
+    branch: main
+    # Free plan has no preDeployCommand, so migrations run in the build step.
+    buildCommand: npm ci && npx prisma generate && npx prisma migrate deploy
     startCommand: npm start
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 3001
-      # Set the remaining secrets in the Render dashboard → Environment tab
-      # DATABASE_URL        — your Supabase PostgreSQL connection string
-      # JWT_SECRET          — strong random string (openssl rand -hex 32)
-      # JWT_REFRESH_SECRET  — different strong random string
-      # FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY
-      # RESEND_API_KEY / RESEND_SENDER_EMAIL
-      # FRONTEND_URL        — your Vercel URL (https://your-app.vercel.app)
-      # RESET_PASSWORD_URL  — https://your-app.vercel.app/reset-password
-      # FRONTEND_APP_URL    — https://your-app.vercel.app
+      - key: NODE_VERSION
+        value: "20"
+      # Render injects PORT; src/index.js reads process.env.PORT.
+      # Everything below is set in the Render dashboard (sync: false = never in git).
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_SENDER_EMAIL
+        sync: false
+      - key: RESEND_SENDER_NAME
+        value: RedPiston
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: EMAIL_LOGO_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: FRONTEND_APP_URL
+        sync: false
+      - key: RESET_PASSWORD_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      # Optional — leave unset to run without Redis (rate limiting falls back to memory).
+      - key: REDIS_URL
+        sync: false
