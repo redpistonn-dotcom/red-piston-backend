@@ -111,11 +111,12 @@ export const requireMechanic = async (req, res, next) => {
       error: { code: 'FORBIDDEN', message: 'Mechanic access required' },
     });
   }
+  // Independent mechanic (no shop assigned) — allow through without shop_mechanics check.
+  // They see jobs assigned to them across any shop.
   if (!req.shopId) {
-    return res.status(403).json({
-      success: false,
-      error: { code: 'NO_SHOP', message: 'No shop associated with this mechanic account' },
-    });
+    req.mechanicRecord = null;
+    req.isIndependentMechanic = true;
+    return next();
   }
   try {
     const rows = await prisma.$queryRaw`
@@ -146,6 +147,8 @@ export const requireMechanic = async (req, res, next) => {
  */
 export function requireMechanicSection(...sectionKeys) {
   return (req, res, next) => {
+    // Independent mechanics have no shop section restrictions — allow all.
+    if (req.isIndependentMechanic) return next();
     const record = req.mechanicRecord;
     if (!record) {
       return res.status(500).json({ success: false, error: { code: 'MIDDLEWARE_ORDER', message: 'requireMechanicSection must run after requireMechanic' } });

@@ -2,6 +2,10 @@
 import { config } from 'dotenv';
 config({ override: true });
 
+// Prisma $queryRaw returns PostgreSQL integer/bigint columns as JS BigInt.
+// Express JSON serializer can't handle BigInt → global patch converts to Number.
+BigInt.prototype.toJSON = function () { return Number(this); };
+
 import * as Sentry from "@sentry/node";
 import { nodeProfilingIntegration } from "@sentry/profiling-node";
 
@@ -40,6 +44,7 @@ import mechanicShopAdminRoutes from './routes/mechanic/shop-admin.js';
 import mechanicAuthRoutes, { publicMechanicAuthRouter } from './routes/mechanic/auth.js';
 import mechanicJobRoutes from './routes/mechanic/jobs.js';
 import mechanicCustomerRoutes from './routes/mechanic/customers.js';
+import mechanicTeamRoutes from './routes/mechanic/team.js';
 import workshopQuotationRoutes from './routes/workshop/quotation.js';
 import workshopBayRoutes from './routes/workshop/bays.js';
 import workshopFeedbackRoutes from './routes/workshop/feedback.js';
@@ -225,6 +230,7 @@ app.use('/api/shop/mechanics', authenticate, requireSection('staff'), mechanicSh
 app.use('/api/mechanic', authenticate, mechanicAuthRoutes);
 app.use('/api/mechanic', authenticate, mechanicJobRoutes);
 app.use('/api/mechanic', authenticate, mechanicCustomerRoutes);
+app.use('/api/mechanic', authenticate, mechanicTeamRoutes);
 app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'), workshopQuotationRoutes);
 app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'), workshopBayRoutes);
 app.use('/api/shop/workshop', authenticate, requireSection('workshop', 'workshop-mp'), workshopFeedbackRoutes);
@@ -436,6 +442,26 @@ async function ensureSchemaFixes() {
       `, key, label);
     }
 
+    // mechanic_team — independent mechanics can add other users as team members
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS mechanic_team (
+        id              SERIAL PRIMARY KEY,
+        owner_user_id   INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        member_user_id  INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(owner_user_id, member_user_id)
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_mechanic_team_owner ON mechanic_team(owner_user_id)');
+    await prisma.$executeRawUnsafe('ALTER TABLE mechanic_team ADD COLUMN IF NOT EXISTS member_name TEXT');
+    await prisma.$executeRawUnsafe('ALTER TABLE mechanic_team ADD COLUMN IF NOT EXISTS member_phone TEXT');
+    try { await prisma.$executeRawUnsafe('ALTER TABLE mechanic_team ALTER COLUMN member_user_id DROP NOT NULL'); } catch {}
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mechanic_team_owner_phone ON mechanic_team(owner_user_id, member_phone) WHERE member_phone IS NOT NULL`);
+
+    // Independent mechanic profile fields
+    await prisma.$executeRawUnsafe('ALTER TABLE users ADD COLUMN IF NOT EXISTS mechanic_shop_name TEXT');
+    await prisma.$executeRawUnsafe('ALTER TABLE users ADD COLUMN IF NOT EXISTS mechanic_shop_location TEXT');
+
     console.log('[schema] ensured mechanic tables + job_card extensions + timeline + photos + sections registry');
   } catch (err) {
     console.error('[schema] mechanic schema fixes failed (non-fatal):', err?.message);
@@ -471,6 +497,8 @@ async function ensureSchemaFixes() {
     await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS customer_signature_url TEXT');
     // Bay assignment — column first, FK after table created
     await prisma.$executeRawUnsafe('ALTER TABLE job_cards ADD COLUMN IF NOT EXISTS bay_id INTEGER');
+    // Independent mechanic support — shop_id nullable
+    await prisma.$executeRawUnsafe('ALTER TABLE job_cards ALTER COLUMN shop_id DROP NOT NULL');
 
     // service_bays table
     await prisma.$executeRawUnsafe(`

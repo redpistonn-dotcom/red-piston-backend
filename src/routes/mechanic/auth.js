@@ -19,9 +19,10 @@ import {
   sendMechanicInviteOtp,
   verifyMechanicInviteOtp,
   sendMechanicWelcomeEmail,
+  sendEmailOtp,
 } from '../../services/email.js';
-import { createSession } from '../auth/helpers.js';
-import { generateResetToken, hashResetToken } from '../../services/password.js';
+import { createSession, ensureAuthProvider } from '../auth/helpers.js';
+import { generateResetToken, hashResetToken, hashPassword, validatePasswordStrength } from '../../services/password.js';
 import { writeAudit, ET, ACT } from '../../lib/audit.js';
 
 // ─── Public router ────────────────────────────────────────────────────────────
@@ -253,27 +254,242 @@ publicMechanicAuthRouter.post('/register', mechanicInviteVerifyLimiter, async (r
   }
 });
 
+/**
+ * POST /api/mechanic-auth/register-independent
+ * Independent mechanic registers without a shop join code.
+ * Creates MECHANIC account, sends email OTP, issues tokens immediately.
+ * After OTP verify, caller should PATCH /api/mechanic/profile/setup to save details.
+ */
+publicMechanicAuthRouter.post('/register-independent', async (req, res, next) => {
+  try {
+    const rawEmail = req.body?.email;
+    const password = req.body?.password;
+    const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
+    const shopName = typeof req.body?.shopName === 'string' ? req.body.shopName.trim() : null;
+    const shopLocation = typeof req.body?.shopLocation === 'string' ? req.body.shopLocation.trim() : null;
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_EMAIL', message: 'A valid email is required' } });
+    }
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_PASSWORD', message: 'Password is required' } });
+    }
+    const { valid, errors } = validatePasswordStrength(password);
+    if (!valid) {
+      return res.status(400).json({ success: false, error: { code: 'WEAK_PASSWORD', message: errors.join('. ') } });
+    }
+    if (!name) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_NAME', message: 'Full name is required' } });
+    }
+
+    const existing = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
+    if (existing) {
+      return res.status(409).json({ success: false, error: { code: 'EMAIL_EXISTS', message: 'An account with this email already exists. Please sign in instead.' } });
+    }
+
+    const mechanicUserType = await prisma.userType.findUnique({ where: { slug: 'MECHANIC' } });
+    if (!mechanicUserType) {
+      return res.status(500).json({ success: false, error: { code: 'SETUP_INCOMPLETE', message: 'Mechanic user type not configured' } });
+    }
+
+    const passwordHash = await hashPassword(password);
+    const user = await prisma.user.create({
+      data: { email, name, phone: phone || null, passwordHash, role: 'MECHANIC', userTypeId: mechanicUserType.id, emailVerified: false },
+      include: { userType: true },
+    });
+
+    await ensureAuthProvider(user.userId, 'EMAIL', email);
+
+    if (shopName || shopLocation) {
+      await prisma.$executeRawUnsafe(
+        'UPDATE users SET mechanic_shop_name = $1, mechanic_shop_location = $2 WHERE user_id = $3',
+        shopName, shopLocation, user.userId
+      );
+    }
+
+    await sendEmailOtp(email);
+
+    const payload = await createSession(res, user, { isNewUser: true, req });
+    return res.status(201).json({ ...payload });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/mechanic-auth/send-otp
+ * Force-sends an email OTP for mechanic onboarding verification.
+ * Works even if the email is already marked verified (Google accounts).
+ * Resets emailVerified=false so /api/auth/verify-email can flip it back.
+ */
+publicMechanicAuthRouter.post('/send-otp', authenticate, async (req, res, next) => {
+  try {
+    const userId = req.user?.userId;
+    const email = req.user?.email;
+    if (!userId || !email) return res.status(400).json({ success: false, error: { code: 'NO_EMAIL', message: 'Account has no email address' } });
+
+    await prisma.user.update({ where: { userId }, data: { emailVerified: false } });
+    await sendEmailOtp(email);
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/mechanic-auth/convert-to-mechanic
+ * Converts an existing CUSTOMER account to MECHANIC role.
+ * Caller must be authenticated (tokens already issued at Google sign-in).
+ */
+publicMechanicAuthRouter.post('/convert-to-mechanic', authenticate, async (req, res, next) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) return res.status(401).json({ success: false, error: { code: 'UNAUTHENTICATED', message: 'Sign in required' } });
+
+    const existing = await prisma.user.findUnique({ where: { userId }, include: { userType: true } });
+    if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
+    if (existing.role === 'MECHANIC') return res.status(200).json({ success: true, user: existing });
+
+    const mechanicUserType = await prisma.userType.findUnique({ where: { slug: 'MECHANIC' } });
+    if (!mechanicUserType) return res.status(500).json({ success: false, error: { code: 'SETUP_INCOMPLETE', message: 'Mechanic user type not configured' } });
+
+    const user = await prisma.user.update({
+      where: { userId },
+      data: { role: 'MECHANIC', userTypeId: mechanicUserType.id, shopId: null },
+      include: { userType: true },
+    });
+
+    return res.json({ success: true, user });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Authenticated mechanic router ────────────────────────────────────────────
 const router = Router();
+
+/**
+ * GET /api/mechanic/dashboard — summary counts for mechanic dashboard
+ */
+router.get('/dashboard', authenticate, requireMechanic, async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const rows = await prisma.$queryRawUnsafe(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'RECEIVED')                              AS pending,
+        COUNT(*) FILTER (WHERE status = 'IN_PROGRESS')                           AS in_progress,
+        COUNT(*) FILTER (WHERE status = 'WAITING_PARTS')                         AS waiting_parts,
+        COUNT(*) FILTER (WHERE status = 'READY')                                 AS ready_for_qc,
+        COUNT(*) FILTER (WHERE status = 'QC_REWORK')                             AS rework,
+        COUNT(*) FILTER (WHERE status = 'DELIVERED' AND DATE(delivered_at) = CURRENT_DATE) AS completed_today,
+        COUNT(*) FILTER (WHERE status NOT IN ('DELIVERED','CANCELLED'))           AS active
+      FROM job_cards
+      WHERE assigned_to_user_id = $1
+    `, userId);
+
+    const r = rows[0] || {};
+    const n = (v) => Number(v || 0);
+    res.json({
+      success: true,
+      data: {
+        pending:        n(r.pending),
+        in_progress:    n(r.in_progress),
+        waiting_parts:  n(r.waiting_parts),
+        ready_for_qc:   n(r.ready_for_qc),
+        rework:         n(r.rework),
+        completed_today: n(r.completed_today),
+        active:         n(r.active),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * GET /api/mechanic/profile
  */
 router.get('/profile', authenticate, requireMechanic, async (req, res, next) => {
   try {
-    const profile = await prisma.$queryRaw`
-      SELECT
-        sm.id, sm.mechanic_role, sm.employee_id, sm.designation, sm.skills,
-        sm.joined_at, u.name, u.email, u.phone, u.avatar_url,
-        COUNT(DISTINCT jc.job_id) FILTER (WHERE jc.status = 'DELIVERED') AS jobs_completed,
-        COUNT(DISTINCT jc.job_id) FILTER (WHERE jc.status NOT IN ('DELIVERED','CANCELLED') AND jc.assigned_to_user_id = ${req.user.userId}) AS jobs_active
-      FROM shop_mechanics sm
-      JOIN users u ON u.user_id = sm.user_id
-      LEFT JOIN job_cards jc ON jc.assigned_to_user_id = sm.user_id AND jc.shop_id = sm.shop_id
-      WHERE sm.user_id = ${req.user.userId} AND sm.shop_id = ${req.shopId}
-      GROUP BY sm.id, u.user_id
+    let profile;
+    if (req.shopId) {
+      const rows = await prisma.$queryRaw`
+        SELECT
+          sm.id, sm.mechanic_role, sm.employee_id, sm.designation, sm.skills,
+          sm.joined_at, u.name, u.email, u.phone, u.avatar_url,
+          COUNT(DISTINCT jc.job_id) FILTER (WHERE jc.status = 'DELIVERED') AS jobs_completed,
+          COUNT(DISTINCT jc.job_id) FILTER (WHERE jc.status NOT IN ('DELIVERED','CANCELLED') AND jc.assigned_to_user_id = ${req.user.userId}) AS jobs_active
+        FROM shop_mechanics sm
+        JOIN users u ON u.user_id = sm.user_id
+        LEFT JOIN job_cards jc ON jc.assigned_to_user_id = sm.user_id AND jc.shop_id = sm.shop_id
+        WHERE sm.user_id = ${req.user.userId} AND sm.shop_id = ${req.shopId}
+        GROUP BY sm.id, u.user_id
+      `;
+      profile = rows[0] || null;
+    } else {
+      // Independent mechanic — no shop_mechanics row; count jobs across all shops
+      const rows = await prisma.$queryRaw`
+        SELECT
+          u.name, u.email, u.phone, u.avatar_url,
+          u.mechanic_shop_name, u.mechanic_shop_location,
+          'INDEPENDENT' AS mechanic_role, NULL AS employee_id,
+          NULL AS designation, ARRAY[]::text[] AS skills, NULL AS joined_at,
+          COUNT(DISTINCT jc.job_id) FILTER (WHERE jc.status = 'DELIVERED') AS jobs_completed,
+          COUNT(DISTINCT jc.job_id) FILTER (WHERE jc.status NOT IN ('DELIVERED','CANCELLED')) AS jobs_active
+        FROM users u
+        LEFT JOIN job_cards jc ON jc.assigned_to_user_id = u.user_id
+        WHERE u.user_id = ${req.user.userId}
+        GROUP BY u.user_id
+      `;
+      profile = rows[0] || null;
+    }
+    if (profile) {
+      profile.jobs_completed = Number(profile.jobs_completed);
+      profile.jobs_active    = Number(profile.jobs_active);
+    }
+    res.json({ success: true, data: profile });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH /api/mechanic/profile/setup
+ * Save name, phone, shopName, shopLocation after independent mechanic registration.
+ */
+router.patch('/profile/setup', authenticate, requireMechanic, async (req, res, next) => {
+  try {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const phone = typeof req.body?.phone === 'string' ? req.body.phone.replace(/\D/g, '').slice(0, 15) : '';
+    const shopName = typeof req.body?.shopName === 'string' ? req.body.shopName.trim() : '';
+    const shopLocation = typeof req.body?.shopLocation === 'string' ? req.body.shopLocation.trim() : '';
+
+    if (!name) return res.status(400).json({ success: false, error: { code: 'MISSING_NAME', message: 'Name is required' } });
+
+    if (phone) {
+      const phoneOwner = await prisma.user.findFirst({
+        where: { phone, NOT: { userId: req.user.userId } },
+        select: { userId: true },
+      });
+      if (phoneOwner) {
+        return res.status(409).json({ success: false, error: { code: 'PHONE_IN_USE', message: 'This mobile number is linked to another account.' } });
+      }
+    }
+
+    const updated = await prisma.$queryRaw`
+      UPDATE users
+      SET name = ${name},
+          phone = ${phone || null},
+          mechanic_shop_name = ${shopName || null},
+          mechanic_shop_location = ${shopLocation || null}
+      WHERE user_id = ${req.user.userId}
+      RETURNING user_id AS "userId", name, email, phone, role, avatar_url AS "avatarUrl",
+                mechanic_shop_name AS "mechanicShopName", mechanic_shop_location AS "mechanicShopLocation"
     `;
-    res.json({ success: true, data: profile[0] || null });
+
+    res.json({ success: true, data: updated[0] });
   } catch (err) {
     next(err);
   }

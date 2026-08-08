@@ -68,7 +68,7 @@ router.post('/google', async (req, res, next) => {
 
     // Create new user if not found
     if (!user) {
-      const initialRole = role === 'shop' ? 'SHOP_OWNER' : 'CUSTOMER';
+      const initialRole = role === 'shop' ? 'SHOP_OWNER' : role === 'mechanic' ? 'MECHANIC' : 'CUSTOMER';
       const userTypeId = await getUserTypeId(initialRole);
       user = await prisma.user.create({
         data: {

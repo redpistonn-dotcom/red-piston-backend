@@ -138,7 +138,25 @@ router.get('/users', authenticate, requireAdmin, async (req, res, next) => {
       }),
       prisma.user.count({ where }),
     ]);
-    res.json({ success: true, data: users, total });
+
+    // Attach mechanic_shop_name/location for independent mechanics (no shopId)
+    const mechanicIds = users.filter(u => u.role === 'MECHANIC' && !u.shopId).map(u => u.userId);
+    let mechShopMap = {};
+    if (mechanicIds.length > 0) {
+      const rows = await prisma.$queryRawUnsafe(
+        `SELECT user_id, mechanic_shop_name, mechanic_shop_location FROM users WHERE user_id = ANY($1::int[])`,
+        mechanicIds
+      );
+      for (const r of rows) mechShopMap[r.user_id] = r;
+    }
+    const enriched = users.map(u => {
+      if (u.role === 'MECHANIC' && !u.shopId && mechShopMap[u.userId]) {
+        return { ...u, mechanicShopName: mechShopMap[u.userId].mechanic_shop_name, mechanicShopLocation: mechShopMap[u.userId].mechanic_shop_location };
+      }
+      return u;
+    });
+
+    res.json({ success: true, data: enriched, total });
   } catch (err) { next(err); }
 });
 
