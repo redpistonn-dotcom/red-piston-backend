@@ -70,6 +70,9 @@ export function startCleanupWorker() {
   const worker = new Worker("cleanup", processCleanupJob, {
     connection,
     concurrency: 1,
+    // Jobs here fire on cron schedules (daily / every 4 min), not on demand —
+    // no need for the 5s default idle-poll. Cuts idle Redis traffic ~12x.
+    drainDelay: 60000,
   });
 
   worker.on("completed", (job, result) => {

@@ -126,9 +126,11 @@ export async function invalidate(key) {
 }
 
 /**
- * Deletes all keys matching a glob pattern using the KEYS command.
- * Note: KEYS blocks the Redis server â€” use only in low-traffic scenarios
- * or consider SCAN for production use at scale.
+ * Deletes all keys matching a glob pattern, using SCAN instead of KEYS.
+ * KEYS blocks the whole Redis server for O(N) on the keyspace — this runs on
+ * every stock adjustment / purchase / marketplace order, so it must not stall
+ * other traffic sharing the same Redis instance. SCAN walks the keyspace in
+ * small cursor-paginated batches instead.
  *
  * @param {string} pattern
  */
@@ -137,10 +139,16 @@ export async function invalidatePattern(pattern) {
   if (!redis) return;
 
   try {
-    const keys = await withRedisTimeout(redis.keys(pattern));
-    if (keys.length > 0) {
-      await withRedisTimeout(redis.del(...keys));
-    }
+    let cursor = "0";
+    do {
+      const [nextCursor, keys] = await withRedisTimeout(
+        redis.scan(cursor, "MATCH", pattern, "COUNT", 100)
+      );
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        await withRedisTimeout(redis.del(...keys));
+      }
+    } while (cursor !== "0");
   } catch {
     // Silently ignore
   }

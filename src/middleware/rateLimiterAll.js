@@ -1,26 +1,14 @@
 import rateLimit from 'express-rate-limit';
-import { RedisStore } from 'rate-limit-redis';
-import { getCacheClient, callWithTimeout } from '../lib/cache.js';
 
-// apiLimiter runs globally, in front of EVERY route (see index.js
-// `app.use(apiLimiter)`) — if sendCommand ever hangs on a dead pooled
-// connection, it hangs the entire API, not just rate-limiting. Must be
-// timeout-guarded so a stale Redis connection degrades to "rate limiting
-// briefly unavailable" instead of taking the whole backend down with it.
-function makeStore(prefix) {
-  const client = getCacheClient();
-  if (!client) return undefined; // falls back to in-memory when Redis is unavailable
-  return new RedisStore({
-    prefix,
-    sendCommand: (...args) => callWithTimeout(client, ...args),
-  });
-}
-
+// Global per-request throttle. Runs on EVERY request, so a Redis-backed store
+// here means one Redis round-trip per request just for a rough global cap.
+// Render free tier runs a single instance, so an in-memory store enforces the
+// exact same limit with zero Redis cost — only move this back to Redis if the
+// deploy becomes multi-instance and cross-instance accuracy is required.
 export const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 200,
   skip: (req) => req.path === '/health',
-  store: makeStore('rl:api:'),
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res) => {
@@ -34,11 +22,11 @@ export const apiLimiter = rateLimit({
   },
 });
 
-// Applied to all POST / PATCH / PUT / DELETE routes
+// Applied to all POST / PATCH / PUT / DELETE routes. Same reasoning as
+// apiLimiter above — in-memory, single instance, no Redis round-trip needed.
 export const mutationLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
-  store: makeStore('rl:mut:'),
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res) => {

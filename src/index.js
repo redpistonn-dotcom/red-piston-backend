@@ -296,7 +296,9 @@ async function ensureSchemaFixes() {
     await prisma.$executeRawUnsafe('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS vehicle_reg VARCHAR(255)');
     await prisma.$executeRawUnsafe('ALTER TABLE users ADD COLUMN IF NOT EXISTS login_count INTEGER NOT NULL DEFAULT 0');
     await prisma.$executeRawUnsafe('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ');
-    console.log('[schema] ensured all recent invoice & inventory columns + user login_count/last_login_at');
+    await prisma.$executeRawUnsafe('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS freight DECIMAL(10,2) NOT NULL DEFAULT 0');
+    await prisma.$executeRawUnsafe('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS other_charges DECIMAL(10,2) NOT NULL DEFAULT 0');
+    console.log('[schema] ensured all recent invoice & inventory columns + user login_count/last_login_at + purchase_orders freight/other_charges');
   } catch (err) {
     console.error('[schema] ensureSchemaFixes column additions failed (non-fatal):', err?.message);
   }

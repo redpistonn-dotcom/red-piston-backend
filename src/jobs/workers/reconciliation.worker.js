@@ -113,6 +113,8 @@ export function startReconcileWorker() {
   const worker = new Worker("reconcile", processReconcileJob, {
     connection,
     concurrency: 1,
+    // Runs once nightly — no need for the 5s default idle-poll.
+    drainDelay: 60000,
   });
 
   worker.on("completed", (job, result) => {

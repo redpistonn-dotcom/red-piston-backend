@@ -152,6 +152,8 @@ export function startGstr1Worker() {
   const worker = new Worker("gstr1", processGstr1Job, {
     connection,
     concurrency: 1,
+    // Runs once a month — no need for the 5s default idle-poll.
+    drainDelay: 60000,
   });
 
   worker.on("completed", (job, result) => {

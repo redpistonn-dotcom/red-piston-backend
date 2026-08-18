@@ -28,6 +28,7 @@ export async function isEnabled(key, shopId = null) {
   try {
     const result = await getOrSet(
       cacheKey,
+      FLAG_TTL_SECONDS,
       async () => {
         const flag = await prisma.featureFlag.findUnique({
           where: { key },
@@ -40,8 +41,7 @@ export async function isEnabled(key, shopId = null) {
           return flag.enabledShopIds.map(String).includes(String(shopId));
         }
         return false;
-      },
-      FLAG_TTL_SECONDS
+      }
     );
 
     // getOrSet may return a cached boolean or a freshly computed one.
