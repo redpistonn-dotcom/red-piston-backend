@@ -1,10 +1,6 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
-import { spawn } from 'child_process';
 import os from 'os';
-import { existsSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import prisma from '../db/prisma.js';
 import { getCacheClient } from '../lib/cache.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
@@ -12,14 +8,12 @@ import { getNetworkStats } from '../middleware/networkLogger.js';
 import { formatUserResponse, attachStaffSections } from './auth/helpers.js';
 import { sendShopOwnerApprovedEmail, sendShopOwnerRejectedEmail } from '../services/email.js';
 import { generateResetToken, hashResetToken } from '../services/password.js';
-import {
-  getScraperState, setScraperRunning, setScraperStopped,
-  appendScraperLog, setScraperError,
-} from '../lib/scraper-state.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// Path to the Python scraper script (two levels up from src/routes → project root → scripts/)
-const SCRAPER_SCRIPT = resolve(__dirname, '../../scripts/scrape_autodukan_full.py');
+// Live in-app scraping (spawn + Playwright on Render) removed — it was the
+// single biggest source of the bandwidth spike (crawling autodukan.com's
+// pages/images through this server's egress). Scraping now runs locally via
+// scripts/scrape_autodukan_local.py, kept in the repo unchanged for reference.
+// If it's ever wired back in, restore: child_process.spawn, fs.existsSync,
+// path.resolve/dirname, url.fileURLToPath, and ../lib/scraper-state.js.
 
 const router = Router();
 
@@ -1240,179 +1234,192 @@ router.post('/autodukan/import', authenticate, requireAdmin, async (req, res, ne
 });
 
 // ─── Autodukan Scraper — Monitor + Control ────────────────────────────────────
+// REMOVED (bandwidth fix): live in-app scraping was the single biggest source
+// of Render egress — spawning Playwright/Python on this server to crawl every
+// autodukan.com page and image burned GBs of outbound traffic per run.
+// Scraping now runs locally via scripts/scrape_autodukan_local.py (untouched,
+// kept for reference). Frontend admin panel already dropped these controls;
+// this backend wiring was dead code kept in sync with it. To restore, see the
+// original routes below (kept as a comment) and the import note at the top
+// of this file.
+//
+// // GET /api/admin/autodukan/monitor
+// // Returns live scraper state + per-category progress from DB.
+// router.get('/autodukan/monitor', authenticate, requireAdmin, async (req, res, next) => {
+//   try {
+//     const [catRows, lastActivityRow, stagingRow, brandRows] = await Promise.all([
+//       // Pages completed per category
+//       prisma.$queryRaw`
+//         SELECT category,
+//                COUNT(*)::int                     AS pages_done,
+//                COALESCE(SUM(products_count),0)::int AS products_scraped,
+//                MAX(completed_at)                 AS last_page_at
+//         FROM   autodukan_scrape_progress
+//         GROUP  BY category
+//         ORDER  BY category
+//       `.catch(() => []),
+//
+//       // Most recent page saved (tells us if scraper is active)
+//       prisma.$queryRaw`
+//         SELECT MAX(completed_at) AS last_at
+//         FROM   autodukan_scrape_progress
+//       `.catch(() => [{}]),
+//
+//       // Total rows in staging
+//       prisma.$queryRaw`
+//         SELECT COUNT(*)::int AS total FROM autodukan_parts_staging
+//       `.catch(() => [{ total: 0 }]),
+//
+//       // Top 10 brands in staging (gives a feel for what's been scraped)
+//       prisma.$queryRaw`
+//         SELECT brand, COUNT(*)::int AS cnt
+//         FROM   autodukan_parts_staging
+//         WHERE  brand IS NOT NULL AND brand <> ''
+//         GROUP  BY brand
+//         ORDER  BY cnt DESC
+//         LIMIT  10
+//       `.catch(() => []),
+//     ]);
+//
+//     const runtime = getScraperState();
+//     const lastAt  = lastActivityRow[0]?.last_at || null;
+//     // "Active" = either in-memory says running OR a page was saved in the last 30s
+//     const recentSec = lastAt ? (Date.now() - new Date(lastAt).getTime()) / 1000 : Infinity;
+//     const active = runtime.running || recentSec < 30;
+//
+//     res.json({
+//       success: true,
+//       data: {
+//         runtime: {
+//           running:         runtime.running,
+//           pid:             runtime.pid,
+//           startedAt:       runtime.startedAt,
+//           stoppedAt:       runtime.stoppedAt,
+//           currentCategory: runtime.currentCategory,
+//           currentPage:     runtime.currentPage,
+//           exitCode:        runtime.exitCode,
+//           error:           runtime.error,
+//           logs:            runtime.logs.slice(-30),
+//           active,
+//           lastActivityAt:  lastAt,
+//           secondsSinceLastPage: lastAt ? Math.round(recentSec) : null,
+//         },
+//         stagingTotal: stagingRow[0]?.total || 0,
+//         catProgress:  catRows,
+//         topBrands:    brandRows,
+//       },
+//     });
+//   } catch (err) { next(err); }
+// });
+//
+// // POST /api/admin/autodukan/scrape/start
+// // Spawns the Python scraper as a child process.
+// // Requires Python 3 + playwright installed on the same server.
+// // Body: { category?: "FILTERS", delay?: 10, headless?: true }
+// router.post('/autodukan/scrape/start', authenticate, requireAdmin, async (req, res, next) => {
+//   try {
+//     const runtime = getScraperState();
+//     if (runtime.running) {
+//       return res.status(409).json({ success: false, error: { code: 'ALREADY_RUNNING', message: 'Scraper is already running.' } });
+//     }
+//
+//     if (!existsSync(SCRAPER_SCRIPT)) {
+//       return res.status(500).json({
+//         success: false,
+//         error: { code: 'SCRIPT_NOT_FOUND', message: `Python script not found at ${SCRAPER_SCRIPT}` },
+//       });
+//     }
+//
+//     const { category = null, delay = 10, headless = true } = req.body;
+//     const rawDbUrl = process.env.DATABASE_URL;
+//     if (!rawDbUrl) {
+//       return res.status(500).json({ success: false, error: { code: 'NO_DB_URL', message: 'DATABASE_URL env var not set on server.' } });
+//     }
+//     // psycopg2 rejects Supabase's pgbouncer=true query param — strip it before passing to Python.
+//     const dbUrl = rawDbUrl.replace(/([?&])pgbouncer=true/i, '$1').replace(/[?&]$/, '');
+//
+//     // Build args
+//     const args = [SCRAPER_SCRIPT, '--db-url', dbUrl, `--delay=${delay}`, '--resume'];
+//     if (category) args.push(`--category=${category}`);
+//     if (headless) args.push('--headless');
+//
+//     // On Render, pip packages land in a virtualenv; use its Python so Playwright is importable.
+//     // Fall back to plain python3 for local dev (where there's no venv at that path).
+//     const RENDER_VENV_PYTHON = '/opt/render/project/src/.venv/bin/python3';
+//     const pythonBin = process.platform === 'win32'
+//       ? 'python'
+//       : (existsSync(RENDER_VENV_PYTHON) ? RENDER_VENV_PYTHON : 'python3');
+//
+//     // Render's build and runtime containers have separate /opt/render/.cache/ filesystems,
+//     // so Chromium installed there during the build is gone at runtime.
+//     // Installing into the project dir (/opt/render/project/src/.playwright-browsers) persists
+//     // across both build and runtime. Pass the same path to the subprocess so Playwright finds it.
+//     const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH
+//       || '/opt/render/project/src/.playwright-browsers';
+//
+//     const child = spawn(pythonBin, args, {
+//       stdio: ['ignore', 'pipe', 'pipe'],
+//       env: {
+//         ...process.env,
+//         PLAYWRIGHT_BROWSERS_PATH,
+//         // Force Python to flush stdout immediately instead of buffering when piped.
+//         // Without this, print() output never appears in the live log until process exits.
+//         PYTHONUNBUFFERED: '1',
+//       },
+//     });
+//
+//     setScraperRunning(child.pid, category || 'ALL');
+//     appendScraperLog(`Started PID ${child.pid}: ${pythonBin} ${args.slice(1).join(' ')}`);
+//
+//     child.stdout.on('data', (chunk) => {
+//       chunk.toString().split('\n').filter(Boolean).forEach(appendScraperLog);
+//     });
+//     child.stderr.on('data', (chunk) => {
+//       chunk.toString().split('\n').filter(Boolean).forEach(line => {
+//         appendScraperLog(`[ERR] ${line}`);
+//         setScraperError(line);
+//       });
+//     });
+//     child.on('close', (code) => {
+//       setScraperStopped(code);
+//       appendScraperLog(`Process exited with code ${code}`);
+//     });
+//     child.on('error', (err) => {
+//       setScraperStopped(-1);
+//       setScraperError(err.message);
+//       appendScraperLog(`Spawn error: ${err.message}`);
+//     });
+//
+//     res.json({
+//       success: true,
+//       data: { pid: child.pid, message: `Scraper started (PID ${child.pid})`, category: category || 'ALL', delay, headless },
+//     });
+//   } catch (err) { next(err); }
+// });
+//
+// // POST /api/admin/autodukan/scrape/stop
+// // Sends SIGTERM to the running scraper process.
+// router.post('/autodukan/scrape/stop', authenticate, requireAdmin, async (req, res, next) => {
+//   try {
+//     const runtime = getScraperState();
+//     if (!runtime.running || !runtime.pid) {
+//       return res.status(400).json({ success: false, error: { code: 'NOT_RUNNING', message: 'No scraper is currently running.' } });
+//     }
+//     try {
+//       process.kill(runtime.pid, 'SIGTERM');
+//       appendScraperLog(`SIGTERM sent to PID ${runtime.pid} by admin ${req.user.email}`);
+//     } catch (e) {
+//       // PID may already be gone
+//       setScraperStopped(-1);
+//     }
+//     res.json({ success: true, data: { message: `Stop signal sent to PID ${runtime.pid}` } });
+//   } catch (err) { next(err); }
+// });
 
-// GET /api/admin/autodukan/monitor
-// Returns live scraper state + per-category progress from DB.
-router.get('/autodukan/monitor', authenticate, requireAdmin, async (req, res, next) => {
-  try {
-    const [catRows, lastActivityRow, stagingRow, brandRows] = await Promise.all([
-      // Pages completed per category
-      prisma.$queryRaw`
-        SELECT category,
-               COUNT(*)::int                     AS pages_done,
-               COALESCE(SUM(products_count),0)::int AS products_scraped,
-               MAX(completed_at)                 AS last_page_at
-        FROM   autodukan_scrape_progress
-        GROUP  BY category
-        ORDER  BY category
-      `.catch(() => []),
-
-      // Most recent page saved (tells us if scraper is active)
-      prisma.$queryRaw`
-        SELECT MAX(completed_at) AS last_at
-        FROM   autodukan_scrape_progress
-      `.catch(() => [{}]),
-
-      // Total rows in staging
-      prisma.$queryRaw`
-        SELECT COUNT(*)::int AS total FROM autodukan_parts_staging
-      `.catch(() => [{ total: 0 }]),
-
-      // Top 10 brands in staging (gives a feel for what's been scraped)
-      prisma.$queryRaw`
-        SELECT brand, COUNT(*)::int AS cnt
-        FROM   autodukan_parts_staging
-        WHERE  brand IS NOT NULL AND brand <> ''
-        GROUP  BY brand
-        ORDER  BY cnt DESC
-        LIMIT  10
-      `.catch(() => []),
-    ]);
-
-    const runtime = getScraperState();
-    const lastAt  = lastActivityRow[0]?.last_at || null;
-    // "Active" = either in-memory says running OR a page was saved in the last 30s
-    const recentSec = lastAt ? (Date.now() - new Date(lastAt).getTime()) / 1000 : Infinity;
-    const active = runtime.running || recentSec < 30;
-
-    res.json({
-      success: true,
-      data: {
-        runtime: {
-          running:         runtime.running,
-          pid:             runtime.pid,
-          startedAt:       runtime.startedAt,
-          stoppedAt:       runtime.stoppedAt,
-          currentCategory: runtime.currentCategory,
-          currentPage:     runtime.currentPage,
-          exitCode:        runtime.exitCode,
-          error:           runtime.error,
-          logs:            runtime.logs.slice(-30),
-          active,
-          lastActivityAt:  lastAt,
-          secondsSinceLastPage: lastAt ? Math.round(recentSec) : null,
-        },
-        stagingTotal: stagingRow[0]?.total || 0,
-        catProgress:  catRows,
-        topBrands:    brandRows,
-      },
-    });
-  } catch (err) { next(err); }
-});
-
-// POST /api/admin/autodukan/scrape/start
-// Spawns the Python scraper as a child process.
-// Requires Python 3 + playwright installed on the same server.
-// Body: { category?: "FILTERS", delay?: 10, headless?: true }
-router.post('/autodukan/scrape/start', authenticate, requireAdmin, async (req, res, next) => {
-  try {
-    const runtime = getScraperState();
-    if (runtime.running) {
-      return res.status(409).json({ success: false, error: { code: 'ALREADY_RUNNING', message: 'Scraper is already running.' } });
-    }
-
-    if (!existsSync(SCRAPER_SCRIPT)) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SCRIPT_NOT_FOUND', message: `Python script not found at ${SCRAPER_SCRIPT}` },
-      });
-    }
-
-    const { category = null, delay = 10, headless = true } = req.body;
-    const rawDbUrl = process.env.DATABASE_URL;
-    if (!rawDbUrl) {
-      return res.status(500).json({ success: false, error: { code: 'NO_DB_URL', message: 'DATABASE_URL env var not set on server.' } });
-    }
-    // psycopg2 rejects Supabase's pgbouncer=true query param — strip it before passing to Python.
-    const dbUrl = rawDbUrl.replace(/([?&])pgbouncer=true/i, '$1').replace(/[?&]$/, '');
-
-    // Build args
-    const args = [SCRAPER_SCRIPT, '--db-url', dbUrl, `--delay=${delay}`, '--resume'];
-    if (category) args.push(`--category=${category}`);
-    if (headless) args.push('--headless');
-
-    // On Render, pip packages land in a virtualenv; use its Python so Playwright is importable.
-    // Fall back to plain python3 for local dev (where there's no venv at that path).
-    const RENDER_VENV_PYTHON = '/opt/render/project/src/.venv/bin/python3';
-    const pythonBin = process.platform === 'win32'
-      ? 'python'
-      : (existsSync(RENDER_VENV_PYTHON) ? RENDER_VENV_PYTHON : 'python3');
-
-    // Render's build and runtime containers have separate /opt/render/.cache/ filesystems,
-    // so Chromium installed there during the build is gone at runtime.
-    // Installing into the project dir (/opt/render/project/src/.playwright-browsers) persists
-    // across both build and runtime. Pass the same path to the subprocess so Playwright finds it.
-    const PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH
-      || '/opt/render/project/src/.playwright-browsers';
-
-    const child = spawn(pythonBin, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PLAYWRIGHT_BROWSERS_PATH,
-        // Force Python to flush stdout immediately instead of buffering when piped.
-        // Without this, print() output never appears in the live log until process exits.
-        PYTHONUNBUFFERED: '1',
-      },
-    });
-
-    setScraperRunning(child.pid, category || 'ALL');
-    appendScraperLog(`Started PID ${child.pid}: ${pythonBin} ${args.slice(1).join(' ')}`);
-
-    child.stdout.on('data', (chunk) => {
-      chunk.toString().split('\n').filter(Boolean).forEach(appendScraperLog);
-    });
-    child.stderr.on('data', (chunk) => {
-      chunk.toString().split('\n').filter(Boolean).forEach(line => {
-        appendScraperLog(`[ERR] ${line}`);
-        setScraperError(line);
-      });
-    });
-    child.on('close', (code) => {
-      setScraperStopped(code);
-      appendScraperLog(`Process exited with code ${code}`);
-    });
-    child.on('error', (err) => {
-      setScraperStopped(-1);
-      setScraperError(err.message);
-      appendScraperLog(`Spawn error: ${err.message}`);
-    });
-
-    res.json({
-      success: true,
-      data: { pid: child.pid, message: `Scraper started (PID ${child.pid})`, category: category || 'ALL', delay, headless },
-    });
-  } catch (err) { next(err); }
-});
-
-// POST /api/admin/autodukan/scrape/stop
-// Sends SIGTERM to the running scraper process.
-router.post('/autodukan/scrape/stop', authenticate, requireAdmin, async (req, res, next) => {
-  try {
-    const runtime = getScraperState();
-    if (!runtime.running || !runtime.pid) {
-      return res.status(400).json({ success: false, error: { code: 'NOT_RUNNING', message: 'No scraper is currently running.' } });
-    }
-    try {
-      process.kill(runtime.pid, 'SIGTERM');
-      appendScraperLog(`SIGTERM sent to PID ${runtime.pid} by admin ${req.user.email}`);
-    } catch (e) {
-      // PID may already be gone
-      setScraperStopped(-1);
-    }
-    res.json({ success: true, data: { message: `Stop signal sent to PID ${runtime.pid}` } });
-  } catch (err) { next(err); }
-});
+// In-memory cache so repeat views of the same product image don't re-pull
+// it from S3 every time — capped so it can't grow unbounded on a free dyno.
+const IMAGE_PROXY_CACHE_MAX = 300;
+const imageProxyCache = new Map(); // url -> { buf, ct }
 
 // GET /api/admin/autodukan/image-proxy?url=<encoded-s3-url>
 // Proxies product images from the autodukan S3 bucket.
@@ -1424,6 +1431,13 @@ router.get('/autodukan/image-proxy', authenticate, async (req, res) => {
     return res.status(400).json({ error: 'Invalid or missing url parameter' });
   }
   try {
+    const cached = imageProxyCache.get(url);
+    if (cached) {
+      res.set('Content-Type', cached.ct);
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.send(cached.buf);
+    }
+
     const upstream = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; RedPiston/1.0)',
@@ -1434,10 +1448,16 @@ router.get('/autodukan/image-proxy', authenticate, async (req, res) => {
       return res.status(upstream.status).send('Image not available');
     }
     const ct = upstream.headers.get('content-type') || 'image/png';
+    const buf = Buffer.from(await upstream.arrayBuffer());
+
+    if (imageProxyCache.size >= IMAGE_PROXY_CACHE_MAX) {
+      imageProxyCache.delete(imageProxyCache.keys().next().value); // evict oldest
+    }
+    imageProxyCache.set(url, { buf, ct });
+
     res.set('Content-Type', ct);
     res.set('Cache-Control', 'public, max-age=86400');
-    const buf = await upstream.arrayBuffer();
-    res.send(Buffer.from(buf));
+    res.send(buf);
   } catch (err) {
     console.error('[image-proxy]', err);
     res.status(502).send('Failed to fetch image');
