@@ -27,20 +27,29 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 
-vi.mock('../../src/db/prisma.js', () => ({
-  default: {
-    refreshToken: {
-      findUnique:  vi.fn(),
-      update:      vi.fn(),
-      updateMany:  vi.fn(),
-      create:      vi.fn(),
+// GET/DELETE /sessions run through the real authenticate middleware, which
+// touches shopContext.run(...) for any user with a shopId. Dynamic import
+// inside the factory avoids vi.mock's hoisting restriction on referencing
+// other module bindings.
+vi.mock('../../src/db/prisma.js', async () => {
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  return {
+    default: {
+      refreshToken: {
+        findUnique:  vi.fn(),
+        findMany:    vi.fn(),
+        update:      vi.fn(),
+        updateMany:  vi.fn(),
+        create:      vi.fn(),
+      },
+      user: {
+        findUnique: vi.fn(),
+      },
+      $transaction: vi.fn(),
     },
-    user: {
-      findUnique: vi.fn(),
-    },
-    $transaction: vi.fn(),
-  },
-}));
+    shopContext: new AsyncLocalStorage(),
+  };
+});
 
 import prisma from '../../src/db/prisma.js';
 import sessionRouter from '../../src/routes/auth/session.js';
@@ -273,5 +282,133 @@ describe('POST /api/auth/logout', () => {
       .send({ refreshToken: makeRefreshToken() });
 
     expect(res.status).toBe(200);
+  });
+});
+
+// Real access token (not the refresh token) — signed with JWT_SECRET,
+// matching generateTokens()'s payload shape, for the `authenticate`
+// middleware that GET/DELETE /sessions run through.
+function makeAccessToken(overrides = {}) {
+  return jwt.sign(
+    { userId: DB_USER.userId, shopId: DB_USER.shopId, role: DB_USER.role, ...overrides },
+    process.env.JWT_SECRET,
+    { expiresIn: '8h' }
+  );
+}
+
+function storedSession(overrides = {}) {
+  return {
+    id: 1, userId: 1, tokenHash: 'hash-a',
+    deviceInfo: { platform: 'mobile', browser: 'Chrome' },
+    ipAddress: '127.0.0.1',
+    createdAt: new Date('2026-01-01'),
+    lastUsedAt: new Date('2026-01-02'),
+    revokedAt: null,
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    ...overrides,
+  };
+}
+
+describe('GET /api/auth/sessions', () => {
+  let app;
+  beforeEach(() => { app = buildApp(); });
+
+  it('401s with no access token', async () => {
+    const res = await request(app).get('/api/auth/sessions');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists active sessions for the authenticated user', async () => {
+    prisma.user.findUnique.mockResolvedValue(DB_USER);
+    prisma.refreshToken.findMany.mockResolvedValue([storedSession(), storedSession({ id: 2, tokenHash: 'hash-b' })]);
+
+    const res = await request(app)
+      .get('/api/auth/sessions')
+      .set('Authorization', `Bearer ${makeAccessToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data[0].deviceInfo).toEqual({ platform: 'mobile', browser: 'Chrome' });
+  });
+
+  it('flags the session matching the request cookie as isCurrent', async () => {
+    prisma.user.findUnique.mockResolvedValue(DB_USER);
+    const rawRefresh = makeRefreshToken();
+    const { hashToken } = await import('../../src/routes/auth/helpers.js');
+    prisma.refreshToken.findMany.mockResolvedValue([
+      storedSession({ id: 1, tokenHash: hashToken(rawRefresh) }),
+      storedSession({ id: 2, tokenHash: 'some-other-hash' }),
+    ]);
+
+    const res = await request(app)
+      .get('/api/auth/sessions')
+      .set('Authorization', `Bearer ${makeAccessToken()}`)
+      .set('Cookie', [`refresh_token=${rawRefresh}`]);
+
+    const bySessionId = Object.fromEntries(res.body.data.map((s) => [s.id, s]));
+    expect(bySessionId[1].isCurrent).toBe(true);
+    expect(bySessionId[2].isCurrent).toBe(false);
+  });
+
+  it('marks every session isCurrent=false when no refresh cookie is present', async () => {
+    prisma.user.findUnique.mockResolvedValue(DB_USER);
+    prisma.refreshToken.findMany.mockResolvedValue([storedSession()]);
+
+    const res = await request(app)
+      .get('/api/auth/sessions')
+      .set('Authorization', `Bearer ${makeAccessToken()}`);
+
+    expect(res.body.data[0].isCurrent).toBe(false);
+  });
+
+  it('only queries this user\'s own non-revoked, non-expired sessions', async () => {
+    prisma.user.findUnique.mockResolvedValue(DB_USER);
+    prisma.refreshToken.findMany.mockResolvedValue([]);
+
+    await request(app).get('/api/auth/sessions').set('Authorization', `Bearer ${makeAccessToken()}`);
+
+    expect(prisma.refreshToken.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ userId: DB_USER.userId, revokedAt: null }),
+      })
+    );
+  });
+});
+
+describe('DELETE /api/auth/sessions/:id', () => {
+  let app;
+  beforeEach(() => { app = buildApp(); });
+
+  it('401s with no access token', async () => {
+    const res = await request(app).delete('/api/auth/sessions/1');
+    expect(res.status).toBe(401);
+  });
+
+  it('404s when the session does not belong to this user (or does not exist)', async () => {
+    prisma.user.findUnique.mockResolvedValue(DB_USER);
+    prisma.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await request(app)
+      .delete('/api/auth/sessions/999')
+      .set('Authorization', `Bearer ${makeAccessToken()}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('revokes the session and scopes the update to this user (ownership check)', async () => {
+    prisma.user.findUnique.mockResolvedValue(DB_USER);
+    prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await request(app)
+      .delete('/api/auth/sessions/1')
+      .set('Authorization', `Bearer ${makeAccessToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 1, userId: DB_USER.userId, revokedAt: null },
+        data: expect.objectContaining({ revokedAt: expect.any(Date) }),
+      })
+    );
   });
 });

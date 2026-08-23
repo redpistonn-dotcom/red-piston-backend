@@ -3,8 +3,58 @@ import jwt from 'jsonwebtoken';
 import prisma from '../../db/prisma.js';
 import { generateTokens, hashToken, REFRESH_COOKIE_NAME, REFRESH_COOKIE_OPTIONS } from './helpers.js';
 import { writeAudit, ET, ACT } from '../../lib/audit.js';
+import { authenticate } from '../../middleware/auth.js';
 
 const router = Router();
+
+// GET /api/auth/sessions — list this user's active (non-revoked, non-expired)
+// sessions. deviceInfo has been captured on every login/refresh since
+// createSession() was written (see auth/helpers.js extractDeviceInfo) —
+// this is the first thing that actually reads it back out.
+router.get('/sessions', authenticate, async (req, res, next) => {
+  try {
+    const rawToken = req.cookies?.[REFRESH_COOKIE_NAME] || req.body?.refreshToken;
+    const currentHash = rawToken ? hashToken(rawToken) : null;
+
+    const sessions = await prisma.refreshToken.findMany({
+      where: { userId: req.user.userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { lastUsedAt: 'desc' },
+    });
+
+    res.json({
+      success: true,
+      data: sessions.map(s => ({
+        id: s.id,
+        deviceInfo: s.deviceInfo,
+        ipAddress: s.ipAddress,
+        createdAt: s.createdAt,
+        lastUsedAt: s.lastUsedAt,
+        isCurrent: currentHash ? s.tokenHash === currentHash : false,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/auth/sessions/:id — revoke one session (e.g. a lost/stolen
+// device). Ownership-checked: a user can only revoke their own sessions.
+router.delete('/sessions/:id', authenticate, async (req, res, next) => {
+  try {
+    const sessionId = parseInt(req.params.id, 10);
+    const result = await prisma.refreshToken.updateMany({
+      where: { id: sessionId, userId: req.user.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (result.count === 0) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Session not found' } });
+    }
+    writeAudit(req, { entityType: ET.AUTH, entityId: sessionId, action: ACT.LOGOUT, metadata: { revokedByUser: true } });
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // POST /api/auth/refresh — rotate refresh token (from cookie OR body)
 router.post('/refresh', async (req, res, next) => {
