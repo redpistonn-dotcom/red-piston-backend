@@ -361,6 +361,48 @@ describe('PATCH /api/mechanic/jobs/:id/status — WhatsApp preview', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+describe('PATCH /api/mechanic/jobs/:id/progress — WhatsApp preview', () => {
+  let app;
+  beforeEach(() => { app = buildApp(); });
+
+  it('rejects an invalid progress stage', async () => {
+    const res = await request(app).patch('/api/mechanic/jobs/10/progress').send({ progress: 'NOT_A_STAGE' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns no WhatsApp preview for an internal-only stage (DIAGNOSIS_DONE)', async () => {
+    prisma.$queryRawUnsafe = sqlRouter([{ test: () => true, impl: [{ ...BASE_JOB, status: 'IN_PROGRESS', mechanic_progress: null }] }]);
+    prisma.$executeRaw = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app).patch('/api/mechanic/jobs/10/progress').send({ progress: 'DIAGNOSIS_DONE' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.whatsapp).toBeNull();
+  });
+
+  it('returns a WhatsApp preview for a customer-relevant stage (CLEANING) — a dismissed prior banner does not block this one', async () => {
+    prisma.$queryRawUnsafe = sqlRouter([{ test: () => true, impl: [{ ...BASE_JOB, status: 'IN_PROGRESS', mechanic_progress: 'REPAIR_COMPLETED' }] }]);
+    prisma.$executeRaw = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app).patch('/api/mechanic/jobs/10/progress').send({ progress: 'CLEANING' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.whatsapp.text).toContain('being cleaned');
+  });
+
+  it('prefers the status message over the progress message when READY_FOR_QC triggers status -> READY', async () => {
+    prisma.$queryRawUnsafe = sqlRouter([{ test: () => true, impl: [{ ...BASE_JOB, status: 'IN_PROGRESS', mechanic_progress: 'CLEANING' }] }]);
+    prisma.$executeRaw = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app).patch('/api/mechanic/jobs/10/progress').send({ progress: 'READY_FOR_QC' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('READY');
+    expect(res.body.data.whatsapp.text).toContain('Your vehicle is ready and awaiting final quality check.');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 describe('POST /api/mechanic/jobs/:id/part-requests — WhatsApp preview', () => {
   let app;
   beforeEach(() => { app = buildApp(); });

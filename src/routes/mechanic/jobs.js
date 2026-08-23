@@ -29,7 +29,7 @@ import {
   isValidMechanicProgress, PROGRESS_TRIGGERS_STATUS,
 } from '../../lib/mechanic-transitions.js';
 import { nextSeq, currentYYYYMM } from '../../lib/sequence.js';
-import { buildStatusMessage, buildExtraWorkFoundMessage, buildCallOutcomeMessage } from '../../lib/customer-message.js';
+import { buildStatusMessage, buildExtraWorkFoundMessage, buildCallOutcomeMessage, buildProgressMessage } from '../../lib/customer-message.js';
 import { registerPushToken, sendPushToUser } from '../../services/push.js';
 
 const VALID_CALL_PURPOSES = ['STATUS_UPDATE', 'EXTRA_WORK_APPROVAL', 'GENERAL'];
@@ -861,7 +861,16 @@ router.patch('/jobs/:id/progress', authenticate, requireMechanic, async (req, re
       ...(newStatus ? { fromStatus: job.status, toStatus: newStatus } : {}),
     });
 
-    res.json({ success: true, data: { progress, status: newStatus ?? job.status } });
+    // A status change (e.g. READY_FOR_QC -> READY) is the more customer-relevant
+    // event — prefer that message; otherwise offer a preview for progress
+    // stages worth telling the customer about (buildProgressMessage returns
+    // null for internal-only stages like DIAGNOSIS_DONE, so the banner simply
+    // doesn't show for those taps).
+    const whatsapp = newStatus
+      ? buildStatusMessage({ ...job, status: newStatus }, newStatus)
+      : buildProgressMessage(job, progress);
+
+    res.json({ success: true, data: { progress, status: newStatus ?? job.status, whatsapp } });
   } catch (err) {
     next(err);
   }

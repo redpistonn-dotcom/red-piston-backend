@@ -5,9 +5,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   STATUS_CUSTOMER_TEXT,
+  PROGRESS_CUSTOMER_TEXT,
   buildStatusMessage,
   buildExtraWorkFoundMessage,
   buildCallOutcomeMessage,
+  buildProgressMessage,
 } from '../../src/lib/customer-message.js';
 
 const BASE_JOB = {
@@ -99,6 +101,30 @@ describe('buildExtraWorkFoundMessage', () => {
   it('mentions the mechanic will call before proceeding', () => {
     const { text } = buildExtraWorkFoundMessage(BASE_JOB, partRequest);
     expect(text).toContain('call you shortly to confirm');
+  });
+});
+
+describe('buildProgressMessage', () => {
+  it('returns a message for every customer-relevant progress stage', () => {
+    for (const [stage, line] of Object.entries(PROGRESS_CUSTOMER_TEXT)) {
+      const result = buildProgressMessage(BASE_JOB, stage);
+      expect(result).not.toBeNull();
+      expect(result.text).toContain(line);
+    }
+  });
+
+  it('returns null for an internal-only stage (e.g. DIAGNOSIS_DONE) — no customer message', () => {
+    expect(buildProgressMessage(BASE_JOB, 'DIAGNOSIS_DONE')).toBeNull();
+  });
+
+  it('returns null for an unrecognised stage', () => {
+    expect(buildProgressMessage(BASE_JOB, 'NOT_A_STAGE')).toBeNull();
+  });
+
+  it('still includes job number and vehicle for a valid stage', () => {
+    const { text } = buildProgressMessage(BASE_JOB, 'CLEANING');
+    expect(text).toContain('JOB-202601-0001');
+    expect(text).toContain('Maruti Swift (KA01AB1234)');
   });
 });
 

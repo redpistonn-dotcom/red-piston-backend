@@ -36,6 +36,29 @@ function waLink(phone, text) {
   return `https://wa.me/${withCountry}?text=${encodeURIComponent(text)}`;
 }
 
+// Only the sub-stages actually worth telling a customer about — internal
+// bookkeeping stages (diagnosis, parts issued, etc.) stay in-app only.
+export const PROGRESS_CUSTOMER_TEXT = {
+  REPAIR_STARTED:   'Repair work has begun on your vehicle.',
+  REPAIR_COMPLETED: 'Repair work is complete — your vehicle is now being cleaned before handover.',
+  CLEANING:         'Your vehicle is being cleaned and will be ready shortly.',
+  READY_FOR_QC:      'Your vehicle has finished repair and is now undergoing a final quality check.',
+};
+
+export function buildProgressMessage(job, progress) {
+  const line = PROGRESS_CUSTOMER_TEXT[progress];
+  if (!line) return null; // internal-only stage — no customer message
+  const text = [
+    `Hi ${job.customer_name || 'there'}, update on your vehicle service:`,
+    ``,
+    `Job No: ${job.job_number}`,
+    `Vehicle: ${vehicleLine(job)}`,
+    ``,
+    line,
+  ].join('\n');
+  return { text, link: waLink(job.customer_phone, text) };
+}
+
 export function buildStatusMessage(job, status) {
   const line = STATUS_CUSTOMER_TEXT[status] || `Status updated: ${status}`;
   const text = [
