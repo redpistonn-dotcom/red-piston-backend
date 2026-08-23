@@ -31,6 +31,7 @@ import {
 import { nextSeq, currentYYYYMM } from '../../lib/sequence.js';
 import { buildStatusMessage, buildExtraWorkFoundMessage, buildCallOutcomeMessage, buildProgressMessage } from '../../lib/customer-message.js';
 import { registerPushToken, sendPushToUser } from '../../services/push.js';
+import { sendJobUpdateWhatsApp } from '../../services/whatsapp.js';
 
 const VALID_CALL_PURPOSES = ['STATUS_UPDATE', 'EXTRA_WORK_APPROVAL', 'GENERAL'];
 const VALID_CALL_OUTCOMES = ['APPROVED', 'REJECTED', 'NO_ANSWER', 'DISCUSSED'];
@@ -1003,6 +1004,43 @@ router.post('/jobs/:id/calls', authenticate, requireMechanic, async (req, res, n
 
     const whatsapp = buildCallOutcomeMessage(job, { outcome, notes: notes?.trim(), partRequest });
     res.status(201).json({ success: true, data: { ...call[0], whatsapp } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/mechanic/jobs/:id/notify — actually send a WhatsApp message to
+// the customer via the WATI Business API (server-side, no app-switch, no
+// wa.me link). The mechanic edits the text shown in the preview banner;
+// this sends exactly that text — the customer sees the same message the
+// mechanic saw, verbatim, and the mechanic isn't the one making the call.
+router.post('/jobs/:id/notify', authenticate, requireMechanic, async (req, res, next) => {
+  try {
+    const jobId = parseInt(req.params.id, 10);
+    const job = await loadOwnJob(req, res, jobId);
+    if (!job) return;
+
+    const { text } = req.body;
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_TEXT', message: 'text is required' } });
+    }
+    if (text.length > 1000) {
+      return res.status(400).json({ success: false, error: { code: 'TEXT_TOO_LONG', message: 'text must be under 1000 characters' } });
+    }
+    if (!job.customer_phone) {
+      return res.status(422).json({ success: false, error: { code: 'NO_PHONE', message: 'No customer phone number on file for this job' } });
+    }
+
+    const result = await sendJobUpdateWhatsApp(job.customer_phone, text.trim());
+    if (!result.success) {
+      return res.status(502).json({
+        success: false,
+        error: { code: 'WHATSAPP_SEND_FAILED', message: result.error || 'WhatsApp send failed. Check WATI is configured and the template is approved.' },
+      });
+    }
+
+    await writeTimeline(jobId, req.user.userId, 'WHATSAPP_SENT', { note: text.trim() });
+    res.json({ success: true, data: { sent: true } });
   } catch (err) {
     next(err);
   }

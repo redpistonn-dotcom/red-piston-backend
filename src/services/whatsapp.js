@@ -28,6 +28,18 @@ export const sendWhatsAppMessage = async (phone, templateName, params = []) => {
   }
 };
 
+// Sends from RedPiston's single WATI business number — WhatsApp Business API
+// has no concept of "send as this mechanic's personal number", so the
+// message is signed with the mechanic's name in the text instead. Requires
+// a WATI template with exactly one body variable ({{1}}) already approved
+// on Meta's side; the template name is configurable since every WATI
+// account has to create/name its own. Free-form edited text goes in as
+// that one variable, so the customer sees exactly what the mechanic wrote.
+export const sendJobUpdateWhatsApp = async (phone, text) => {
+  const templateName = process.env.WATI_GENERIC_TEMPLATE_NAME || 'job_update';
+  return sendWhatsAppMessage(phone, templateName, [{ name: '1', value: text }]);
+};
+
 export const sendInvoiceWhatsApp = async (phone, customerName, invoiceNumber, amount, pdfUrl) => {
   return sendWhatsAppMessage(phone, 'invoice_sent', [
     { name: 'customer_name', value: customerName || 'Customer' },

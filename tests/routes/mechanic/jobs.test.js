@@ -38,6 +38,11 @@ vi.mock('../../../src/services/push.js', () => ({
   registerPushToken: (...args) => registerPushToken(...args),
 }));
 
+const sendJobUpdateWhatsApp = vi.fn();
+vi.mock('../../../src/services/whatsapp.js', () => ({
+  sendJobUpdateWhatsApp: (...args) => sendJobUpdateWhatsApp(...args),
+}));
+
 vi.mock('../../../src/lib/audit.js', () => ({
   writeAudit: vi.fn(),
   ET: { ORDER: 'ORDER' },
@@ -485,6 +490,82 @@ describe('POST /api/mechanic/jobs — push on team assignment', () => {
 
     expect(res.status).toBe(201);
     expect(sendPushToUser).toHaveBeenCalledWith(42, expect.objectContaining({ title: 'New job assigned' }));
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+describe('POST /api/mechanic/jobs/:id/notify — server-side WhatsApp send', () => {
+  let app;
+  beforeEach(() => { app = buildApp(); });
+
+  function mockLoadJob(job = BASE_JOB) {
+    prisma.$queryRawUnsafe = sqlRouter([{ test: () => true, impl: [job] }]);
+  }
+
+  it('404s when the job is not the mechanic’s own', async () => {
+    prisma.$queryRawUnsafe = sqlRouter([{ test: () => true, impl: [] }]);
+    const res = await request(app).post('/api/mechanic/jobs/10/notify').send({ text: 'Hi there' });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects missing text', async () => {
+    mockLoadJob();
+    const res = await request(app).post('/api/mechanic/jobs/10/notify').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('MISSING_TEXT');
+  });
+
+  it('rejects whitespace-only text', async () => {
+    mockLoadJob();
+    const res = await request(app).post('/api/mechanic/jobs/10/notify').send({ text: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects text over 1000 characters', async () => {
+    mockLoadJob();
+    const res = await request(app).post('/api/mechanic/jobs/10/notify').send({ text: 'x'.repeat(1001) });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('TEXT_TOO_LONG');
+  });
+
+  it('422s when the job has no customer phone on file', async () => {
+    mockLoadJob({ ...BASE_JOB, customer_phone: null });
+    const res = await request(app).post('/api/mechanic/jobs/10/notify').send({ text: 'Hi there' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NO_PHONE');
+  });
+
+  it('sends the exact edited text to the customer phone and logs the timeline', async () => {
+    mockLoadJob();
+    sendJobUpdateWhatsApp.mockResolvedValue({ success: true });
+    prisma.$executeRaw = vi.fn().mockResolvedValue(undefined);
+
+    const res = await request(app).post('/api/mechanic/jobs/10/notify').send({ text: '  Custom edited message  ' });
+
+    expect(res.status).toBe(200);
+    expect(sendJobUpdateWhatsApp).toHaveBeenCalledWith('9876543210', 'Custom edited message');
+    expect(prisma.$executeRaw).toHaveBeenCalledOnce();
+  });
+
+  it('returns 502 with a clear error when the WhatsApp send fails (e.g. WATI not configured)', async () => {
+    mockLoadJob();
+    sendJobUpdateWhatsApp.mockResolvedValue({ success: false, error: 'connect ECONNREFUSED' });
+
+    const res = await request(app).post('/api/mechanic/jobs/10/notify').send({ text: 'Hi there' });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('WHATSAPP_SEND_FAILED');
+    expect(res.body.error.message).toContain('ECONNREFUSED');
+  });
+
+  it('does not write a timeline entry when the send fails', async () => {
+    mockLoadJob();
+    sendJobUpdateWhatsApp.mockResolvedValue({ success: false, error: 'boom' });
+    const executeRaw = vi.fn().mockResolvedValue(undefined);
+    prisma.$executeRaw = executeRaw;
+
+    await request(app).post('/api/mechanic/jobs/10/notify').send({ text: 'Hi there' });
+    expect(executeRaw).not.toHaveBeenCalled();
   });
 });
 
