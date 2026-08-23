@@ -5,7 +5,7 @@ import { getAuth } from 'firebase-admin/auth';
 
 let firebaseInitialized = false;
 
-function initFirebase() {
+export function initFirebase() {
   if (firebaseInitialized || getApps().length > 0) return;
 
   if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {

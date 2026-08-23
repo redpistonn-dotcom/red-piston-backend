@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-vi.mock('../../db/prisma.js', () => ({
+vi.mock('../../src/db/prisma.js', () => ({
   default: {
     party: {
       findMany:  vi.fn(),
@@ -33,13 +33,13 @@ vi.mock('../../db/prisma.js', () => ({
   },
 }));
 
-vi.mock('../../middleware/auth.js', () => ({
+vi.mock('../../src/middleware/auth.js', () => ({
   authenticate:    (req, _res, next) => { req.user = { userId: 1 }; req.shopId = 5; next(); },
   requireShopOwner:(_req, _res, next) => next(),
 }));
 
-import prisma from '../../db/prisma.js';
-import partiesRouter from '../../routes/parties.js';
+import prisma from '../../src/db/prisma.js';
+import partiesRouter from '../../src/routes/parties.js';
 
 function buildApp() {
   const app = express();
@@ -55,6 +55,14 @@ const DB_PARTY = {
   outstanding: 2000, creditLimit: 10000, creditDays: 30,
   isActive: true,
 };
+
+// prisma is a single shared mock across every test in this file — without
+// clearing mock.calls between tests, an assertion like
+// `prisma.party.update.mock.calls[0]` picks up a call from an EARLIER test
+// (any prior describe that also called party.update), not this test's own
+// call. mockResolvedValue()/mockImplementation() set inside each `it()`
+// still apply after this since it only clears call history, not behavior.
+beforeEach(() => { vi.clearAllMocks(); });
 
 describe('POST /api/shop/parties', () => {
   let app;

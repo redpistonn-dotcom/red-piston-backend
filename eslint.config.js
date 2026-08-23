@@ -26,7 +26,7 @@ export default [
   },
   {
     // Ignore test files and scripts from some rules
-    files: ['src/tests/**/*.js', 'prisma/**/*.js', 'scripts/**/*.js'],
+    files: ['tests/**/*.js', 'prisma/**/*.js', 'scripts/**/*.js'],
     rules: {
       'no-unused-vars': 'off',
     },

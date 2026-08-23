@@ -14,7 +14,7 @@ import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import prisma from '../../db/prisma.js';
 import { authenticate, requireMechanic } from '../../middleware/auth.js';
-import { mechanicInviteVerifyLimiter } from '../../middleware/rateLimiter.js';
+import { mechanicInviteVerifyLimiter, emailOtpSendLimiter, authLimiter } from '../../middleware/rateLimiter.js';
 import {
   sendMechanicInviteOtp,
   verifyMechanicInviteOtp,
@@ -260,7 +260,7 @@ publicMechanicAuthRouter.post('/register', mechanicInviteVerifyLimiter, async (r
  * Creates MECHANIC account, sends email OTP, issues tokens immediately.
  * After OTP verify, caller should PATCH /api/mechanic/profile/setup to save details.
  */
-publicMechanicAuthRouter.post('/register-independent', async (req, res, next) => {
+publicMechanicAuthRouter.post('/register-independent', authLimiter, async (req, res, next) => {
   try {
     const rawEmail = req.body?.email;
     const password = req.body?.password;
@@ -324,7 +324,7 @@ publicMechanicAuthRouter.post('/register-independent', async (req, res, next) =>
  * Works even if the email is already marked verified (Google accounts).
  * Resets emailVerified=false so /api/auth/verify-email can flip it back.
  */
-publicMechanicAuthRouter.post('/send-otp', authenticate, async (req, res, next) => {
+publicMechanicAuthRouter.post('/send-otp', authenticate, emailOtpSendLimiter, async (req, res, next) => {
   try {
     const userId = req.user?.userId;
     const email = req.user?.email;
@@ -384,12 +384,22 @@ router.get('/dashboard', authenticate, requireMechanic, async (req, res, next) =
         COUNT(*) FILTER (WHERE status = 'READY')                                 AS ready_for_qc,
         COUNT(*) FILTER (WHERE status = 'QC_REWORK')                             AS rework,
         COUNT(*) FILTER (WHERE status = 'DELIVERED' AND DATE(delivered_at) = CURRENT_DATE) AS completed_today,
-        COUNT(*) FILTER (WHERE status NOT IN ('DELIVERED','CANCELLED'))           AS active
+        COUNT(*) FILTER (WHERE status NOT IN ('DELIVERED','CANCELLED'))           AS active,
+        COALESCE(SUM(mechanic_commission) FILTER (WHERE status = 'DELIVERED'), 0)         AS commission_earned,
+        COALESCE(SUM(mechanic_commission) FILTER (WHERE status NOT IN ('DELIVERED','CANCELLED')), 0) AS commission_pending
       FROM job_cards
       WHERE assigned_to_user_id = $1
     `, userId);
 
+    const ratingRows = await prisma.$queryRawUnsafe(`
+      SELECT AVG(f.rating)::FLOAT AS avg_rating, COUNT(*) AS rating_count
+      FROM job_card_feedback f
+      JOIN job_cards jc ON jc.job_id = f.job_id
+      WHERE jc.assigned_to_user_id = $1
+    `, userId);
+
     const r = rows[0] || {};
+    const rr = ratingRows[0] || {};
     const n = (v) => Number(v || 0);
     res.json({
       success: true,
@@ -401,6 +411,10 @@ router.get('/dashboard', authenticate, requireMechanic, async (req, res, next) =
         rework:         n(r.rework),
         completed_today: n(r.completed_today),
         active:         n(r.active),
+        commission_earned:  n(r.commission_earned),
+        commission_pending: n(r.commission_pending),
+        avg_rating:    rr.avg_rating != null ? Number(rr.avg_rating.toFixed(1)) : null,
+        rating_count:  n(rr.rating_count),
       },
     });
   } catch (err) {
@@ -448,6 +462,16 @@ router.get('/profile', authenticate, requireMechanic, async (req, res, next) => 
     if (profile) {
       profile.jobs_completed = Number(profile.jobs_completed);
       profile.jobs_active    = Number(profile.jobs_active);
+
+      const ratingRows = await prisma.$queryRaw`
+        SELECT AVG(f.rating)::FLOAT AS avg_rating, COUNT(*) AS rating_count
+        FROM job_card_feedback f
+        JOIN job_cards jc ON jc.job_id = f.job_id
+        WHERE jc.assigned_to_user_id = ${req.user.userId}
+      `;
+      const rr = ratingRows[0] || {};
+      profile.avg_rating   = rr.avg_rating != null ? Number(rr.avg_rating.toFixed(1)) : null;
+      profile.rating_count = Number(rr.rating_count || 0);
     }
     res.json({ success: true, data: profile });
   } catch (err) {

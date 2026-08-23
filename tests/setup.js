@@ -11,11 +11,13 @@
  */
 
 import { vi, beforeAll, afterAll } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 // ── 1. Environment variables ───────────────────────────────────────────────────
 
 process.env.NODE_ENV             = 'test';
 process.env.JWT_SECRET           = 'test-jwt-secret-at-least-32-chars-long';
+process.env.JWT_REFRESH_SECRET    = 'test-refresh-secret-at-least-32-chars-long';
 process.env.FIELD_ENCRYPTION_KEY = 'test-encryption-key-for-unit-tests-here';
 
 // ── 2. Prisma mock ─────────────────────────────────────────────────────────────
@@ -71,7 +73,14 @@ vi.mock('../src/db/prisma.js', () => {
     $disconnect:  vi.fn().mockResolvedValue(undefined),
   };
 
-  return { default: prisma };
+  // Real AsyncLocalStorage — middleware/auth.js's authenticate() calls
+  // shopContext.run(...) for any user with a shopId. Without this named
+  // export the mock module has no `shopContext` at all (undefined),
+  // authenticate() throws on `.run`, and every shopId-bearing user 401s
+  // with INVALID_TOKEN instead of reaching next().
+  const shopContext = new AsyncLocalStorage();
+
+  return { default: prisma, shopContext };
 });
 
 // ── 3. Resend email mock ───────────────────────────────────────────────────────

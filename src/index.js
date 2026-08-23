@@ -560,6 +560,58 @@ async function ensureSchemaFixes() {
     await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_part_requests_job ON job_card_part_requests(job_id)');
     await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_part_requests_shop_status ON job_card_part_requests(shop_id, status)');
 
+    // Customer's own approve/reject decision on an extra-work item — separate
+    // from `status`, which is the shop owner's internal stock-approval field.
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE job_card_part_requests
+        ADD COLUMN IF NOT EXISTS customer_decision    VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS customer_decision_at TIMESTAMPTZ
+    `);
+
+    // Per-job commission — a HEAD mechanic (or, for an independent mechanic's
+    // team, the job's creator) sets a commission amount for the mechanic
+    // actually assigned to that one job. Distinct from labour_charge, which is
+    // billed to the customer; commission is what the shop pays the mechanic.
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE job_cards
+        ADD COLUMN IF NOT EXISTS mechanic_commission  DECIMAL(10,2),
+        ADD COLUMN IF NOT EXISTS commission_note       VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS commission_set_by     INTEGER REFERENCES users(user_id),
+        ADD COLUMN IF NOT EXISTS commission_set_at     TIMESTAMPTZ
+    `);
+
+    // device_push_tokens — FCM tokens for mobile/web push (job-assignment alerts).
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS device_push_tokens (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        token      VARCHAR(500) NOT NULL,
+        platform   VARCHAR(20) NOT NULL DEFAULT 'WEB',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(token)
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON device_push_tokens(user_id)');
+
+    // job_card_calls — mechanic-to-customer phone call log. The call itself
+    // happens off-app; this records that it happened and its outcome, which
+    // then drives the WhatsApp confirmation text (see lib/customer-message.js).
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS job_card_calls (
+        id                SERIAL PRIMARY KEY,
+        job_id            INTEGER NOT NULL REFERENCES job_cards(job_id) ON DELETE CASCADE,
+        shop_id           INTEGER REFERENCES shops(shop_id),
+        part_request_id   INTEGER REFERENCES job_card_part_requests(id),
+        mechanic_user_id  INTEGER REFERENCES users(user_id),
+        purpose           VARCHAR(30) NOT NULL,
+        outcome            VARCHAR(20) NOT NULL,
+        notes              TEXT,
+        whatsapp_sent_at   TIMESTAMPTZ,
+        created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_job_calls_job ON job_card_calls(job_id)');
+
     // job_card_feedback — customer post-service rating
     await prisma.$executeRawUnsafe(`
       CREATE TABLE IF NOT EXISTS job_card_feedback (
@@ -575,7 +627,7 @@ async function ensureSchemaFixes() {
     `);
     await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_job_feedback_shop ON job_card_feedback(shop_id, created_at DESC)');
 
-    console.log('[schema] ensured extended job-card columns + service_bays + part_requests + feedback + quotation_sends');
+    console.log('[schema] ensured extended job-card columns + service_bays + part_requests + feedback + quotation_sends + calls');
   } catch (err) {
     console.error('[schema] extended job-card schema fixes failed (non-fatal):', err?.message);
   }

@@ -33,40 +33,50 @@ import request from 'supertest';
 
 // ── Mocks (hoisted before imports by vitest) ──────────────────────────────────
 
-vi.mock('../../db/prisma.js', () => ({
-  default: {
-    authProvider: {
-      findUnique: vi.fn(),
-      create: vi.fn(),
+// authenticate/createSession touch shopContext.run(...) for shopId-bearing
+// users. Dynamic import inside the factory avoids vi.mock's hoisting
+// restriction on referencing other module bindings.
+vi.mock('../../src/db/prisma.js', async () => {
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  return {
+    default: {
+      authProvider: {
+        findUnique: vi.fn(),
+        create: vi.fn(),
+      },
+      user: {
+        findUnique: vi.fn(),
+        findMany: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn(),
+      },
+      userType: {
+        findUnique: vi.fn(),
+      },
+      refreshToken: {
+        deleteMany: vi.fn(),
+        create: vi.fn(),
+        // createSession() (routes/auth/helpers.js) caps active sessions at 4,
+        // reading existing rows via findMany before pruning the rest.
+        findMany: vi.fn().mockResolvedValue([]),
+      },
     },
-    user: {
-      findUnique: vi.fn(),
-      findMany: vi.fn(),
-      create: vi.fn(),
-      update: vi.fn(),
-    },
-    userType: {
-      findUnique: vi.fn(),
-    },
-    refreshToken: {
-      deleteMany: vi.fn(),
-      create: vi.fn(),
-    },
-  },
-}));
+    shopContext: new AsyncLocalStorage(),
+  };
+});
 
-vi.mock('../../services/firebase.js', () => ({
+vi.mock('../../src/services/firebase.js', () => ({
   verifyFirebaseToken: vi.fn(),
 }));
 
-vi.mock('../../services/email.js', () => ({
+vi.mock('../../src/services/email.js', () => ({
   sendShopOwnerVerificationAlert: vi.fn().mockResolvedValue(undefined),
 }));
 
 // ── Import after mocks are registered ────────────────────────────────────────
-import prisma from '../../db/prisma.js';
-import { verifyFirebaseToken } from '../../services/firebase.js';
-import firebaseRouter from '../../routes/auth/firebase.js';
+import prisma from '../../src/db/prisma.js';
+import { verifyFirebaseToken } from '../../src/services/firebase.js';
+import firebaseRouter from '../../src/routes/auth/firebase.js';
 
 // ── Test app ──────────────────────────────────────────────────────────────────
 function buildApp() {

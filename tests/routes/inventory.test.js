@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-vi.mock('../../db/prisma.js', () => ({
+vi.mock('../../src/db/prisma.js', () => ({
   default: {
     shopInventory: {
       findMany:  vi.fn(),
@@ -29,13 +29,14 @@ vi.mock('../../db/prisma.js', () => ({
   },
 }));
 
-vi.mock('../../middleware/auth.js', () => ({
+vi.mock('../../src/middleware/auth.js', () => ({
   authenticate:    (req, _res, next) => { req.user = { userId: 1 }; req.shopId = 5; next(); },
   requireShopOwner:(_req, _res, next) => next(),
+  requirePermission: () => (_req, _res, next) => next(),
 }));
 
-import prisma from '../../db/prisma.js';
-import inventoryRouter from '../../routes/inventory.js';
+import prisma from '../../src/db/prisma.js';
+import inventoryRouter from '../../src/routes/inventory.js';
 
 // Global reset: clearMocks:true clears call counts but NOT mockResolvedValue implementations.
 // This ensures each test starts with findUnique returning undefined (route returns 404/409 as intended)

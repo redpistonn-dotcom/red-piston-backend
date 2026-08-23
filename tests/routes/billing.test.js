@@ -13,15 +13,18 @@ import express from 'express';
 import request from 'supertest';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
-vi.mock('../../db/prisma.js', () => ({
+vi.mock('../../src/db/prisma.js', () => ({
   default: {
-    shopInventory: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    shopInventory: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
     invoice:       { create: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     invoiceItem:   { create: vi.fn() },
     movement:      { create: vi.fn() },
     party:         { findUnique: vi.fn(), update: vi.fn() },
     partyLedger:   { create: vi.fn(), findMany: vi.fn() },
     invoicePayment:{ create: vi.fn(), findMany: vi.fn(), aggregate: vi.fn() },
+    // GST place-of-supply lookup (billing.js createInvoice) — null keeps the
+    // pre-existing intra-state default so it doesn't perturb these tests.
+    shop:          { findUnique: vi.fn().mockResolvedValue(null) },
     // $queryRaw is used by nextSeq() inside $transaction — must be in the tx object.
     // We mock it here on `prisma` itself because tests that call
     // $transaction.mockImplementation(fn => fn(prisma)) pass `prisma` as `tx`.
@@ -30,16 +33,17 @@ vi.mock('../../db/prisma.js', () => ({
   },
 }));
 
-vi.mock('../../middleware/auth.js', () => ({
+vi.mock('../../src/middleware/auth.js', () => ({
   authenticate:    (req, _res, next) => { req.user = { userId: 1 }; req.shopId = 5; next(); },
   requireShopOwner:(req, _res, next) => next(),
+  requirePermission: () => (_req, _res, next) => next(),
 }));
 
-vi.mock('../../services/email.js',     () => ({ sendInvoiceEmail: vi.fn() }));
-vi.mock('../../services/whatsapp.js',  () => ({ sendInvoiceWhatsApp: vi.fn() }));
+vi.mock('../../src/services/email.js',     () => ({ sendInvoiceEmail: vi.fn() }));
+vi.mock('../../src/services/whatsapp.js',  () => ({ sendInvoiceWhatsApp: vi.fn() }));
 
-import prisma from '../../db/prisma.js';
-import billingRouter from '../../routes/billing.js';
+import prisma from '../../src/db/prisma.js';
+import billingRouter from '../../src/routes/billing.js';
 
 function buildApp() {
   const app = express();
@@ -78,7 +82,7 @@ describe('POST /api/billing/invoice', () => {
   });
 
   it('returns 400 INSUFFICIENT_STOCK when qty exceeds available stock', async () => {
-    prisma.shopInventory.findUnique.mockResolvedValue({ ...INVENTORY_ITEM, stockQty: 1 });
+    prisma.shopInventory.findMany.mockResolvedValue([{ ...INVENTORY_ITEM, stockQty: 1 }]);
     prisma.$transaction.mockImplementation(async (fn) => fn(prisma));
 
     const res = await request(app)
@@ -90,7 +94,7 @@ describe('POST /api/billing/invoice', () => {
   });
 
   it('happy path: creates invoice and returns it', async () => {
-    prisma.shopInventory.findUnique.mockResolvedValue(INVENTORY_ITEM);
+    prisma.shopInventory.findMany.mockResolvedValue([INVENTORY_ITEM]);
     prisma.$transaction.mockResolvedValue(CREATED_INVOICE);
 
     const res = await request(app)
@@ -106,7 +110,7 @@ describe('POST /api/billing/invoice', () => {
   it('passes invoiceType ESTIMATE without touching stock', async () => {
     // ESTIMATE type should NOT reduce stock
     const inventoryBefore = { ...INVENTORY_ITEM };
-    prisma.shopInventory.findUnique.mockResolvedValue(inventoryBefore);
+    prisma.shopInventory.findMany.mockResolvedValue([inventoryBefore]);
     prisma.$transaction.mockResolvedValue({ ...CREATED_INVOICE, status: 'ESTIMATE' });
 
     const res = await request(app)
@@ -120,7 +124,7 @@ describe('POST /api/billing/invoice', () => {
   it('generates invoice number atomically via nextSeq inside the transaction', async () => {
     // When the transaction callback is executed (not short-circuited with .mockResolvedValue),
     // nextSeq() must call $queryRaw and the resulting seq (1) must produce '202606-0001' format.
-    prisma.shopInventory.findUnique.mockResolvedValue(INVENTORY_ITEM);
+    prisma.shopInventory.findMany.mockResolvedValue([INVENTORY_ITEM]);
     // $queryRaw is mocked to return last_value: 7 → expect '202606-0007' shape
     prisma.$queryRaw.mockResolvedValue([{ last_value: 7 }]);
     prisma.invoice.create.mockResolvedValue({ ...CREATED_INVOICE, invoiceNumber: '202606-0007' });
@@ -137,13 +141,15 @@ describe('POST /api/billing/invoice', () => {
     // The $queryRaw upsert must have been called (proves nextSeq ran, not a pre-tx fallback)
     expect(prisma.$queryRaw).toHaveBeenCalled();
 
-    // The invoice.create call must receive a invoiceNumber matching the YYYYMM-NNNN format
+    // The invoice.create call must receive an invoiceNumber matching the
+    // current RED-S{shopId}-YYYYMM-NNNN format (billing.js line ~271).
     const createCall = prisma.invoice.create.mock.calls[0][0];
-    expect(createCall.data.invoiceNumber).toMatch(/^\d{6}-\d{4}$/);
-    expect(createCall.data.invoiceNumber).toBe(
-      // seq=7 → last four digits 0007
-      createCall.data.invoiceNumber.slice(0, 6) + '-0007'
-    );
+    // Mirrors lib/sequence.js currentYYYYMM() — IST, not local system time,
+    // so this doesn't flake near a month boundary in a non-IST CI runner.
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit' }).formatToParts(new Date());
+    const yyyymm = parts.find(p => p.type === 'year').value + parts.find(p => p.type === 'month').value;
+    // shopId=5 (from the authenticate mock above), seq=7 (mocked $queryRaw last_value) → 0007
+    expect(createCall.data.invoiceNumber).toBe(`RED-S5-${yyyymm}-0007`);
   });
 });
 

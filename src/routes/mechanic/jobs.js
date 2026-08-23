@@ -29,6 +29,11 @@ import {
   isValidMechanicProgress, PROGRESS_TRIGGERS_STATUS,
 } from '../../lib/mechanic-transitions.js';
 import { nextSeq, currentYYYYMM } from '../../lib/sequence.js';
+import { buildStatusMessage, buildExtraWorkFoundMessage, buildCallOutcomeMessage } from '../../lib/customer-message.js';
+import { registerPushToken, sendPushToUser } from '../../services/push.js';
+
+const VALID_CALL_PURPOSES = ['STATUS_UPDATE', 'EXTRA_WORK_APPROVAL', 'GENERAL'];
+const VALID_CALL_OUTCOMES = ['APPROVED', 'REJECTED', 'NO_ANSWER', 'DISCUSSED'];
 
 const router = Router();
 
@@ -69,6 +74,21 @@ async function writeTimeline(jobId, actorUserId, event, { fromStatus, toStatus, 
 }
 
 const VALID_PRIORITIES = ['LOW', 'NORMAL', 'HIGH', 'URGENT'];
+
+// POST /api/mechanic/push/register-token — save this device's FCM token so
+// job-assignment alerts can reach it.
+router.post('/push/register-token', authenticate, requireMechanic, async (req, res, next) => {
+  try {
+    const { token, platform } = req.body;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_TOKEN', message: 'token is required' } });
+    }
+    await registerPushToken(req.user.userId, token, platform || 'WEB');
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // POST /api/mechanic/jobs — create a new job card (self-assigned or assigned to a team member)
 router.post('/jobs', authenticate, requireMechanic, async (req, res, next) => {
@@ -139,6 +159,15 @@ router.post('/jobs', authenticate, requireMechanic, async (req, res, next) => {
 
     const job = rows[0];
     await writeTimeline(Number(job.job_id), req.user.userId, 'JOB_CREATED', { note: 'Job card created' });
+
+    if (assigneeId !== req.user.userId) {
+      sendPushToUser(assigneeId, {
+        title: 'New job assigned',
+        body: `${jobNumber} — ${customerName.trim()}, ${vehicleMake.trim()} ${vehicleModel.trim()}`,
+        data: { jobId: String(job.job_id), link: `/mechanic/jobs/${job.job_id}` },
+      });
+    }
+
     res.status(201).json({ success: true, data: { jobId: Number(job.job_id), jobNumber: job.job_number, status: job.status } });
   } catch (err) {
     next(err);
@@ -237,7 +266,7 @@ router.get('/jobs/:id', authenticate, requireMechanic, async (req, res, next) =>
     const job = await loadOwnJob(req, res, jobId);
     if (!job) return;
 
-    const [items, timeline, photos] = await Promise.all([
+    const [items, timeline, photos, calls] = await Promise.all([
       prisma.$queryRaw`
         SELECT jci.*, si.selling_price, mp.part_name, mp.brand
         FROM job_card_items jci
@@ -256,9 +285,16 @@ router.get('/jobs/:id', authenticate, requireMechanic, async (req, res, next) =>
       prisma.$queryRaw`
         SELECT * FROM job_card_photos WHERE job_id = ${jobId} ORDER BY created_at ASC
       `,
+      prisma.$queryRaw`
+        SELECT jcc.*, u.name AS mechanic_name
+        FROM job_card_calls jcc
+        LEFT JOIN users u ON u.user_id = jcc.mechanic_user_id
+        WHERE jcc.job_id = ${jobId}
+        ORDER BY jcc.created_at DESC
+      `,
     ]);
 
-    res.json({ success: true, data: { ...job, items, timeline, photos } });
+    res.json({ success: true, data: { ...job, items, timeline, photos, calls } });
   } catch (err) {
     next(err);
   }
@@ -308,7 +344,77 @@ router.patch('/jobs/:id/status', authenticate, requireMechanic, async (req, res,
     });
 
     writeAudit(req, { entityType: ET.ORDER, entityId: jobId, action: ACT.UPDATE, oldValue: { status: job.status }, newValue: { status } });
-    res.json({ success: true, data: { jobId, status } });
+
+    // Same status just written to the DB drives the WhatsApp text — the
+    // mechanic taps "Send on WhatsApp" rather than typing anything, so the
+    // in-app status and the customer's WhatsApp message can never mismatch.
+    const whatsapp = buildStatusMessage({ ...job, status }, status);
+    res.json({ success: true, data: { jobId, status, whatsapp } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /api/mechanic/jobs/:id/commission — set the commission a mechanic
+// earns for one specific job. Restricted to whoever is accountable for the
+// team's payouts: a HEAD mechanic (shop-mechanic team) or the job's creator
+// (independent-mechanic team, which has no HEAD/MEMBER role split).
+router.patch('/jobs/:id/commission', authenticate, requireMechanic, async (req, res, next) => {
+  try {
+    const jobId = parseInt(req.params.id, 10);
+    const { amount, note } = req.body;
+
+    const parsedAmount = parseFloat(amount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_AMOUNT', message: 'amount must be a non-negative number' } });
+    }
+    if (note && note.length > 255) {
+      return res.status(400).json({ success: false, error: { code: 'NOTE_TOO_LONG', message: 'note must be under 255 characters' } });
+    }
+
+    const rows = req.shopId
+      ? await prisma.$queryRawUnsafe(
+          `SELECT * FROM job_cards WHERE job_id = $1 AND shop_id = $2`,
+          jobId, req.shopId
+        )
+      : await prisma.$queryRawUnsafe(
+          `SELECT * FROM job_cards WHERE job_id = $1 AND created_by = $2`,
+          jobId, req.user.userId
+        );
+    const job = rows[0];
+    if (!job) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job card not found' } });
+    }
+
+    const isHead = req.shopId && req.mechanicRecord?.mechanic_role === 'HEAD';
+    const isIndependentOwner = !req.shopId && job.created_by === req.user.userId;
+    if (!isHead && !isIndependentOwner) {
+      return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only the head mechanic can set commission for a job' } });
+    }
+
+    await prisma.$executeRaw`
+      UPDATE job_cards SET
+        mechanic_commission = ${parsedAmount},
+        commission_note = ${note?.trim() || null},
+        commission_set_by = ${req.user.userId},
+        commission_set_at = NOW(),
+        updated_at = NOW()
+      WHERE job_id = ${jobId}
+    `;
+
+    await writeTimeline(jobId, req.user.userId, 'COMMISSION_SET', {
+      note: `₹${parsedAmount.toFixed(2)} commission set${note ? ' — ' + note.trim() : ''}`,
+    });
+
+    if (job.assigned_to_user_id) {
+      sendPushToUser(job.assigned_to_user_id, {
+        title: 'Commission set for your job',
+        body: `₹${parsedAmount.toFixed(2)} commission set on ${job.job_number}`,
+        data: { jobId: String(jobId), link: `/mechanic/jobs/${jobId}` },
+      });
+    }
+
+    res.json({ success: true, data: { jobId, mechanicCommission: parsedAmount, commissionNote: note?.trim() || null } });
   } catch (err) {
     next(err);
   }
@@ -339,6 +445,13 @@ router.patch('/jobs/:id/assign', authenticate, requireMechanic, async (req, res,
     if (!result) {
       return res.status(403).json({ success: false, error: { message: 'Job not found or not authorized' } });
     }
+
+    sendPushToUser(memberId, {
+      title: 'Job reassigned to you',
+      body: `Job #${jobId} has been assigned to you`,
+      data: { jobId: String(jobId), link: `/mechanic/jobs/${jobId}` },
+    });
+
     res.json({ success: true });
   } catch (err) {
     next(err);
@@ -798,7 +911,89 @@ router.post('/jobs/:id/part-requests', authenticate, requireMechanic, async (req
     `;
 
     await writeTimeline(jobId, req.user.userId, 'PART_REQUESTED', { note: `${description.trim()} x${parsedQty}` });
-    res.status(201).json({ success: true, data: request[0] });
+
+    // Lets the mechanic immediately give the customer a heads-up that extra
+    // work was found, before the confirmation call happens.
+    const whatsapp = buildExtraWorkFoundMessage(job, request[0]);
+    res.status(201).json({ success: true, data: { ...request[0], whatsapp } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/mechanic/jobs/:id/calls — call log for a job
+router.get('/jobs/:id/calls', authenticate, requireMechanic, async (req, res, next) => {
+  try {
+    const jobId = parseInt(req.params.id, 10);
+    const job = await loadOwnJob(req, res, jobId);
+    if (!job) return;
+
+    const calls = await prisma.$queryRaw`
+      SELECT jcc.*, u.name AS mechanic_name
+      FROM job_card_calls jcc
+      LEFT JOIN users u ON u.user_id = jcc.mechanic_user_id
+      WHERE jcc.job_id = ${jobId}
+      ORDER BY jcc.created_at DESC
+    `;
+    res.json({ success: true, data: calls });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/mechanic/jobs/:id/calls — log a customer call and its outcome.
+// The call itself happens over the phone, outside the app. This just records
+// that it happened, and — when it settles an extra-work decision — generates
+// the exact WhatsApp confirmation text from that same outcome, so what the
+// customer reads on WhatsApp always matches what was just agreed on the call.
+router.post('/jobs/:id/calls', authenticate, requireMechanic, async (req, res, next) => {
+  try {
+    const jobId = parseInt(req.params.id, 10);
+    const job = await loadOwnJob(req, res, jobId);
+    if (!job) return;
+
+    const { purpose, outcome, notes, partRequestId } = req.body;
+    if (!VALID_CALL_PURPOSES.includes(purpose)) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_PURPOSE', message: `purpose must be one of: ${VALID_CALL_PURPOSES.join(', ')}` } });
+    }
+    if (!VALID_CALL_OUTCOMES.includes(outcome)) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_OUTCOME', message: `outcome must be one of: ${VALID_CALL_OUTCOMES.join(', ')}` } });
+    }
+    if (notes && notes.length > 1000) {
+      return res.status(400).json({ success: false, error: { code: 'NOTE_TOO_LONG', message: 'notes must be under 1000 characters' } });
+    }
+
+    let partRequest = null;
+    if (partRequestId) {
+      const pr = await prisma.$queryRaw`
+        SELECT * FROM job_card_part_requests WHERE id = ${parseInt(partRequestId, 10)} AND job_id = ${jobId}
+      `;
+      if (!pr[0]) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Part request not found on this job' } });
+      }
+      partRequest = pr[0];
+
+      if (['APPROVED', 'REJECTED'].includes(outcome)) {
+        await prisma.$executeRaw`
+          UPDATE job_card_part_requests SET customer_decision = ${outcome}, customer_decision_at = NOW()
+          WHERE id = ${partRequest.id}
+        `;
+        partRequest.customer_decision = outcome;
+      }
+    }
+
+    const call = await prisma.$queryRaw`
+      INSERT INTO job_card_calls (job_id, shop_id, part_request_id, mechanic_user_id, purpose, outcome, notes)
+      VALUES (${jobId}, ${req.shopId || null}, ${partRequest?.id ?? null}, ${req.user.userId}, ${purpose}, ${outcome}, ${notes?.trim() || null})
+      RETURNING *
+    `;
+
+    await writeTimeline(jobId, req.user.userId, 'CALL_LOGGED', {
+      note: `${purpose.replace(/_/g, ' ')} — ${outcome}${notes ? ': ' + notes.trim() : ''}`,
+    });
+
+    const whatsapp = buildCallOutcomeMessage(job, { outcome, notes: notes?.trim(), partRequest });
+    res.status(201).json({ success: true, data: { ...call[0], whatsapp } });
   } catch (err) {
     next(err);
   }

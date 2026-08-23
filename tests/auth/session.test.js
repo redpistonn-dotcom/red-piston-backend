@@ -27,7 +27,7 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 
-vi.mock('../../db/prisma.js', () => ({
+vi.mock('../../src/db/prisma.js', () => ({
   default: {
     refreshToken: {
       findUnique:  vi.fn(),
@@ -42,8 +42,8 @@ vi.mock('../../db/prisma.js', () => ({
   },
 }));
 
-import prisma from '../../db/prisma.js';
-import sessionRouter from '../../routes/auth/session.js';
+import prisma from '../../src/db/prisma.js';
+import sessionRouter from '../../src/routes/auth/session.js';
 
 function buildApp() {
   const app = express();
@@ -167,7 +167,7 @@ describe('POST /api/auth/refresh', () => {
     expect(res.body.error.code).toBe('USER_INACTIVE');
   });
 
-  it('happy path: returns 200 with new accessToken; refreshToken NOT in body (SEC-001)', async () => {
+  it('happy path: returns 200 with new accessToken and the rotated refreshToken in the body', async () => {
     const rawToken = makeRefreshToken();
     prisma.refreshToken.findUnique.mockResolvedValue(storedToken());
     prisma.user.findUnique.mockResolvedValue(DB_USER);
@@ -180,10 +180,19 @@ describe('POST /api/auth/refresh', () => {
 
     expect(res.status).toBe(200);
     expect(typeof res.body.accessToken).toBe('string');
-    // SEC-001 FIX: refreshToken must NOT be in the JSON body — it lives only
-    // in the httpOnly cookie. Exposing it in the body allows XSS to steal
-    // the 30-day session token.
-    expect(res.body.refreshToken).toBeUndefined();
+    // Superseded SEC-001: the original fix hid refreshToken from the body,
+    // relying solely on the httpOnly cookie. routes/auth/session.js now
+    // deliberately returns it in the body too (see the comment there) —
+    // the cookie is third-party in prod (frontend/backend on different
+    // sites) and gets blocked by Safari/modern Chrome, so the client needs
+    // this fallback to persist the rotated token itself.
+    expect(typeof res.body.refreshToken).toBe('string');
+    // Not asserting res.body.refreshToken !== rawToken here: jwt.sign({userId}, ...)
+    // has no jti/nonce, so two tokens signed within the same wall-clock second
+    // are byte-identical — that equality is an artifact of test speed, not a
+    // real signal. Rotation itself (old row revoked, new row created) is what
+    // actually matters, and is covered by the $transaction call below.
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
   });
 
   it('happy path: sets a new refresh_token cookie', async () => {

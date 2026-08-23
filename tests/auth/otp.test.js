@@ -14,7 +14,7 @@ import express from 'express';
 import request from 'supertest';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
-vi.mock('../../db/prisma.js', () => ({
+vi.mock('../../src/db/prisma.js', () => ({
   default: {
     otpCode: {
       findFirst: vi.fn(),
@@ -38,18 +38,18 @@ vi.mock('../../db/prisma.js', () => ({
   },
 }));
 
-vi.mock('../../services/otp.js', () => ({
+vi.mock('../../src/services/otp.js', () => ({
   sendOtp:   vi.fn().mockResolvedValue({}),
   verifyOtp: vi.fn(),
 }));
 
-vi.mock('../../services/email.js', () => ({
+vi.mock('../../src/services/email.js', () => ({
   sendShopOwnerVerificationAlert: vi.fn(),
 }));
 
-import prisma from '../../db/prisma.js';
-import { verifyOtp as mockVerifyOtp } from '../../services/otp.js';
-import otpRouter from '../../routes/auth/otp.js';
+import prisma from '../../src/db/prisma.js';
+import { verifyOtp as mockVerifyOtp } from '../../src/services/otp.js';
+import otpRouter from '../../src/routes/auth/otp.js';
 
 function makeApp() {
   const app = express();

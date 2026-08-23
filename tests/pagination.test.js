@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pageBounds } from '../lib/pagination.js';
+import { pageBounds } from '../src/lib/pagination.js';
 
 describe('pageBounds', () => {
   it('returns defaults when params are missing', () => {

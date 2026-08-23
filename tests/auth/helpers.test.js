@@ -21,7 +21,7 @@ import {
   normalizeEmail,
   formatUserResponse,
   checkShopOwnerVerification,
-} from '../../routes/auth/helpers.js';
+} from '../../src/routes/auth/helpers.js';
 
 // ── hashToken ─────────────────────────────────────────────────────────────────
 describe('hashToken', () => {

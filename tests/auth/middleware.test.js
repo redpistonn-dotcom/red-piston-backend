@@ -28,17 +28,26 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import jwt from 'jsonwebtoken';
-import { authenticate, requireShopOwner } from '../../middleware/auth.js';
+import { authenticate, requireShopOwner } from '../../src/middleware/auth.js';
 
-vi.mock('../../db/prisma.js', () => ({
-  default: {
-    user: {
-      findUnique: vi.fn(),
+// authenticate() calls shopContext.run(...) for any user with a shopId —
+// without this named export it's undefined and .run throws (see the fix
+// applied to the shared tests/setup.js mock for the same root cause).
+// Dynamic import (not a static top-level one) avoids vi.mock's hoisting
+// restriction on referencing other module bindings inside the factory.
+vi.mock('../../src/db/prisma.js', async () => {
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  return {
+    default: {
+      user: {
+        findUnique: vi.fn(),
+      },
     },
-  },
-}));
+    shopContext: new AsyncLocalStorage(),
+  };
+});
 
-import prisma from '../../db/prisma.js';
+import prisma from '../../src/db/prisma.js';
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -234,7 +243,12 @@ describe('requireShopOwner middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('returns 403 FORBIDDEN for SHOP_OWNER without a shopId (shop not yet set up)', () => {
+  it('calls next() for SHOP_OWNER without a shopId — role gate only, not a shop-setup gate', () => {
+    // requireShopOwner only checks the role slug (see its doc comment in
+    // middleware/auth.js: "belongs to a shop, not a bare customer"). An
+    // owner who hasn't finished shop setup yet is blocked earlier, at
+    // login time, via needsShopSetup()/checkShopOwnerVerification() — not
+    // here on every request.
     const next = vi.fn();
     const res = { _status: null, _body: null };
     res.status = (c) => { res._status = c; return res; };
@@ -246,8 +260,8 @@ describe('requireShopOwner middleware', () => {
       next
     );
 
-    expect(res._status).toBe(403);
-    expect(res._body.error.code).toBe('FORBIDDEN');
+    expect(next).toHaveBeenCalledOnce();
+    expect(res._status).toBeNull();
   });
 
   it('uses userType.slug when available instead of user.role', () => {

@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-vi.mock('../../db/prisma.js', () => ({
+vi.mock('../../src/db/prisma.js', () => ({
   default: {
     jobCard: {
       findMany:  vi.fn(),
@@ -29,16 +29,18 @@ vi.mock('../../db/prisma.js', () => ({
     // Returns last_value: 1 by default (first sequence number for the shop/month).
     $queryRaw:    vi.fn().mockResolvedValue([{ last_value: 1 }]),
     $transaction: vi.fn(),
+    // Status changes now write a job_card_timeline row via raw SQL (workshop.js:269).
+    $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
-vi.mock('../../middleware/auth.js', () => ({
+vi.mock('../../src/middleware/auth.js', () => ({
   authenticate:    (req, _res, next) => { req.user = { userId: 1 }; req.shopId = 5; next(); },
   requireShopOwner:(_req, _res, next) => next(),
 }));
 
-import prisma from '../../db/prisma.js';
-import workshopRouter from '../../routes/workshop.js';
+import prisma from '../../src/db/prisma.js';
+import workshopRouter from '../../src/routes/workshop.js';
 
 function buildApp() {
   const app = express();
@@ -56,6 +58,12 @@ const DB_JOB = {
   createdAt: new Date(), completedAt: null, deliveredAt: null,
   items: [],
 };
+
+// prisma is one shared mock object across the whole file — without clearing
+// call history between tests, `mock.calls[0]` in a later test can pick up a
+// call made by an earlier, unrelated test (mockResolvedValue()/mockImplementation()
+// set inside each `it()` still apply afterwards; only call history resets).
+beforeEach(() => { vi.clearAllMocks(); });
 
 describe('POST /api/shop/workshop/jobs', () => {
   let app;
@@ -167,7 +175,9 @@ describe('PATCH /api/shop/workshop/jobs/:id/status', () => {
   });
 
   it('sets deliveredAt when status transitions to DELIVERED', async () => {
-    prisma.jobCard.findFirst.mockResolvedValue(DB_JOB);
+    // canOwnerTransition only allows QC_PASSED -> DELIVERED (lib/mechanic-transitions.js) —
+    // RECEIVED cannot jump straight to DELIVERED.
+    prisma.jobCard.findFirst.mockResolvedValue({ ...DB_JOB, status: 'QC_PASSED' });
     const updated = { ...DB_JOB, status: 'DELIVERED', deliveredAt: new Date() };
     prisma.jobCard.update.mockResolvedValue(updated);
 
@@ -181,7 +191,8 @@ describe('PATCH /api/shop/workshop/jobs/:id/status', () => {
   });
 
   it('sets completedAt when status transitions to READY', async () => {
-    prisma.jobCard.findFirst.mockResolvedValue(DB_JOB);
+    // canOwnerTransition only allows IN_PROGRESS -> READY.
+    prisma.jobCard.findFirst.mockResolvedValue({ ...DB_JOB, status: 'IN_PROGRESS' });
     const updated = { ...DB_JOB, status: 'READY', completedAt: new Date() };
     prisma.jobCard.update.mockResolvedValue(updated);
 
@@ -194,16 +205,28 @@ describe('PATCH /api/shop/workshop/jobs/:id/status', () => {
     expect(updateArgs?.data?.completedAt).toBeTruthy();
   });
 
-  it('accepts all valid status values', async () => {
-    const VALID_STATUSES = ['RECEIVED', 'IN_PROGRESS', 'WAITING_PARTS', 'READY', 'DELIVERED', 'CANCELLED'];
-    for (const status of VALID_STATUSES) {
-      prisma.jobCard.findFirst.mockResolvedValue(DB_JOB);
-      prisma.jobCard.update.mockResolvedValue({ ...DB_JOB, status });
+  it('walks the full valid lifecycle: RECEIVED -> IN_PROGRESS -> READY -> QC_PASSED -> DELIVERED', async () => {
+    // RECEIVED is create-only — no transition map entry leads back to it — so
+    // "every status is independently reachable by PATCH" isn't a real
+    // invariant. What IS real: the full chain is walkable one hop at a time.
+    const CHAIN = ['RECEIVED', 'IN_PROGRESS', 'READY', 'QC_PASSED', 'DELIVERED'];
+    for (let i = 1; i < CHAIN.length; i++) {
+      const from = CHAIN[i - 1], to = CHAIN[i];
+      prisma.jobCard.findFirst.mockResolvedValue({ ...DB_JOB, status: from });
+      prisma.jobCard.update.mockResolvedValue({ ...DB_JOB, status: to });
       const res = await request(app)
         .patch('/api/shop/workshop/jobs/j1/status')
-        .send({ status });
+        .send({ status: to });
       expect(res.status).toBe(200);
     }
+  });
+
+  it('rejects a transition with no path in the map, e.g. RECEIVED -> READY', async () => {
+    prisma.jobCard.findFirst.mockResolvedValue({ ...DB_JOB, status: 'RECEIVED' });
+    const res = await request(app)
+      .patch('/api/shop/workshop/jobs/j1/status')
+      .send({ status: 'READY' });
+    expect(res.status).toBe(422);
   });
 });
 
